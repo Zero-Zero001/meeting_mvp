@@ -73,7 +73,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 
 第一版采用前后端分离。
 
-- 前端：Next.js、React、TypeScript。
+- 前端：Vite、React、TypeScript。
 - 后端：FastAPI、Python。
 - 实时通信：浏览器与后端通过 WebSocket。
 - 英文转写：Google Speech-to-Text streaming 作为主 provider。
@@ -89,6 +89,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 ```text
 浏览器会议音频
 -> 工具页捕获音频
+-> AudioWorklet 生成 mono PCM16
 -> WebSocket 上传音频片段
 -> FastAPI 会话编排
 -> Google STT streaming
@@ -119,6 +120,8 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
    - 没有检测到有效音频前，不应正式消耗会议额度。
 
 第一版主要浏览器目标：Windows Chrome 和 Edge。
+
+浏览器侧音频前处理使用 `getDisplayMedia` 获取会议标签页或系统音频，再通过 Web Audio API / `AudioWorklet` 转成 Google STT 友好的 mono PCM16 音频帧，通过 WebSocket binary frame 上传。第一版不把 FFmpeg/WebM 服务端转码作为主路径，避免在单台 Lighthouse 服务器上引入额外 CPU、延迟和故障点。
 
 ## 6. Provider 设计
 
@@ -277,8 +280,8 @@ STT provider 需要支持：
 - 服务器安装 Docker。
 - PostgreSQL 和 Redis 通过 Docker 部署在同一台服务器中。
 - 后端作为 Docker 容器部署。
-- 前端根据 Next.js 最终渲染方式，部署为 Next.js 容器或静态产物。
-- 反向代理：Nginx 或 Caddy。
+- 前端由 Vite 构建为静态产物，通过 Caddy 直接服务。
+- Caddy 同时负责 HTTPS/WSS 终止，并把 API 与 WebSocket 请求反向代理到 FastAPI 后端容器。
 - TLS：必须启用，因为浏览器音频捕获和安全 WebSocket 都依赖 HTTPS/WSS 场景。
 - 对象存储：腾讯 COS 存导出文件。
 
@@ -288,7 +291,7 @@ STT provider 需要支持：
 
 ### M1：实时核心闭环
 
-- Next.js 实时会议页。
+- Vite + React 实时会议页。
 - 浏览器捕获标签页音频和系统音频降级。
 - FastAPI WebSocket 会话端点。
 - 匿名 client ID。
