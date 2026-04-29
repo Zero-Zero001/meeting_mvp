@@ -29,7 +29,7 @@
 
 | 前置条件 | 准备内容 | 验证方式 |
 |---|---|---|
-| 本地代码环境 | Git、Node.js 24 LTS、npm、Python 3.12、uv、Chrome、Edge、VS Code、SSH 客户端 | 在 PowerShell 中能输出版本号或启动应用。 |
+| 本地代码环境 | Git、Node.js 24 LTS、npm、系统 Python、uv、Chrome、Edge、VS Code、SSH 客户端 | 在 PowerShell 中能输出版本号或启动应用；项目后端 Python 由 uv 固定为 3.12。 |
 | 云服务器访问 | Lighthouse 公网 IP、SSH 用户、SSH 私钥路径 | 能从 Windows PowerShell 通过 SSH 登录服务器。 |
 | 云端运行环境 | Docker、Docker Compose plugin、PostgreSQL container、Redis container | 在 Lighthouse 上执行 Docker 和 Compose 检查。 |
 | 外部服务凭证 | Google STT、Qwen、OpenAI、Tencent COS | 凭证只保存在安全位置，后续写入服务器环境变量。 |
@@ -43,7 +43,7 @@
 |---|---|---|
 | 代码编辑、文档修改、Git 操作 | Windows 本地 | Codex 在仓库目录内完成。 |
 | 前端依赖安装、lint、单元测试、构建 | Windows 本地 | 使用 Node.js 24 LTS 和 npm。 |
-| 后端依赖安装、Ruff、mypy、纯单元测试 | Windows 本地 | 使用 Python 3.12 和 uv；不依赖本地数据库。 |
+| 后端依赖安装、Ruff、mypy、纯单元测试 | Windows 本地 | 使用 uv 创建项目级 Python 3.12 `.venv`；不依赖本地数据库。 |
 | 浏览器音频捕获体验测试 | Windows 本地 | 使用 Chrome / Edge 和 HTTPS 或 localhost。 |
 | Docker、Docker Compose | 腾讯云 Lighthouse | Windows 本地不安装 Docker。 |
 | PostgreSQL、Redis | 腾讯云 Lighthouse | 通过 Docker Compose 容器部署，Windows 本地不安装。 |
@@ -93,28 +93,21 @@ npm -v
 
 预期结果：Node.js 主版本为 24，npm 能正常输出版本号。
 
-### 1.3 安装 Python 3.12
+### 1.3 确认系统 Python
 
-目标：支持 FastAPI 后端、本地测试和工具链。
-
-安装指令：
-
-```powershell
-winget install --id Python.Python.3.12 -e
-```
+目标：确认本机存在可用 Python；系统 Python 可以是 3.13.9，但项目后端运行版本由 uv 固定为 Python 3.12。
 
 验证测试：
 
 ```powershell
 python --version
-py -3.12 --version
 ```
 
-预期结果：Python 版本为 3.12.x。
+预期结果：可以输出 Python 版本。若当前显示 `Python 3.13.9`，不需要卸载；后续用 uv 为项目安装和锁定 Python 3.12。
 
 ### 1.4 安装 uv
 
-目标：管理 Python 后端依赖、虚拟环境和运行命令。
+目标：管理 Python 后端依赖、项目级虚拟环境和运行命令。
 
 安装指令：
 
@@ -130,7 +123,31 @@ uv --version
 
 预期结果：uv 能正常输出版本号。
 
-### 1.5 确认 SSH 客户端
+### 1.5 准备项目级 Python 3.12 虚拟环境
+
+目标：让后端项目使用可复现的 Python 3.12 `.venv`，避免本机系统 Python 3.13.9 与生产环境版本漂移。
+
+执行位置：后端工程目录创建后，在后端目录运行。
+
+```powershell
+uv python install 3.12
+uv python pin 3.12
+uv sync
+uv run python --version
+```
+
+规则：
+
+- 后端依赖、Ruff、mypy、pytest、pytest-asyncio、Alembic 等工具都写入 `pyproject.toml`。
+- 使用 `uv sync` 创建或更新项目 `.venv`。
+- 使用 `uv run ...` 执行所有后端命令。
+- `.venv` 是本地生成物，不提交 Git。
+- `.python-version` 用于锁定项目解释器，可以提交 Git。
+- 不使用全局 `pip install` 安装项目依赖或开发工具。
+
+预期结果：`uv run python --version` 输出 Python 3.12.x；后端工具从项目 `.venv` 运行。
+
+### 1.6 确认 SSH 客户端
 
 目标：支持 Codex 通过 PowerShell 指导或执行云服务器验证。
 
@@ -148,7 +165,7 @@ Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH.Client*'
 
 预期结果：PowerShell 中 `ssh -V` 能输出版本号。
 
-### 1.6 安装浏览器
+### 1.7 安装浏览器
 
 目标：支持第一版重点测试 Windows Chrome / Edge 音频捕获。
 
@@ -168,7 +185,7 @@ Start-Process msedge
 
 预期结果：Chrome 和 Edge 均可启动，并能访问本地开发地址。
 
-### 1.7 安装编辑器
+### 1.8 安装编辑器
 
 目标：支持 TypeScript、Python、Markdown 和 Git 开发。
 
@@ -192,7 +209,7 @@ winget install --id Microsoft.VisualStudioCode -e
 
 预期结果：编辑器能正常打开项目、显示 Git 状态，并支持 Python 与 TypeScript 语法检查。
 
-### 1.8 克隆或确认本地仓库
+### 1.9 克隆或确认本地仓库
 
 目标：确认本机工作目录是 `D:\meeting_mvp`。
 
@@ -638,13 +655,16 @@ npm run test:e2e
 验证命令：
 
 ```powershell
+uv python install 3.12
+uv python pin 3.12
 uv sync
+uv run python --version
 uv run ruff check .
 uv run mypy .
 uv run pytest
 ```
 
-预期结果：依赖同步成功，Ruff、mypy 和不依赖真实 PostgreSQL/Redis 的 pytest 均通过。
+预期结果：项目 `.venv` 使用 Python 3.12.x；依赖同步成功；Ruff、mypy 和不依赖真实 PostgreSQL/Redis 的 pytest 均通过。
 
 ### 7.3 云服务器 Docker Compose 验证
 
@@ -739,7 +759,9 @@ docker compose exec backend uv run pytest -m integration
 
 ## 10. 环境准备完成标准
 
-- Windows 本地具备 Git、Node.js 24 LTS、npm、Python 3.12、uv、Chrome、Edge、VS Code、SSH 客户端。
+- Windows 本地具备 Git、Node.js 24 LTS、npm、系统 Python、uv、Chrome、Edge、VS Code、SSH 客户端。
+- 系统 Python 允许为 Python 3.13.9，但后端项目 `.venv` 必须由 uv 固定为 Python 3.12。
+- 后端目录具备 `pyproject.toml`、`uv.lock` 和 `.python-version`；`.venv` 可由 `uv sync` 重建且不提交 Git。
 - Windows 本地不安装 Docker、PostgreSQL、Redis。
 - 本地能运行前端检查、后端轻量检查和浏览器测试。
 - 腾讯云 Lighthouse 使用 Ubuntu 22.04 LTS 64 位 x86，Docker 和 Compose 可用。

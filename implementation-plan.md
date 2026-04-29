@@ -22,7 +22,10 @@
 ## Codex 执行约束
 
 - Codex 全程执行代码开发、文档更新、前端构建、后端纯单元测试和可自动化验证。
-- Windows 本地不安装 Docker、PostgreSQL、Redis；本地只运行 Git、Node.js、npm、Python、uv、Chrome/Edge 和不依赖真实数据库的测试。
+- Windows 本地不安装 Docker、PostgreSQL、Redis；本地只运行 Git、Node.js、npm、系统 Python、uv、Chrome/Edge 和不依赖真实数据库的测试。
+- Windows 本地系统 Python 可以是 3.13.9，但后端项目必须通过 uv 创建并使用 Python 3.12 的项目级 `.venv`。
+- 后端依赖和开发工具必须写入 `pyproject.toml` 并锁定到 `uv.lock`；`.python-version` 用于固定项目解释器为 Python 3.12；`.venv` 不提交 Git。
+- 所有后端命令必须通过 `uv run ...` 执行，不使用全局 `pip install` 安装项目依赖或开发工具。
 - Docker Compose、PostgreSQL、Redis、Alembic migration、数据库集成测试、Redis 集成测试和生产部署演练必须通过 SSH 在腾讯云 Lighthouse 或后续 CI 环境执行。
 - 如果没有 Lighthouse SSH 访问、域名解析、Provider 凭证或 COS 信息，Codex 必须停在对应准备步骤，不得伪造云端验证结果。
 - 密钥只进入服务器环境变量、CI secret 或安全配置，不写入 Git，不写入前端构建产物。
@@ -72,11 +75,11 @@
 
 目标：建立 Python 3.12 + FastAPI 后端基础。
 
-具体指令：在后端目录初始化 uv 项目，加入 FastAPI、Uvicorn、Pydantic v2、pydantic-settings、SQLAlchemy async、Alembic、psycopg、redis asyncio、httpx、tenacity、structlog、pytest、pytest-asyncio、Ruff、mypy。
+具体指令：在后端目录初始化 uv 项目，创建 `pyproject.toml`、`uv.lock`、`.python-version`，并将项目解释器固定为 Python 3.12；加入 FastAPI、Uvicorn、Pydantic v2、pydantic-settings、SQLAlchemy async、Alembic、psycopg、redis asyncio、httpx、tenacity、structlog、pytest、pytest-asyncio、Ruff、mypy。
 
-验证测试：运行 `uv run ruff check .`、`uv run mypy .`、`uv run pytest`。
+验证测试：先运行 `uv python install 3.12`、`uv python pin 3.12`、`uv sync`、`uv run python --version`，再运行 `uv run ruff check .`、`uv run mypy .`、`uv run pytest`。
 
-预期结果：后端检查命令全部可执行，项目能启动最小健康检查服务。
+预期结果：`uv run python --version` 输出 Python 3.12.x；后端检查命令全部从项目 `.venv` 执行；项目能启动最小健康检查服务。
 
 ### Step 05：定义环境变量和配置边界
 
@@ -352,7 +355,7 @@
 
 目标：在腾讯云 Lighthouse 上验证单机部署可行。
 
-具体指令：部署 Docker Compose、PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物；配置 HTTPS/WSS、Provider 凭证、COS、预算保险丝和健康检查。部署前创建 PostgreSQL 备份目录，部署后执行一次 PostgreSQL 备份和恢复演练；Redis 只保存短期状态，不能作为正式会议档案来源。
+具体指令：部署 Docker Compose、PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物；后端容器使用 `uv.lock` 锁定依赖并运行 Python 3.12，避免本地系统 Python 3.13.9 与生产环境依赖漂移；配置 HTTPS/WSS、Provider 凭证、COS、预算保险丝和健康检查。部署前创建 PostgreSQL 备份目录，部署后执行一次 PostgreSQL 备份和恢复演练；Redis 只保存短期状态，不能作为正式会议档案来源。
 
 验证测试：通过 SSH 在 Lighthouse 运行部署检查，访问 HTTPS 页面，测试 `/api` 健康检查、`/ws` WebSocket、PostgreSQL migration、Redis 连接、Provider smoke test、COS 导出；执行一次 PostgreSQL 备份文件生成检查和恢复演练检查；确认 5432、6379 不对公网开放。
 
