@@ -19,7 +19,8 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 - 英文实时转写主用 Google Speech-to-Text。
 - 保留 OpenAI STT provider 架构，用于备用或后续对比，但第一版生产主路径是 Google STT。
 - 中文 interim 临时理解使用阿里云百炼 Qwen Flash/Turbo。
-- 中文 final 正式翻译使用 OpenAI 文本模型，生成语义准确、自然、适合中国职场阅读的中文表达。
+- 中文 final 正式翻译使用阿里云百炼 Qwen `qwen3.6-max-preview`，生成语义准确、自然、适合中国职场阅读的中文表达。
+- OpenAI 翻译不作为第一版主路径，仅在 Lighthouse 网络可达或后续需要质量对比时作为可选扩展。
 - 实时 UI 至少包含四块：英文原文区、中文翻译区、当前重点句区、会议时间线区。
 - 会后纪要偏“会议原文归档型”，重点是完整可追溯，而不是第一版就做复杂总结。
 - PostgreSQL 存结构化记录，Redis 做实时会话/额度/限流，腾讯 COS 存导出文件。
@@ -78,7 +79,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 - 实时通信：浏览器与后端通过 WebSocket。
 - 英文转写：Google Speech-to-Text streaming 作为主 provider。
 - 中文 interim：阿里云百炼 Qwen Flash/Turbo。
-- 中文 final：OpenAI 文本模型。
+- 中文 final：阿里云百炼 Qwen `qwen3.6-max-preview`。
 - 数据库：PostgreSQL。
 - 运行时状态：Redis。
 - 导出文件：腾讯 COS。
@@ -95,7 +96,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 -> Google STT streaming
 -> 英文 interim/final 事件
 -> Qwen 生成中文 interim
--> OpenAI 生成中文 final
+-> Qwen qwen3.6-max-preview 生成中文 final
 -> WebSocket 推送 UI
 -> PostgreSQL 保存 final 档案
 -> 腾讯 COS 保存导出文件
@@ -154,12 +155,14 @@ STT provider 需要支持：
 
 中文 final：
 
-- Provider：OpenAI 文本模型。
+- Provider：阿里云百炼 Qwen `qwen3.6-max-preview`。
+- 环境变量：`QWEN_FINAL_MODEL=qwen3.6-max-preview`。
 - 触发条件：英文 final segment。
 - 目标：语义准确、表达自然、适合中国职场用户快速阅读。
 - Prompt 要求：保留含义、决策、行动项、语气、人名、数字和业务上下文。
 - 上下文：默认带最近 3 到 5 个 final segment。
 - 归档规则：与英文 final 一起进入正式会议档案。
+- OpenAI 翻译：保留为后续备用/质量对比，不阻塞第一版 MVP。
 
 ## 7. WebSocket 协议
 
@@ -259,7 +262,7 @@ STT provider 需要支持：
 
 - 记录 Google STT 分钟数。
 - 记录 Qwen interim 请求量和 token。
-- 记录 OpenAI final 翻译请求量和 token。
+- 记录 Qwen final 翻译请求量和 token。
 - 估算每场会议、每日、每月成本。
 - 增加全站月度预算保险丝，初始建议阈值 400 RMB。
 - 触发预算保险丝后，拒绝新会话，但保留已有档案查看和导出。
@@ -298,7 +301,7 @@ STT provider 需要支持：
 - 每日和单场额度限制。
 - Google STT streaming 主链路。
 - Qwen 中文 interim 链路。
-- OpenAI 中文 final 链路。
+- Qwen `qwen3.6-max-preview` 中文 final 链路。
 - 四区实时阅读 UI。
 - PostgreSQL 保存 final 片段。
 
@@ -320,7 +323,7 @@ STT provider 需要支持：
 - Provider 状态和开关。
 - 错误率和延迟指标。
 - 全站预算保险丝。
-- OpenAI STT 备用/对比入口。
+- OpenAI STT/翻译备用或对比入口。
 
 ## 12. 验收标准
 
@@ -341,7 +344,9 @@ STT provider 需要支持：
 - 第一批测试用户为 10 到 50 人。
 - 每月预算为 0 到 500 RMB。
 - 产品方接受会议音频和文本发送给第三方 AI API 处理。
-- Google STT、阿里云百炼、OpenAI、PostgreSQL、Redis、腾讯 COS 的凭据都通过环境变量提供。
+- Google STT、阿里云百炼、PostgreSQL、Redis、腾讯 COS 的凭据都通过环境变量提供。
+- 第一版中文 final 模型通过 `QWEN_FINAL_MODEL` 配置，默认 `qwen3.6-max-preview`。
+- 腾讯云 Lighthouse 当前无法稳定访问 OpenAI 官方 `api.openai.com:443`，因此 OpenAI 不作为第一版生产主路径。
 - 第一版不需要登录。
 - 第一版默认不存原始会议音频，只存正式文本档案和导出文件。
 - `ScienceIO/whisper_streaming_web` 作为 WebSocket 和音频流处理参考，不作为最终项目结构直接照搬。

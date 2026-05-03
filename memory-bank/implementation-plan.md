@@ -34,7 +34,7 @@
 
 | 阶段 | 目标 | 完成标准 |
 |---|---|---|
-| M1-A 必须上线闭环 | 匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、OpenAI final、四区 UI、基础异常、final 归档。 | 测试用户能打开网页，捕获会议音频，看到英文和中文结果，并产生可追溯 final 片段。 |
+| M1-A 必须上线闭环 | 匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、final 归档。 | 测试用户能打开网页，捕获会议音频，看到英文和中文结果，并产生可追溯 final 片段。 |
 | M1-B 上线后增强 | final 重试、轻量看板、Provider 开关、重点句增强、时间线增强。 | M1-A 跑通后，能降低运营风险并提升可观察性。 |
 | M2 会后归档与导出 | 会后记录、搜索、复制、Markdown / JSON 导出、Tencent COS。 | 用户能带走完整双语会议记录。 |
 | M3 成本与运营 | 成本估算、漏斗分析、兼容性报告、OpenAI STT 对比入口。 | 产品负责人能判断价值、质量和成本是否值得继续迭代。 |
@@ -185,7 +185,7 @@
 
 目标：在真实 Provider 凭证未配置时也能开发和测试主流程。
 
-具体指令：提供 mock STT、mock Qwen、mock OpenAI final，用固定节奏输出英文 interim、英文 final、中文 interim、中文 final 和 Provider 错误。
+具体指令：提供 mock STT、mock Qwen interim、mock Qwen final，用固定节奏输出英文 interim、英文 final、中文 interim、中文 final 和 Provider 错误。
 
 验证测试：运行本地端到端测试，使用 mock Provider 从开始会议到归档生成完整双语片段。
 
@@ -213,9 +213,9 @@
 
 ### Step 18：实现 F08 中文 final
 
-目标：用 OpenAI 文本模型生成正式中文翻译并归档。
+目标：用 Qwen `qwen3.6-max-preview` 生成正式中文翻译并归档。
 
-具体指令：当英文 final 出现时，后端携带当前片段和最近 3 到 5 个 final 上下文请求 OpenAI；保存英文 final、中文 final、时间戳、序号和翻译状态。
+具体指令：当英文 final 出现时，后端携带当前片段和最近 3 到 5 个 final 上下文请求阿里云百炼 Qwen OpenAI-compatible API；`QWEN_FINAL_MODEL` 默认使用 `qwen3.6-max-preview`；保存英文 final、中文 final、时间戳、序号和翻译状态。
 
 验证测试：运行中文 final 单元测试和真实 Provider smoke test，检查语义准确、顺序稳定、上下文传递、失败状态。
 
@@ -283,7 +283,7 @@
 
 ### Step 25：实现 F13 final 翻译重试
 
-目标：补齐 OpenAI final 失败片段。
+目标：补齐 Qwen final 失败片段。
 
 具体指令：为 `translation_status=failed` 的片段提供手动重试或后台补译；重试成功后更新中文 final 和状态，失败时保留原因和次数。
 
@@ -315,7 +315,7 @@
 
 目标：判断产品价值和成本是否可控。
 
-具体指令：基于 `usage_event` 和 Provider 用量记录，展示每日会议数、STT 分钟数、Qwen 请求和 token、OpenAI 请求和 token、日成本、月成本、错误率、延迟、腾讯会议成功率。
+具体指令：基于 `usage_event` 和 Provider 用量记录，展示每日会议数、STT 分钟数、Qwen interim 请求和 token、Qwen final 请求和 token、可选 OpenAI 请求和 token、日成本、月成本、错误率、延迟、腾讯会议成功率。
 
 验证测试：运行看板聚合测试，使用固定事件样本计算激活指标、核心使用指标、质量指标、留存指标和成本指标。
 
@@ -325,9 +325,9 @@
 
 目标：支持 Provider 降级、关闭和实验入口。
 
-具体指令：后端用配置控制 Google STT、OpenAI STT、Qwen interim、OpenAI final 的启停；前端只展示服务状态和可执行提示，不暴露密钥。
+具体指令：后端用配置控制 Google STT、OpenAI STT、Qwen interim、Qwen final 的启停；OpenAI 翻译只作为后续可选扩展，不进入第一版生产主路径；前端只展示服务状态和可执行提示，不暴露密钥。
 
-验证测试：运行 Provider 开关测试，覆盖关闭 Qwen、关闭 OpenAI final、启用 OpenAI STT 对比入口、配置缺失。
+验证测试：运行 Provider 开关测试，覆盖关闭 Qwen interim、关闭 Qwen final、启用 OpenAI STT 对比入口、配置缺失。
 
 预期结果：单个 Provider 关闭时，系统能按 PRD 定义降级；关闭 Qwen 不影响英文转写和中文 final。
 
@@ -396,7 +396,7 @@
 
 ## 最终验收清单
 
-- M1-A：匿名初始化、额度、捕获、音频处理、WebSocket、Google STT、Qwen interim、OpenAI final、四区 UI、基础归档、异常提示全部通过。
+- M1-A：匿名初始化、额度、捕获、音频处理、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础归档、异常提示全部通过。
 - M1-B：final 重试、看板、Provider 开关、重点句增强、时间线增强有独立测试。
 - M2：归档、搜索、复制、Markdown / JSON 导出和 COS 上传通过。
 - M3：漏斗、成本、兼容性和 Provider 状态可观察。

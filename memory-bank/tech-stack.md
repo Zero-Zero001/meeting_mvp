@@ -148,14 +148,21 @@
 
 主用：
 
-- OpenAI text model
-- OpenAI Python SDK
+- Alibaba Cloud Model Studio Qwen `qwen3.6-max-preview`
+- OpenAI-compatible API 调用方式
 
 用途：
 
 - 对英文 final segment 做高质量中文正式翻译。
 - 带最近 3 到 5 个 final segment 上下文。
 - 结果进入正式会议档案。
+- 环境变量使用 `QWEN_FINAL_MODEL=qwen3.6-max-preview`，与 `QWEN_INTERIM_MODEL` 分离。
+
+可选/后续：
+
+- OpenAI text model
+- 仅在服务器网络可达或需要质量对比时启用。
+- 当前腾讯云 Lighthouse 无法访问 OpenAI 官方 `api.openai.com:443`，不作为第一版生产主路径。
 
 ## 6. Storage
 
@@ -217,7 +224,7 @@ FastAPI
   -> Redis
   -> Google STT
   -> Qwen
-  -> OpenAI
+  -> OpenAI optional
   -> Tencent COS
 ```
 
@@ -283,8 +290,8 @@ docker compose ps
 - MDN WebSocket API: https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API
 - Google STT streaming: https://cloud.google.com/speech-to-text/v2/docs/streaming-recognize
 - Google STT audio encoding: https://cloud.google.com/speech-to-text/v2/docs/encoding
-- OpenAI text generation: https://platform.openai.com/docs/guides/chat-completions
 - Alibaba Cloud Model Studio Qwen OpenAI-compatible API: https://help.aliyun.com/zh/model-studio/qwen3-livetranslate-flash-api
+- OpenAI text generation, optional provider: https://platform.openai.com/docs/guides/chat-completions
 - Docker Compose docs: https://docs.docker.com/compose/
 - Caddy Automatic HTTPS: https://caddyserver.com/docs/automatic-https
 - SQLAlchemy asyncio: https://docs.sqlalchemy.org/20/orm/extensions/asyncio.html

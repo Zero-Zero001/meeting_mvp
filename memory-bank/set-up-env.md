@@ -16,8 +16,8 @@
 | SSH 访问 | Lighthouse 公网 IP、SSH 用户、SSH key 路径 | 允许 Codex 指导或执行云端 Docker、数据库和部署验证。 |
 | 腾讯 COS | Bucket、地域、SecretId、SecretKey | 保存 Markdown / JSON 导出文件。 |
 | Google Cloud | Speech-to-Text v2 可用项目和服务账号 | 英文 streaming STT 主链路。 |
-| 阿里云百炼 | Qwen Flash/Turbo API Key 和 endpoint | 中文 interim 临时理解。 |
-| OpenAI | API Key 和可用文本模型 | 中文 final 正式翻译和备用 STT 对比。 |
+| 阿里云百炼 | Qwen API Key、endpoint、interim 模型和 final 模型 | 中文 interim 临时理解与中文 final 正式翻译。 |
+| OpenAI | API Key 和可用模型 | 后续备用、STT 对比或网络恢复后的翻译对比，不作为第一版必备主路径。 |
 
 验证测试：逐项确认以上信息已可登录或可复制到安全密码管理器。
 
@@ -32,7 +32,7 @@
 | 本地代码环境 | Git、Node.js 24 LTS、npm、系统 Python、uv、Chrome、Edge、VS Code、SSH 客户端 | 在 PowerShell 中能输出版本号或启动应用；项目后端 Python 由 uv 固定为 3.12。 |
 | 云服务器访问 | Lighthouse 公网 IP、SSH 用户、SSH 私钥路径 | 能从 Windows PowerShell 通过 SSH 登录服务器。 |
 | 云端运行环境 | Docker、Docker Compose plugin、PostgreSQL container、Redis container | 在 Lighthouse 上执行 Docker 和 Compose 检查。 |
-| 外部服务凭证 | Google STT、Qwen、OpenAI、Tencent COS | 凭证只保存在安全位置，后续写入服务器环境变量。 |
+| 外部服务凭证 | Google STT、Qwen、Tencent COS；OpenAI 可选 | 凭证只保存在安全位置，后续写入服务器环境变量。 |
 | 域名与 HTTPS | 域名解析到 Lighthouse 公网 IP | Caddy 可自动签发 HTTPS，浏览器可使用安全上下文。 |
 
 预期结果：Codex 可以在本地完成代码开发和轻量测试，并通过 SSH 在 Lighthouse 上完成 Docker、PostgreSQL、Redis 和部署相关验证。
@@ -284,12 +284,12 @@ npx playwright --version
 
 ### 3.2 阿里云百炼 Qwen
 
-目标：提供中文 interim 临时理解。
+目标：提供中文 interim 临时理解，并作为第一版中文 final 正式翻译主路径。
 
 准备步骤：
 
 1. 登录阿里云百炼控制台。
-2. 开通可用的 Qwen Flash/Turbo 模型。
+2. 开通可用的 Qwen Flash/Turbo 模型和 `qwen3.6-max-preview`。
 3. 创建 API Key。
 4. 确认 OpenAI-compatible endpoint 可访问。
 5. 记录模型名、endpoint 和 API Key。
@@ -300,22 +300,23 @@ npx playwright --version
 |---|---|
 | `QWEN_API_KEY` | 阿里云百炼 API Key。 |
 | `QWEN_BASE_URL` | OpenAI-compatible endpoint。 |
-| `QWEN_INTERIM_MODEL` | 中文 interim 使用的模型。 |
+| `QWEN_INTERIM_MODEL` | 中文 interim 使用的低成本模型。 |
+| `QWEN_FINAL_MODEL` | 中文 final 使用的正式翻译模型，第一版默认 `qwen3.6-max-preview`。 |
 | `QWEN_INTERIM_ENABLED` | 是否启用中文 interim。 |
 
-验证测试：用控制台示例或后端 Provider smoke test 请求一次中文改写。
+验证测试：用控制台示例或后端 Provider smoke test 分别请求一次中文 interim 和中文 final。
 
-预期结果：Qwen 返回文本结果，失败时能看到明确错误码。
+预期结果：Qwen 能返回临时理解和正式翻译文本，失败时能看到明确错误码。
 
 ### 3.3 OpenAI
 
-目标：提供中文 final 正式翻译，并保留 STT 备用/对比入口。
+目标：保留 STT 备用/对比入口，并作为后续翻译质量对比或网络恢复后的可选 provider。
 
 准备步骤：
 
 1. 登录 OpenAI 控制台。
 2. 创建 API Key。
-3. 选择中文 final 使用的文本模型。
+3. 如后续需要对比，再选择中文 final 使用的文本模型。
 4. 配置预算或用量提醒。
 5. 保存 API Key 到安全位置。
 
@@ -325,13 +326,13 @@ npx playwright --version
 |---|---|
 | `OPENAI_API_KEY` | OpenAI API Key。 |
 | `OPENAI_BASE_URL` | OpenAI API base URL，默认可使用官方地址。 |
-| `OPENAI_FINAL_MODEL` | 中文 final 翻译模型。 |
+| `OPENAI_FINAL_MODEL` | 可选中文 final 对比模型，第一版生产主路径不依赖。 |
 | `OPENAI_STT_MODEL` | 备用/对比 STT 模型。 |
 | `OPENAI_STT_ENABLED` | 是否启用 OpenAI STT 实验入口。 |
 
-验证测试：使用后端 Provider smoke test 请求一次中文 final 翻译。
+验证测试：当服务器网络可访问 OpenAI endpoint 时，使用后端 Provider smoke test 请求一次中文 final 翻译。
 
-预期结果：OpenAI 能返回中文 final 文本，token 用量可被记录。
+预期结果：OpenAI 能返回中文 final 文本，token 用量可被记录；若腾讯云 Lighthouse 无法访问 `api.openai.com:443`，不阻塞 Qwen final 主链路。
 
 ## 4. 腾讯 COS 准备
 
@@ -618,9 +619,10 @@ nslookup 你的工具域名
 | `QWEN_API_KEY` | 阿里云百炼 API Key。 |
 | `QWEN_BASE_URL` | Qwen OpenAI-compatible endpoint。 |
 | `QWEN_INTERIM_MODEL` | 中文 interim 模型。 |
+| `QWEN_FINAL_MODEL` | 中文 final 模型，第一版默认 `qwen3.6-max-preview`。 |
 | `OPENAI_API_KEY` | OpenAI API Key。 |
 | `OPENAI_BASE_URL` | OpenAI API base URL。 |
-| `OPENAI_FINAL_MODEL` | 中文 final 模型。 |
+| `OPENAI_FINAL_MODEL` | 可选中文 final 对比模型，第一版生产主路径不依赖。 |
 | `TENCENT_COS_SECRET_ID` | COS SecretId。 |
 | `TENCENT_COS_SECRET_KEY` | COS SecretKey。 |
 | `TENCENT_COS_REGION` | COS 地域。 |
@@ -704,8 +706,9 @@ docker compose exec backend uv run pytest -m integration
 | PostgreSQL | 后端健康检查或 migration | 数据库可连接，migration 已执行。 |
 | Redis | 后端健康检查 | Redis 可连接，可写入 active session。 |
 | Google STT | Provider smoke test | 英文 interim 和 final 可产生。 |
-| Qwen | Provider smoke test | 中文 interim 可返回。 |
-| OpenAI | Provider smoke test | 中文 final 可返回。 |
+| Qwen interim | Provider smoke test | 中文 interim 可返回。 |
+| Qwen final | Provider smoke test | 使用 `qwen3.6-max-preview` 的中文 final 可返回。 |
+| OpenAI 可选 | Provider smoke test | 网络可达时中文 final 对比可返回；网络不可达时不影响 M1-A。 |
 | COS | 导出 smoke test | Markdown / JSON 文件可上传。 |
 | 预算保险丝 | 后端配置检查 | 阈值为 400 RMB，触发后拒绝新会话。 |
 
@@ -744,7 +747,7 @@ docker compose exec backend uv run pytest -m integration
 4. 检查服务器能访问外部 Provider 网络。
 5. 查看后端结构化日志中的 provider、code、recoverable 字段。
 
-预期结果：错误能定位到具体 Provider 和错误码；Qwen interim 失败不阻塞英文转写和中文 final。
+预期结果：错误能定位到具体 Provider 和错误码；Qwen interim 失败不阻塞英文转写和 Qwen final；Qwen final 失败时片段进入待重试状态。
 
 ### 9.4 PostgreSQL 或 Redis 数据丢失风险
 
@@ -768,6 +771,7 @@ docker compose exec backend uv run pytest -m integration
 - 域名解析到服务器，80 和 443 可访问，5432 和 6379 不对公网开放。
 - PostgreSQL 16、Redis 7、Caddy、FastAPI、前端静态产物具备部署位置。
 - 需要真实 PostgreSQL、Redis、Docker Compose 的验证都能通过 SSH 在 Lighthouse 上执行。
-- Google STT、Qwen、OpenAI、Tencent COS 凭证已准备并安全保存。
+- Google STT、Qwen、Tencent COS 凭证已准备并安全保存；OpenAI 凭证为可选备用。
+- 腾讯云 Lighthouse 当前无法访问 OpenAI 官方 `api.openai.com:443` 时，第一版仍可通过 Qwen final 完成主链路。
 - 所有密钥只进入后端环境变量或服务器安全配置，不进入 Git。
 - 腾讯会议网页版标签页音频失败时，已接受系统音频作为第一版验证降级入口。

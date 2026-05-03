@@ -90,10 +90,10 @@ flowchart LR
   Google --> InterimEN["英文 interim"]
   Google --> FinalEN["英文 final"]
   InterimEN --> Qwen["Qwen Flash/Turbo 中文 interim"]
-  FinalEN --> OpenAI["OpenAI 中文 final"]
+  FinalEN --> QwenFinal["Qwen qwen3.6-max-preview 中文 final"]
   Qwen --> Push["WebSocket 推送实时 UI"]
-  OpenAI --> Push
-  OpenAI --> PG["PostgreSQL final 归档"]
+  QwenFinal --> Push
+  QwenFinal --> PG["PostgreSQL final 归档"]
   Backend --> Redis["Redis 会话/额度/限流"]
   PG --> Export["Markdown / JSON 导出"]
   Export --> COS["腾讯 COS"]
@@ -129,7 +129,7 @@ flowchart TD
   QwenCN --> UIInterim
   EnEvents --> FinalSeg{"是否产生英文 final"}
   FinalSeg -- "否" --> Continue["继续监听"]
-  FinalSeg -- "是" --> FinalCN["请求 OpenAI 中文正式翻译"]
+  FinalSeg -- "是" --> FinalCN["请求 Qwen 中文正式翻译"]
   FinalCN --> Save["保存 final 英文 + final 中文"]
   Save --> Timeline["更新时间线和归档"]
   Timeline --> Continue
@@ -147,7 +147,7 @@ sequenceDiagram
   participant Redis as Redis
   participant STT as Google STT
   participant Qwen as Qwen Interim
-  participant OpenAI as OpenAI Final
+  participant QwenFinal as Qwen Final
   participant DB as PostgreSQL
 
   FE->>API: session_start(client_id, capture_mode, source_platform)
@@ -162,8 +162,8 @@ sequenceDiagram
   Qwen-->>API: translation_interim
   API-->>FE: translation_interim
   STT-->>API: asr_final
-  API->>OpenAI: final translation with recent context
-  OpenAI-->>API: chinese_text_final
+  API->>QwenFinal: final translation with recent context
+  QwenFinal-->>API: chinese_text_final
   API->>DB: insert transcript_segment
   API-->>FE: segment_final + timeline_update
   FE->>API: session_stop
@@ -189,7 +189,8 @@ Provider 层保持轻量接口：
 - Google STT 主用，输出英文 interim/final。
 - OpenAI STT 保留备用/对比接口。
 - Qwen 负责中文 interim。
-- OpenAI 文本模型负责中文 final。
+- Qwen `qwen3.6-max-preview` 负责中文 final。
+- OpenAI 翻译保留为后续备用/对比，不作为第一版主路径。
 
 ### 数据层
 
@@ -209,7 +210,7 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 英文 interim | Google STT 实时返回的临时英文转写。 |
 | 英文 final | Google STT 返回的稳定英文转写片段。 |
 | 中文 interim | Qwen 基于英文 interim 生成的临时中文理解。 |
-| 中文 final | OpenAI 基于英文 final 和上下文生成的正式中文翻译。 |
+| 中文 final | Qwen `qwen3.6-max-preview` 基于英文 final 和上下文生成的正式中文翻译。 |
 | AudioWorklet | 浏览器 Web Audio API 的音频处理机制，用于将捕获音频转为 mono PCM16。 |
 | mono PCM16 | 单声道 16-bit PCM 音频帧，适合流式 STT 识别。 |
 | WebSocket binary frame | WebSocket 的二进制消息，用于上传 PCM16 音频帧。 |
@@ -349,14 +350,14 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 5 | WebSocket 会话编排 | 建立、维持、关闭实时会议会话。 | M1-A | FastAPI 实现。 |
 | 6 | 英文实时转写 | Google STT streaming 输出英文 interim/final。 | M1-A | 生产主路径。 |
 | 7 | 中文 interim | Qwen Flash/Turbo 生成临时中文理解。 | M1-A | 节流触发，不归档。 |
-| 8 | 中文 final | OpenAI 文本模型生成正式中文翻译。 | M1-A | 归档。 |
+| 8 | 中文 final | Qwen `qwen3.6-max-preview` 生成正式中文翻译。 | M1-A | 归档。 |
 | 9 | 四区实时 UI | 英文原文、中文翻译、当前重点句、会议时间线。 | M1-A | 第一屏即工作台。 |
 | 10 | 会后双语归档 | 按 final 片段生成完整可追溯记录。 | M2 | 原文归档型。 |
 | 11 | 搜索与复制 | 对会后记录进行检索和复制。 | M2 | 面向复盘。 |
 | 12 | Markdown / JSON 导出 | 生成导出文件并写入腾讯 COS。 | M2 | Word 后续扩展。 |
-| 13 | final 翻译重试 | OpenAI final 翻译失败后允许重试或后台补译。 | M1-B | 保证档案完整性。 |
+| 13 | final 翻译重试 | Qwen final 翻译失败后允许重试或后台补译。 | M1-B | 保证档案完整性。 |
 | 14 | 使用量与成本看板 | 展示分钟数、token、费用估算、错误和延迟。 | M1-B | M1-A 先写事件，M1-B 做轻量看板。 |
-| 15 | Provider 开关 | 管理 Google STT、OpenAI STT、Qwen、OpenAI 翻译状态。 | M1-B | 支持备用/对比。 |
+| 15 | Provider 开关 | 管理 Google STT、OpenAI STT、Qwen interim、Qwen final 状态。 | M1-B | OpenAI 翻译后续可选。 |
 | 16 | 异常与降级提示 | 捕获失败、无音频、额度不足、Provider 错误时给出可执行提示。 | M1-A | 必须面向普通用户可理解。 |
 | 17 | 当前重点句增强 | 基于 final 片段提取或人工标记当前重点句。 | M1-B | M1-A 可先展示最新 final。 |
 | 18 | 会议时间线增强 | 增加关键节点、导出节点、异常节点和筛选能力。 | M1-B | M1-A 只要求基础 final 时间线。 |
@@ -490,11 +491,11 @@ flowchart LR
 
 ### 动作
 
-后端携带当前英文 final 和最近 3 到 5 个 final segment 上下文，请求 OpenAI 文本模型生成正式中文翻译。翻译结果与英文 final 一起写入 `transcript_segment`。
+后端携带当前英文 final 和最近 3 到 5 个 final segment 上下文，请求阿里云百炼 Qwen 生成正式中文翻译；生产默认 `QWEN_FINAL_MODEL=qwen3.6-max-preview`。翻译结果与英文 final 一起写入 `transcript_segment`。
 
 ### 预期
 
-中文 final 表达自然、语义准确、适合中国职场阅读。若 OpenAI 请求失败，片段标记为 `translation_status=failed`，前端展示待重试状态，后续可由 M2 重试机制补齐。
+中文 final 表达自然、语义准确、适合中国职场阅读。若 Qwen final 请求失败，片段标记为 `translation_status=failed`，前端展示待重试状态，后续可由 M2 重试机制补齐。
 
 ## F09 四区实时 UI（M1-A）
 
@@ -561,7 +562,7 @@ interim 内容可替换，final 内容只追加。任何区域更新失败不应
 
 ### 条件
 
-当英文 final 已归档，但 OpenAI 中文 final 生成失败，且 `translation_status=failed`。
+当英文 final 已归档，但 Qwen 中文 final 生成失败，且 `translation_status=failed`。
 
 ### 动作
 
@@ -575,7 +576,7 @@ interim 内容可替换，final 内容只追加。任何区域更新失败不应
 
 ### 条件
 
-当系统持续产生会话时长、STT 分钟数、Qwen token、OpenAI token、导出、错误和延迟事件。
+当系统持续产生会话时长、STT 分钟数、Qwen interim token、Qwen final token、导出、错误和延迟事件。
 
 ### 动作
 
@@ -593,11 +594,11 @@ M1-A 写入 `usage_event` 并维护成本估算；M1-B 提供轻量看板，展�
 
 ### 动作
 
-后端通过环境变量或管理配置控制 Google STT、OpenAI STT、Qwen interim、OpenAI final 的启停状态。前端不暴露密钥，只展示用户需要知道的服务状态或降级提示。
+后端通过环境变量或管理配置控制 Google STT、OpenAI STT、Qwen interim、Qwen final 的启停状态。前端不暴露密钥，只展示用户需要知道的服务状态或降级提示。
 
 ### 预期
 
-Provider 异常时可以快速降级，不需要重新部署前端。Qwen interim 关闭时，英文转写和中文 final 仍能工作；OpenAI STT 作为备用/对比入口时，不影响 Google STT 主路径。
+Provider 异常时可以快速降级，不需要重新部署前端。Qwen interim 关闭时，英文转写和 Qwen final 仍能工作；OpenAI STT 作为备用/对比入口时，不影响 Google STT 主路径。
 
 ## F16 异常与降级提示（M1-A）
 
@@ -667,7 +668,7 @@ M1-A 是产品是否能进入小范围测试的最低闭环，必须一次性打
 - WebSocket 音频上传和会话关闭。
 - Google STT 英文 interim/final。
 - Qwen 中文 interim。
-- OpenAI 中文 final。
+- Qwen `qwen3.6-max-preview` 中文 final。
 - 四区实时 UI 基础展示。
 - final 片段写入 PostgreSQL。
 - 基础 usage_event 写入。
@@ -735,7 +736,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 单场会议最多 30 分钟。
 - 同一匿名用户最多 1 个活跃会议。
 - 全站月度预算保险丝初始阈值建议 400 RMB。
-- 记录 Google STT 分钟数、Qwen token、OpenAI token、导出次数和失败重试次数。
+- 记录 Google STT 分钟数、Qwen interim token、Qwen final token、导出次数和失败重试次数。
 
 ## 可维护性
 
@@ -791,7 +792,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 
 ### 动作
 
-部署 Docker、Docker Compose、Caddy、PostgreSQL、Redis、后端容器和前端静态产物。配置 Google STT、阿里云百炼、OpenAI、腾讯 COS、PostgreSQL、Redis 的环境变量。
+部署 Docker、Docker Compose、Caddy、PostgreSQL、Redis、后端容器和前端静态产物。配置 Google STT、阿里云百炼、腾讯 COS、PostgreSQL、Redis 的环境变量；OpenAI 环境变量仅作为后续备用/对比配置。
 
 ### 预期
 
@@ -804,7 +805,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 使用本地 mock Provider 验证 UI 和 WebSocket 协议。
 - 使用真实 Google STT 验证英文 interim/final。
 - 使用真实 Qwen 验证中文 interim。
-- 使用真实 OpenAI 验证中文 final。
+- 使用真实 Qwen `qwen3.6-max-preview` 验证中文 final。
 - 使用腾讯 COS 验证 Markdown / JSON 导出。
 
 ### 小范围测试
@@ -818,7 +819,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 前端静态产物保留上一版本。
 - 后端容器保留上一镜像 tag。
 - 数据库 migration 上线前必须备份。
-- Provider 配置支持关闭 Qwen interim 或拒绝新会议。
+- Provider 配置支持关闭 Qwen interim、Qwen final 或拒绝新会议。
 
 ## 上线检查
 
@@ -854,8 +855,8 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 
 - 用户拒绝捕获授权时，不消耗额度并显示重试入口。
 - 无音频输入时，不消耗额度并提示检查共享音频。
-- Qwen 失败时，不阻塞英文转写和中文 final。
-- OpenAI final 失败时，片段进入待重试状态。
+- Qwen interim 失败时，不阻塞英文转写和 Qwen final。
+- Qwen final 失败时，片段进入待重试状态。
 - WebSocket 断开时，会话能被清理并保留已归档内容。
 
 ## MVP 成功指标
@@ -923,8 +924,8 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 | TC-013 | Google STT final | 有效音频上传 | 英文发言并停顿 | 产生英文 final，触发中文 final 流程 | M1-A |
 | TC-014 | Qwen interim 成功 | 英文 interim 满足节流条件 | 持续英文发言 | 前端显示中文临时理解，且不写入正式档案 | M1-A |
 | TC-015 | Qwen interim 失败 | 模拟 Qwen provider 错误 | 持续英文发言 | 英文转写和中文 final 不受阻塞，记录 provider 错误 | M1-A |
-| TC-016 | OpenAI final 成功 | 英文 final 已产生 | 请求正式翻译 | 生成中文 final，写入 `transcript_segment` | M1-A |
-| TC-017 | OpenAI final 失败 | 模拟 OpenAI 错误 | 英文 final 触发翻译 | 片段标记 `translation_status=failed`，前端显示待重试 | M1-B |
+| TC-016 | Qwen final 成功 | 英文 final 已产生 | 请求正式翻译 | 生成中文 final，写入 `transcript_segment` | M1-A |
+| TC-017 | Qwen final 失败 | 模拟 Qwen final 错误 | 英文 final 触发翻译 | 片段标记 `translation_status=failed`，前端显示待重试 | M1-B |
 | TC-018 | 四区 UI 更新 | 收到 interim/final/timeline 消息 | 观察页面四区 | 英文、中文、重点句、时间线独立更新 | M1-A |
 | TC-019 | 会后归档 | 会话包含多个 final 片段 | 结束会议并打开归档页 | 按序显示英文 final、中文 final、时间戳 | M2 |
 | TC-020 | Markdown 导出 | 会话有归档片段 | 点击 Markdown 导出 | 文件生成并上传 COS，写入 `export_file` | M2 |
@@ -950,7 +951,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 | `asr_interim_received` | 收到英文 interim | text length、latency |
 | `asr_final_received` | 收到英文 final | duration、confidence |
 | `translation_interim_requested` | 请求 Qwen | token estimate、throttle reason |
-| `translation_final_completed` | OpenAI final 完成 | token usage、latency |
+| `translation_final_completed` | Qwen final 完成 | token usage、latency、model |
 | `segment_archived` | final 片段入库 | sequence、duration |
 | `export_created` | 导出完成 | format、file size |
 | `provider_error` | Provider 失败 | provider、code、recoverable |
@@ -963,8 +964,8 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 日活匿名用户数。
 - 每日会议数。
 - 每日 STT 分钟数。
-- Qwen 请求量和 token。
-- OpenAI 请求量和 token。
+- Qwen interim 请求量和 token。
+- Qwen final 请求量和 token。
 - 预估日成本和月成本。
 - 捕获失败率。
 - Provider 错误率。
@@ -1056,7 +1057,7 @@ flowchart LR
 
 - Google Cloud Speech-to-Text v2 streaming。
 - 阿里云百炼 Qwen Flash/Turbo。
-- OpenAI 文本模型。
+- 阿里云百炼 Qwen `qwen3.6-max-preview`。
 - 腾讯 COS。
 - Windows Chrome / Edge 的音频捕获能力。
 - 腾讯会议网页版对浏览器音频捕获的兼容性。
@@ -1068,7 +1069,8 @@ flowchart LR
 | 腾讯会议标签页音频无法稳定捕获 | 影响重点平台体验 | 提供系统音频降级，并单独记录兼容性指标。 |
 | API 成本超预算 | 影响测试持续性 | 每日额度、单场限制、预算保险丝、成本看板。 |
 | Qwen interim 质量不稳定 | 影响实时理解 | 明确标记临时状态，失败不阻塞主链路。 |
-| OpenAI final 延迟较高 | 影响正式中文出现速度 | UI 先展示英文 final 和中文生成中，完成后补齐。 |
+| Qwen final 延迟较高 | 影响正式中文出现速度 | UI 先展示英文 final 和中文生成中，完成后补齐。 |
+| Lighthouse 无法访问 OpenAI 官方端点 | 影响后续 OpenAI 翻译/对比能力 | 第一版不依赖 OpenAI 翻译；仅在网络可达或提供中转后启用可选对比。 |
 | WebSocket 断开 | 可能中断会议 | 清理资源，保留已归档内容，显示结束原因。 |
 | 无登录额度被绕过 | 成本风险 | 第一版防普通滥用，规模扩大后加邀请码或登录。 |
 
