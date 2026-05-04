@@ -27,9 +27,9 @@
 
 ## 3. 第一版范围与优先级
 
-- M1-A 必须上线闭环：匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、final 归档。
+- M1-A 必须上线闭环：匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、基础归档页。
 - M1-B 上线后增强：final 重试、轻量看板、Provider 开关、当前重点句增强、会议时间线增强。
-- M2 会后归档与导出：完整双语记录、搜索、复制、Markdown / JSON 导出、腾讯 COS 存储。
+- M2 会后归档增强与导出：搜索、复制、Markdown / JSON 导出、腾讯 COS 存储。
 - M3 成本与运营：成本估算、漏斗分析、兼容性报告、OpenAI STT 对比入口。
 
 功能清单 F01-F18：
@@ -45,7 +45,7 @@
 | F07 | 中文 interim | M1-A |
 | F08 | 中文 final | M1-A |
 | F09 | 四区实时 UI | M1-A |
-| F10 | 会后双语归档 | M2 |
+| F10 | 会后基础双语归档 | M1-A |
 | F11 | 搜索与复制 | M2 |
 | F12 | Markdown / JSON 导出 | M2 |
 | F13 | final 翻译重试 | M1-B |
@@ -71,7 +71,7 @@
 
 - 第一版重点支持 Windows Chrome / Edge。
 - 第一版重点会议平台：Google Meet、Microsoft Teams Web、Zoom Web、腾讯会议网页版。
-- 音频主路径：`getDisplayMedia` 捕获会议标签页或系统音频，Web Audio API / `AudioWorklet` 转 mono PCM16，通过 WebSocket binary frame 上传。
+- 音频主路径：`getDisplayMedia` 捕获会议标签页或系统音频，Web Audio API / `AudioWorklet` 转 16 kHz mono PCM16，通过 WebSocket binary frame 上传。
 - 第一版不把 MediaRecorder + WebM + 服务端 FFmpeg 转码作为主路径，避免增加 Lighthouse 单机 CPU、延迟和故障点。
 - 腾讯会议网页版是重点平台；如果标签页音频失败，MVP 允许通过整个屏幕/系统音频完成验证，但必须记录为 `system_audio_only` 或 `system_audio_fallback`。
 - 没有检测到有效音频前，不应正式消耗会议额度。
@@ -103,12 +103,13 @@
 - Redis 7 保存活跃会话、匿名额度、限流、预算保险丝和短期 WebSocket 协调状态。
 - 腾讯 COS 保存 Markdown / JSON 导出文件，后续可扩展 Word 导出。
 - 第一版默认不保存原始会议音频，只保存 final 文本档案和导出文件。
+- 会议归档和 COS 导出默认保留 30 天；COS 对象保持私有，由后端生成短期签名 URL。
 
 ## 7. AI Provider 策略
 
 - 英文实时转写主路径：Google Cloud Speech-to-Text v2 streaming。
 - 中文 interim 主路径：阿里云百炼 Qwen Flash/Turbo，使用 OpenAI-compatible API。
-- 中文 final 主路径：阿里云百炼 Qwen `qwen3.6-max-preview`。
+- 中文 final 主路径：阿里云百炼 Qwen `qwen3.6-max-preview`，默认携带最近 5 个 final 片段作为上下文。
 - 环境变量必须包含并区分：
   - `QWEN_INTERIM_MODEL`
   - `QWEN_FINAL_MODEL=qwen3.6-max-preview`
@@ -124,6 +125,19 @@
 - `.python-version` 用于固定后端项目解释器为 Python 3.12，可提交；`.venv` 不提交。
 - 所有后端命令使用 `uv run ...`，不要全局 `pip install` 项目依赖或开发工具。
 - Docker Compose、PostgreSQL、Redis、Alembic migration、数据库集成测试、Redis 集成测试、生产部署演练都在腾讯云 Lighthouse 或后续 CI 环境执行。
+- 真实 Google STT、Qwen、COS smoke test 在 Lighthouse 云端后端容器执行；Windows 本地只跑 mock Provider 和不依赖真实密钥的测试。
+- GitHub Actions 第一版只做检查，不自动部署到 Lighthouse。
+
+已锁定实施决策：
+
+- 工程目录固定为 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`。
+- M1-A 包含基础归档页，用户通过 `session_id + archive_token` 查看已生成 final 片段；搜索、复制、导出放到 M2。
+- 服务端只保存 `archive_token` hash，不保存明文 token。
+- WebSocket 必须包含 `session_started` 响应，返回 `session_id`、`archive_token`、`archive_url` 和剩余额度。
+- 浏览器上传音频固定为 16 kHz mono PCM16。
+- 数据默认保留 30 天。
+- COS 导出使用短期签名 URL。
+- CI 第一版只检查，不自动部署。
 
 云服务器当前已知信息：
 
@@ -164,6 +178,7 @@
 
 核心 WebSocket 响应消息：
 
+- `session_started`
 - `quota_update`
 - `audio_status`
 - `asr_interim`

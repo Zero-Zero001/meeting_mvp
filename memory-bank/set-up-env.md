@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-本文用于指导你为 Codex 全程执行 `implementation-plan.md` 准备必要环境和工具。目标环境与 `tech-stack.md` 保持一致：Windows 本地只准备轻量开发工具和浏览器测试工具；腾讯云 Lighthouse Ubuntu 22.04 LTS 64 位 x86 负责 Docker、Docker Compose、PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物部署。
+本文用于指导你为 Codex 全程执行 `memory-bank/implementation-plan.md` 准备必要环境和工具。目标环境与 `memory-bank/tech-stack.md` 保持一致：Windows 本地只准备轻量开发工具和浏览器测试工具；腾讯云 Lighthouse Ubuntu 22.04 LTS 64 位 x86 负责 Docker、Docker Compose、PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物部署。
 
 ## 0. 准备信息清单
 
@@ -25,7 +25,7 @@
 
 ## 0.1 Codex 执行前置条件
 
-在让 Codex 执行 `implementation-plan.md` 前，需要确认以下条件：
+在让 Codex 执行 `memory-bank/implementation-plan.md` 前，需要确认以下条件：
 
 | 前置条件 | 准备内容 | 验证方式 |
 |---|---|---|
@@ -344,7 +344,7 @@ npx playwright --version
 2. 选择离 Lighthouse 较近的地域。
 3. 创建用于后端访问 COS 的 SecretId 和 SecretKey。
 4. 配置 Bucket 访问策略，避免公开写权限。
-5. 决定导出文件访问方式：后端代理下载或短期签名 URL。
+5. 导出文件访问方式固定为短期签名 URL：COS 对象保持私有，后端按需生成临时下载地址。
 
 环境变量建议：
 
@@ -607,6 +607,8 @@ nslookup 你的工具域名
 | `MAX_ACTIVE_SESSIONS_PER_CLIENT` | 同一匿名用户并发上限，默认 1。 |
 | `MONTHLY_BUDGET_RMB` | 月度预算参考值，默认 500。 |
 | `BUDGET_FUSE_RMB` | 预算保险丝阈值，建议 400。 |
+| `ARCHIVE_RETENTION_DAYS` | 会议归档和 COS 导出默认保留天数，MVP 固定为 30。 |
+| `COS_SIGNED_URL_TTL_SECONDS` | COS 导出短期签名 URL 有效期，建议默认 3600。 |
 
 ### 6.4 Provider 和 COS
 
@@ -619,14 +621,18 @@ nslookup 你的工具域名
 | `QWEN_API_KEY` | 阿里云百炼 API Key。 |
 | `QWEN_BASE_URL` | Qwen OpenAI-compatible endpoint。 |
 | `QWEN_INTERIM_MODEL` | 中文 interim 模型。 |
+| `QWEN_INTERIM_ENABLED` | 是否启用中文 interim。 |
 | `QWEN_FINAL_MODEL` | 中文 final 模型，第一版默认 `qwen3.6-max-preview`。 |
 | `OPENAI_API_KEY` | OpenAI API Key。 |
 | `OPENAI_BASE_URL` | OpenAI API base URL。 |
 | `OPENAI_FINAL_MODEL` | 可选中文 final 对比模型，第一版生产主路径不依赖。 |
+| `OPENAI_STT_MODEL` | 备用/对比 STT 模型。 |
+| `OPENAI_STT_ENABLED` | 是否启用 OpenAI STT 实验入口。 |
 | `TENCENT_COS_SECRET_ID` | COS SecretId。 |
 | `TENCENT_COS_SECRET_KEY` | COS SecretKey。 |
 | `TENCENT_COS_REGION` | COS 地域。 |
 | `TENCENT_COS_BUCKET` | COS Bucket 名称。 |
+| `TENCENT_COS_EXPORT_PREFIX` | 导出文件对象 key 前缀。 |
 
 验证测试：后端启动时打印已加载配置项名称和脱敏状态，不打印任何密钥值。
 
@@ -705,11 +711,11 @@ docker compose exec backend uv run pytest -m integration
 | WSS | 前端连接 `/ws/*` | WebSocket 连接成功，不被浏览器安全策略阻止。 |
 | PostgreSQL | 后端健康检查或 migration | 数据库可连接，migration 已执行。 |
 | Redis | 后端健康检查 | Redis 可连接，可写入 active session。 |
-| Google STT | Provider smoke test | 英文 interim 和 final 可产生。 |
-| Qwen interim | Provider smoke test | 中文 interim 可返回。 |
-| Qwen final | Provider smoke test | 使用 `qwen3.6-max-preview` 的中文 final 可返回。 |
-| OpenAI 可选 | Provider smoke test | 网络可达时中文 final 对比可返回；网络不可达时不影响 M1-A。 |
-| COS | 导出 smoke test | Markdown / JSON 文件可上传。 |
+| Google STT | 云端后端容器 Provider smoke test | 英文 interim 和 final 可产生。 |
+| Qwen interim | 云端后端容器 Provider smoke test | 中文 interim 可返回。 |
+| Qwen final | 云端后端容器 Provider smoke test | 使用 `qwen3.6-max-preview` 的中文 final 可返回。 |
+| OpenAI 可选 | 云端后端容器 Provider smoke test | 网络可达时中文 final 对比可返回；网络不可达时不影响 M1-A。 |
+| COS | 云端后端容器导出 smoke test | Markdown / JSON 文件可上传为私有对象，并可生成短期签名 URL。 |
 | 预算保险丝 | 后端配置检查 | 阈值为 400 RMB，触发后拒绝新会话。 |
 
 ## 9. 常见故障排查
@@ -774,4 +780,6 @@ docker compose exec backend uv run pytest -m integration
 - Google STT、Qwen、Tencent COS 凭证已准备并安全保存；OpenAI 凭证为可选备用。
 - 腾讯云 Lighthouse 当前无法访问 OpenAI 官方 `api.openai.com:443` 时，第一版仍可通过 Qwen final 完成主链路。
 - 所有密钥只进入后端环境变量或服务器安全配置，不进入 Git。
+- 会议归档和 COS 导出默认保留 30 天；COS 导出通过短期签名 URL 下载，不使用公开只读对象。
+- 真实 Google STT、Qwen 和 COS smoke test 在 Lighthouse 云端后端容器执行，本地只跑 mock Provider 和不依赖真实密钥的测试。
 - 腾讯会议网页版标签页音频失败时，已接受系统音频作为第一版验证降级入口。

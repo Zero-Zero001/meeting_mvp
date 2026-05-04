@@ -23,6 +23,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 - OpenAI 翻译不作为第一版主路径，仅在 Lighthouse 网络可达或后续需要质量对比时作为可选扩展。
 - 实时 UI 至少包含四块：英文原文区、中文翻译区、当前重点句区、会议时间线区。
 - 会后纪要偏“会议原文归档型”，重点是完整可追溯，而不是第一版就做复杂总结。
+- M1-A 必须包含基础归档页；用户通过 `session_id + archive_token` 查看已生成的 final 片段，搜索、复制和导出放到 M2。
 - PostgreSQL 存结构化记录，Redis 做实时会话/额度/限流，腾讯 COS 存导出文件。
 - 基础埋点、使用量统计和成本估算。
 
@@ -90,7 +91,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 ```text
 浏览器会议音频
 -> 工具页捕获音频
--> AudioWorklet 生成 mono PCM16
+-> AudioWorklet 生成 16 kHz mono PCM16
 -> WebSocket 上传音频片段
 -> FastAPI 会话编排
 -> Google STT streaming
@@ -122,7 +123,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 
 第一版主要浏览器目标：Windows Chrome 和 Edge。
 
-浏览器侧音频前处理使用 `getDisplayMedia` 获取会议标签页或系统音频，再通过 Web Audio API / `AudioWorklet` 转成 Google STT 友好的 mono PCM16 音频帧，通过 WebSocket binary frame 上传。第一版不把 FFmpeg/WebM 服务端转码作为主路径，避免在单台 Lighthouse 服务器上引入额外 CPU、延迟和故障点。
+浏览器侧音频前处理使用 `getDisplayMedia` 获取会议标签页或系统音频，再通过 Web Audio API / `AudioWorklet` 转成 Google STT 友好的 16 kHz、mono、PCM16 音频帧，通过 WebSocket binary frame 上传。第一版不把 FFmpeg/WebM 服务端转码作为主路径，避免在单台 Lighthouse 服务器上引入额外 CPU、延迟和故障点。
 
 ## 6. Provider 设计
 
@@ -160,7 +161,7 @@ STT provider 需要支持：
 - 触发条件：英文 final segment。
 - 目标：语义准确、表达自然、适合中国职场用户快速阅读。
 - Prompt 要求：保留含义、决策、行动项、语气、人名、数字和业务上下文。
-- 上下文：默认带最近 3 到 5 个 final segment。
+- 上下文：默认带最近 5 个 final segment。
 - 归档规则：与英文 final 一起进入正式会议档案。
 - OpenAI 翻译：保留为后续备用/质量对比，不阻塞第一版 MVP。
 
@@ -175,6 +176,7 @@ STT provider 需要支持：
 
 后端推给浏览器：
 
+- `session_started`
 - `quota_update`
 - `audio_status`
 - `asr_interim`
@@ -191,6 +193,7 @@ STT provider 需要支持：
 - interim 消息是可替换状态。
 - final 消息是追加状态。
 - 归档页只基于 final 数据重建。
+- `session_started` 必须返回 `session_id`、`archive_token`、`archive_url` 和今日剩余额度；服务端只保存 `archive_token` 的 hash。
 
 ## 8. 数据模型
 
@@ -213,8 +216,10 @@ STT provider 需要支持：
 - `started_at`
 - `ended_at`
 - `duration_seconds`
-- `status`
+- `status`，包含 `pending_audio`、`active`、`ended`、`quota_stopped`、`error`
 - `quota_seconds_consumed`
+- `archive_token_hash`
+- `retention_expires_at`
 
 ### `transcript_segment`
 
@@ -245,8 +250,10 @@ STT provider 需要支持：
 - `id`
 - `session_id`
 - `format`
-- `cos_url`
+- `cos_object_key`
+- `cos_url`，用于短期签名 URL 或临时访问地址
 - `created_at`
+- `retention_expires_at`
 
 ## 9. 配额、成本和防滥用
 
@@ -304,16 +311,15 @@ STT provider 需要支持：
 - Qwen `qwen3.6-max-preview` 中文 final 链路。
 - 四区实时阅读 UI。
 - PostgreSQL 保存 final 片段。
+- 基础归档页按顺序展示 final 片段，访问方式为 `session_id + archive_token`。
 
-### M2：会后归档与导出
+### M2：会后归档增强与导出
 
-- 会后记录页。
-- 双语逐段列表。
 - 搜索。
 - 复制。
 - Markdown 导出。
 - JSON 导出。
-- 腾讯 COS 存导出文件。
+- 腾讯 COS 存私有导出文件，后端返回短期签名 URL。
 - final 翻译失败后的重试机制。
 
 ### M3：成本与运营
@@ -334,10 +340,10 @@ STT provider 需要支持：
 - 中文 interim 由 Qwen 生成，并以受控频率更新。
 - 中文 final 在英文 final 后生成，表达自然、符合中国职场阅读习惯。
 - 四个 UI 区域能独立更新，不互相阻塞。
-- 正式档案包含英文 final、中文 final、时间戳、序号和时间线。
+- 基础归档页能通过 `session_id + archive_token` 查看英文 final、中文 final、时间戳、序号和时间线。
 - 未登录用户每天不能超过 40 分钟，单场不能超过 30 分钟。
 - 全站月度预算达到阈值后，系统能拒绝新会话。
-- 能基于归档 final 片段生成 Markdown 和 JSON 导出文件。
+- 能基于归档 final 片段生成 Markdown 和 JSON 导出文件，并通过腾讯 COS 短期签名 URL 下载。
 
 ## 13. 关键假设
 
@@ -349,4 +355,5 @@ STT provider 需要支持：
 - 腾讯云 Lighthouse 当前无法稳定访问 OpenAI 官方 `api.openai.com:443`，因此 OpenAI 不作为第一版生产主路径。
 - 第一版不需要登录。
 - 第一版默认不存原始会议音频，只存正式文本档案和导出文件。
+- 会议归档和 COS 导出默认保留 30 天。
 - `ScienceIO/whisper_streaming_web` 作为 WebSocket 和音频流处理参考，不作为最终项目结构直接照搬。

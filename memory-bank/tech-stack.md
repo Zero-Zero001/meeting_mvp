@@ -51,7 +51,7 @@
 -> getDisplayMedia
 -> AudioContext
 -> AudioWorklet
--> mono PCM16 frames
+-> 16 kHz mono PCM16 frames
 -> WebSocket binary upload
 -> FastAPI
 -> Google STT streaming
@@ -60,7 +60,7 @@
 理由：
 
 - Google STT streaming 更适合接收稳定的 PCM 音频帧。
-- 浏览器侧转换成 mono PCM16 后，后端不需要 FFmpeg 做 WebM/Opus 转码。
+- 浏览器侧固定转换成 16 kHz mono PCM16 后，后端不需要 FFmpeg 做 WebM/Opus 转码，Google STT 配置也更稳定。
 - 减少 Lighthouse 单机 CPU 压力、降低延迟，并减少服务端故障点。
 
 第一版不把 MediaRecorder + WebM + 服务端 FFmpeg 作为主路径。它可以保留为后续兼容性 fallback 研究项。
@@ -154,7 +154,7 @@
 用途：
 
 - 对英文 final segment 做高质量中文正式翻译。
-- 带最近 3 到 5 个 final segment 上下文。
+- 带最近 5 个 final segment 上下文。
 - 结果进入正式会议档案。
 - 环境变量使用 `QWEN_FINAL_MODEL=qwen3.6-max-preview`，与 `QWEN_INTERIM_MODEL` 分离。
 
@@ -180,6 +180,7 @@ PostgreSQL 存：
 - usage event
 - export file
 - provider usage and cost estimate
+- archive token hash and 30-day retention expiry
 
 Redis 存：
 
@@ -195,7 +196,7 @@ Tencent COS 存：
 - JSON export
 - later Word export
 
-第一版默认不存原始会议音频，只存 final 文本档案和导出文件。
+第一版默认不存原始会议音频，只存 final 文本档案和导出文件。会议归档和 COS 导出默认保留 30 天；COS 对象保持私有，下载由后端生成短期签名 URL。
 
 ## 7. Deployment
 
@@ -244,6 +245,8 @@ FastAPI
 - npm scripts
 - uv scripts
 - Docker Compose config check
+
+第一版 GitHub Actions 只做检查，不自动部署到 Lighthouse。生产部署由 Codex 或人工通过 SSH 执行。
 
 前端检查：
 

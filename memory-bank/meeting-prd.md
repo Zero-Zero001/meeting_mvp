@@ -81,7 +81,7 @@ Meeting MVP 是一个免登录网页工具。用户打开工具网页，授权�
 flowchart LR
   User["用户"] --> Browser["Vite + React 工具页"]
   Browser --> Capture["getDisplayMedia 捕获会议标签页或系统音频"]
-  Capture --> Worklet["AudioWorklet 转 mono PCM16"]
+  Capture --> Worklet["AudioWorklet 转 16 kHz mono PCM16"]
   Worklet --> WS["WebSocket binary audio frames"]
   WS --> Backend["FastAPI 会话编排"]
   Backend --> Quota{"额度与预算是否允许"}
@@ -211,22 +211,25 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 英文 final | Google STT 返回的稳定英文转写片段。 |
 | 中文 interim | Qwen 基于英文 interim 生成的临时中文理解。 |
 | 中文 final | Qwen `qwen3.6-max-preview` 基于英文 final 和上下文生成的正式中文翻译。 |
-| AudioWorklet | 浏览器 Web Audio API 的音频处理机制，用于将捕获音频转为 mono PCM16。 |
-| mono PCM16 | 单声道 16-bit PCM 音频帧，适合流式 STT 识别。 |
+| AudioWorklet | 浏览器 Web Audio API 的音频处理机制，用于将捕获音频转为 16 kHz mono PCM16。 |
+| 16 kHz mono PCM16 | 16 kHz 采样率、单声道、16-bit PCM 音频帧，是第一版浏览器上传给后端和 Google STT 的固定格式。 |
 | WebSocket binary frame | WebSocket 的二进制消息，用于上传 PCM16 音频帧。 |
 | Provider | 外部能力适配器，例如 Google STT、Qwen、OpenAI、腾讯 COS。 |
 | 预算保险丝 | 当全站月度预估成本超过阈值时，系统拒绝新会话以控制成本。 |
 | 原文归档型纪要 | 以逐段英文原文和中文翻译对应关系为核心的会后记录，而不是仅保留摘要。 |
 | 会议时间线 | 按时间顺序展示 final 片段、重点句和导出节点的记录线。 |
+| `archive_token` | 会后归档访问令牌。免登录用户访问归档页时必须携带 `session_id + archive_token`，服务端只保存 token hash。 |
+| 短期签名 URL | 后端为私有 COS 对象生成的临时下载地址，用于导出文件下载，过期后需要重新生成。 |
 
 ## WebSocket 消息名解释
 
 | 消息名 | 方向 | 定义 |
 |---|---|---|
 | `session_start` | 前端到后端 | 请求创建实时会议会话，携带匿名身份、捕获模式、会议平台和音频格式。 |
-| `audio_chunk` | 前端到后端 | 上传浏览器处理后的 mono PCM16 音频帧，使用 WebSocket binary frame 承载。 |
+| `audio_chunk` | 前端到后端 | 上传浏览器处理后的 16 kHz mono PCM16 音频帧，使用 WebSocket binary frame 承载。 |
 | `heartbeat` | 前端到后端 | 连接保活与断连探测消息，用于避免异常会话长期占用额度和并发。 |
 | `session_stop` | 前端到后端 | 用户主动结束会议时发送，触发 Provider 关闭、额度结算和会后归档收尾。 |
+| `session_started` | 后端到前端 | 会话创建成功后返回 `session_id`、`archive_token`、`archive_url` 和剩余额度；会话先进入 `pending_audio`，检测到有效音频后开始计费。 |
 | `quota_update` | 后端到前端 | 推送匿名用户当前额度状态，包括今日剩余额度和额度变化。 |
 | `audio_status` | 后端到前端 | 推送音频检测状态，例如是否检测到有效声音和当前音量电平。 |
 | `asr_interim` | 后端到前端 | 推送英文临时转写结果，内容可被后续更稳定结果替换。 |
@@ -262,11 +265,13 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | `title` | string | 否 | 会议标题，默认可由时间和平台生成，用户后续可编辑。 |
 | `source_platform` | enum/string | 是 | 会议来源平台，取值建议：`google_meet`、`teams_web`、`zoom_web`、`tencent_meeting_web`、`unknown`。 |
 | `capture_mode` | enum/string | 是 | 捕获模式，取值：`tab_audio`、`system_audio`。 |
-| `started_at` | timestamptz | 是 | 会话正式开始时间，应在检测到有效音频并创建后端会话后记录。 |
+| `started_at` | timestamptz | 否 | 会话正式开始时间；会话可先处于 `pending_audio`，检测到有效音频后再写入。 |
 | `ended_at` | timestamptz | 否 | 会话结束时间。 |
 | `duration_seconds` | int | 是 | 会话有效时长，按实际消耗额度的音频时长计算。 |
-| `status` | enum/string | 是 | 状态，建议：`active`、`ended`、`quota_stopped`、`error`。 |
+| `status` | enum/string | 是 | 状态，建议：`pending_audio`、`active`、`ended`、`quota_stopped`、`error`。 |
 | `quota_seconds_consumed` | int | 是 | 本场会议实际消耗的免费额度秒数。 |
+| `archive_token_hash` | string | 是 | 会后基础归档访问令牌的 hash；不保存明文 `archive_token`。 |
+| `retention_expires_at` | timestamptz | 是 | 会议归档默认过期时间，MVP 默认创建后 30 天。 |
 
 ### `transcript_segment`
 
@@ -303,8 +308,10 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | `id` | string/uuid | 是 | 导出文件唯一标识。 |
 | `session_id` | string/uuid | 是 | 所属会议会话。 |
 | `format` | enum/string | 是 | 导出格式，第一版支持 `markdown`、`json`。 |
-| `cos_url` | string | 是 | 腾讯 COS 文件地址或对象 key。 |
+| `cos_object_key` | string | 是 | 腾讯 COS 私有对象 key。 |
+| `cos_url` | string | 否 | 短期签名 URL 或后端生成的临时访问地址，不应作为永久公开地址保存。 |
 | `created_at` | timestamptz | 是 | 导出文件生成时间。 |
+| `retention_expires_at` | timestamptz | 是 | 导出文件默认过期时间，MVP 默认创建后 30 天。 |
 
 ## WebSocket 请求字段
 
@@ -313,8 +320,8 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | `session_start` | `client_id` | string | 是 | 匿名用户标识。 |
 | `session_start` | `capture_mode` | string | 是 | `tab_audio` 或 `system_audio`。 |
 | `session_start` | `source_platform` | string | 是 | 用户选择或自动推断的平台。 |
-| `session_start` | `audio_format` | object | 是 | 音频格式，至少包含 sample rate、channels、encoding。 |
-| `audio_chunk` | binary body | bytes | 是 | mono PCM16 音频帧。 |
+| `session_start` | `audio_format` | object | 是 | 音频格式，第一版固定为 sample rate 16000、channels 1、encoding `pcm16`。 |
+| `audio_chunk` | binary body | bytes | 是 | 16 kHz mono PCM16 音频帧。 |
 | `heartbeat` | `session_id` | string | 是 | 当前会话 ID，用于保持连接和探测断连。 |
 | `session_stop` | `session_id` | string | 是 | 当前会话 ID。 |
 
@@ -322,6 +329,10 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 
 | 消息 | 字段 | 类型 | 必填 | 定义 |
 |---|---|---:|---:|---|
+| `session_started` | `session_id` | string | 是 | 已创建的会议会话 ID。 |
+| `session_started` | `archive_token` | string | 是 | 会后基础归档访问令牌，只在创建会话时返回前端。 |
+| `session_started` | `archive_url` | string | 是 | 前端可打开的基础归档页地址，必须包含 `session_id` 并携带 token。 |
+| `session_started` | `remaining_seconds_today` | int | 是 | 当前匿名用户今日剩余额度秒数。 |
 | `quota_update` | `remaining_seconds_today` | int | 是 | 今日剩余额度秒数。 |
 | `audio_status` | `has_audio` | bool | 是 | 是否检测到有效音频输入。 |
 | `audio_status` | `level` | number | 否 | 音量电平，用于前端显示。 |
@@ -346,13 +357,13 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 1 | 匿名用户初始化 | 首次访问生成 `client_id`，建立匿名额度身份。 | M1-A | 不做登录。 |
 | 2 | 额度与预算校验 | 检查每日 40 分钟、单场 30 分钟、并发 1 场和全站预算保险丝。 | M1-A | Redis 承担实时状态。 |
 | 3 | 会议音频捕获 | 通过 `getDisplayMedia` 捕获会议标签页音频，失败时支持系统音频。 | M1-A | 重点验证腾讯会议网页版。 |
-| 4 | 音频前处理 | 使用 AudioWorklet 转 mono PCM16 并通过 WebSocket binary frame 上传。 | M1-A | 不以 FFmpeg 为主路径。 |
+| 4 | 音频前处理 | 使用 AudioWorklet 转 16 kHz mono PCM16 并通过 WebSocket binary frame 上传。 | M1-A | 不以 FFmpeg 为主路径。 |
 | 5 | WebSocket 会话编排 | 建立、维持、关闭实时会议会话。 | M1-A | FastAPI 实现。 |
 | 6 | 英文实时转写 | Google STT streaming 输出英文 interim/final。 | M1-A | 生产主路径。 |
 | 7 | 中文 interim | Qwen Flash/Turbo 生成临时中文理解。 | M1-A | 节流触发，不归档。 |
 | 8 | 中文 final | Qwen `qwen3.6-max-preview` 生成正式中文翻译。 | M1-A | 归档。 |
 | 9 | 四区实时 UI | 英文原文、中文翻译、当前重点句、会议时间线。 | M1-A | 第一屏即工作台。 |
-| 10 | 会后双语归档 | 按 final 片段生成完整可追溯记录。 | M2 | 原文归档型。 |
+| 10 | 会后基础双语归档 | 按 final 片段生成完整可追溯记录，并提供基础归档页。 | M1-A | 搜索、复制、导出仍在 M2。 |
 | 11 | 搜索与复制 | 对会后记录进行检索和复制。 | M2 | 面向复盘。 |
 | 12 | Markdown / JSON 导出 | 生成导出文件并写入腾讯 COS。 | M2 | Word 后续扩展。 |
 | 13 | final 翻译重试 | Qwen final 翻译失败后允许重试或后台补译。 | M1-B | 保证档案完整性。 |
@@ -435,7 +446,7 @@ flowchart LR
 
 ### 动作
 
-前端通过 AudioContext 和 AudioWorklet 将音频转换为 mono PCM16 音频帧，并通过 WebSocket binary frame 持续上传。
+前端通过 AudioContext 和 AudioWorklet 将音频转换为 16 kHz mono PCM16 音频帧，并通过 WebSocket binary frame 持续上传。
 
 ### 预期
 
@@ -491,7 +502,7 @@ flowchart LR
 
 ### 动作
 
-后端携带当前英文 final 和最近 3 到 5 个 final segment 上下文，请求阿里云百炼 Qwen 生成正式中文翻译；生产默认 `QWEN_FINAL_MODEL=qwen3.6-max-preview`。翻译结果与英文 final 一起写入 `transcript_segment`。
+后端携带当前英文 final 和最近 5 个 final segment 上下文，请求阿里云百炼 Qwen 生成正式中文翻译；生产默认 `QWEN_FINAL_MODEL=qwen3.6-max-preview`。翻译结果与英文 final 一起写入 `transcript_segment`。
 
 ### 预期
 
@@ -516,19 +527,19 @@ flowchart LR
 
 interim 内容可替换，final 内容只追加。任何区域更新失败不应阻塞其他区域。正式档案只基于 final 片段重建。
 
-## F10 会后双语归档（M2）
+## F10 会后基础双语归档（M1-A）
 
 ### 条件
 
-当用户主动结束会议、额度到达上限、Provider 错误导致会话关闭，或 WebSocket 断开并超过恢复窗口。
+当用户主动结束会议、额度到达上限、Provider 错误导致会话关闭，或 WebSocket 断开并超过恢复窗口；会话已至少产生一个 final 片段。
 
 ### 动作
 
-后端关闭 Provider session，结算额度，更新 `meeting_session` 状态，保留已完成的 final 片段，并按 `sequence`、`start_ms`、`end_ms` 重建双语归档视图。
+后端关闭 Provider session，结算额度，更新 `meeting_session` 状态，保留已完成的 final 片段。前端通过 `session_id + archive_token` 打开基础归档页；后端校验 token hash 后，按 `sequence`、`start_ms`、`end_ms` 返回双语 final 片段。
 
 ### 预期
 
-用户能进入会后记录页查看已生成的双语 final 片段。若会议异常结束，记录页必须保留已归档内容，并标明结束原因。
+用户能进入会后基础归档页查看已生成的双语 final 片段。若会议异常结束，记录页必须保留已归档内容，并标明结束原因；token 缺失或错误时不得返回会议内容。
 
 ## F11 搜索与复制（M2）
 
@@ -552,11 +563,11 @@ interim 内容可替换，final 内容只追加。任何区域更新失败不应
 
 ### 动作
 
-后端按时间顺序读取 final 片段，生成 Markdown 或 JSON 文件，上传腾讯 COS，并写入 `export_file`。
+后端按时间顺序读取 final 片段，生成 Markdown 或 JSON 文件，上传腾讯 COS 私有对象，并写入 `export_file`。
 
 ### 预期
 
-用户能获得可下载导出文件。若 COS 上传失败，前端提示重试，后端记录 `export_failed` 事件。
+用户能获得短期签名 URL 下载导出文件。若 COS 上传失败，前端提示重试，后端记录 `export_failed` 事件。
 
 ## F13 final 翻译重试（M1-B）
 
@@ -664,13 +675,14 @@ M1-A 是产品是否能进入小范围测试的最低闭环，必须一次性打
 
 - 匿名 `client_id` 和每日额度。
 - 标签页音频捕获与系统音频降级。
-- AudioWorklet 生成 mono PCM16。
+- AudioWorklet 生成 16 kHz mono PCM16。
 - WebSocket 音频上传和会话关闭。
 - Google STT 英文 interim/final。
 - Qwen 中文 interim。
 - Qwen `qwen3.6-max-preview` 中文 final。
 - 四区实时 UI 基础展示。
 - final 片段写入 PostgreSQL。
+- 通过 `session_id + archive_token` 访问基础归档页。
 - 基础 usage_event 写入。
 - 捕获失败、无音频、额度不足、Provider 错误的基础提示。
 
@@ -683,7 +695,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - final 翻译失败后的重试和补译。
 - 轻量使用量与成本看板。
 - Provider 开关和 OpenAI STT 对比入口。
-- 导出体验增强。
+- 搜索、复制和导出体验增强。
 - 兼容性报告和漏斗看板。
 
 ## 第一版范围外
@@ -704,7 +716,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 
 ## 数据边界
 
-第一版默认不保存原始会议音频，不保存明文 IP，不把中文 interim 作为正式档案。正式归档仅保存英文 final、中文 final、时间戳、序号、状态和导出文件信息。
+第一版默认不保存原始会议音频，不保存明文 IP，不把中文 interim 作为正式档案。正式归档仅保存英文 final、中文 final、时间戳、序号、状态和导出文件信息。会议归档和 COS 导出默认保留 30 天，到期清理。
 
 # 非功能性要求
 
@@ -728,7 +740,8 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - API keys 只能通过后端环境变量注入，前端不得暴露 Provider 密钥。
 - 不保存原始会议音频。
 - IP 和 User-Agent 只保存 hash。
-- 导出文件地址应具备可控访问策略。
+- 基础归档页必须使用 `session_id + archive_token` 访问，服务端只保存 token hash。
+- 导出文件使用私有 COS 对象和短期签名 URL，不使用公开只读对象。
 
 ## 成本控制
 
@@ -803,10 +816,10 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 ### 内部验证
 
 - 使用本地 mock Provider 验证 UI 和 WebSocket 协议。
-- 使用真实 Google STT 验证英文 interim/final。
-- 使用真实 Qwen 验证中文 interim。
-- 使用真实 Qwen `qwen3.6-max-preview` 验证中文 final。
-- 使用腾讯 COS 验证 Markdown / JSON 导出。
+- 通过 SSH 在 Lighthouse 云端后端容器使用真实 Google STT 验证英文 interim/final。
+- 通过 SSH 在 Lighthouse 云端后端容器使用真实 Qwen 验证中文 interim。
+- 通过 SSH 在 Lighthouse 云端后端容器使用真实 Qwen `qwen3.6-max-preview` 验证中文 final。
+- 通过 SSH 在 Lighthouse 云端后端容器使用腾讯 COS 验证 Markdown / JSON 导出和短期签名 URL。
 
 ### 小范围测试
 
@@ -820,6 +833,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 后端容器保留上一镜像 tag。
 - 数据库 migration 上线前必须备份。
 - Provider 配置支持关闭 Qwen interim、Qwen final 或拒绝新会议。
+- GitHub Actions 第一版只做检查，不自动部署；生产部署由 Codex 或人工通过 SSH 执行。
 
 ## 上线检查
 
@@ -841,8 +855,8 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 英文 final 产生后能触发中文 final 并归档。
 - 中文 interim 能以受控频率出现，并标记为临时理解。
 - 四区 UI 能独立更新。
-- 会后归档能按时间顺序显示双语 final 片段。
-- Markdown / JSON 导出成功写入腾讯 COS。
+- 会后基础归档页能通过 `session_id + archive_token` 按时间顺序显示双语 final 片段。
+- Markdown / JSON 导出成功写入腾讯 COS 私有对象，并返回短期签名 URL。
 
 ## 额度与成本验收
 
@@ -918,7 +932,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 | TC-007 | 腾讯会议系统音频降级 | 腾讯会议标签页音频失败 | 切换为系统音频捕获 | 若检测到音频并产生 final，MVP 验证通过但记录 `system_audio_only` | M1-A |
 | TC-008 | 用户拒绝授权 | 浏览器弹窗出现 | 用户拒绝共享 | 不创建正式会话，不消耗额度，显示重试入口 | M1-A |
 | TC-009 | 无音频输入 | 捕获成功但会议无声音 | 保持静音 30 秒 | 不消耗额度，提示未检测到会议声音 | M1-A |
-| TC-010 | AudioWorklet 输出 | 捕获到音频 | 开始处理音频 | 前端持续发送 mono PCM16 binary frame | M1-A |
+| TC-010 | AudioWorklet 输出 | 捕获到音频 | 开始处理音频 | 前端持续发送 16 kHz mono PCM16 binary frame | M1-A |
 | TC-011 | WebSocket 断开 | 会议进行中 | 主动断开网络或关闭标签页 | 后端清理 active session，保留已归档片段 | M1-A |
 | TC-012 | Google STT interim | 有效音频上传 | 英文发言 10 秒 | 前端显示英文 interim | M1-A |
 | TC-013 | Google STT final | 有效音频上传 | 英文发言并停顿 | 产生英文 final，触发中文 final 流程 | M1-A |
@@ -927,8 +941,8 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 | TC-016 | Qwen final 成功 | 英文 final 已产生 | 请求正式翻译 | 生成中文 final，写入 `transcript_segment` | M1-A |
 | TC-017 | Qwen final 失败 | 模拟 Qwen final 错误 | 英文 final 触发翻译 | 片段标记 `translation_status=failed`，前端显示待重试 | M1-B |
 | TC-018 | 四区 UI 更新 | 收到 interim/final/timeline 消息 | 观察页面四区 | 英文、中文、重点句、时间线独立更新 | M1-A |
-| TC-019 | 会后归档 | 会话包含多个 final 片段 | 结束会议并打开归档页 | 按序显示英文 final、中文 final、时间戳 | M2 |
-| TC-020 | Markdown 导出 | 会话有归档片段 | 点击 Markdown 导出 | 文件生成并上传 COS，写入 `export_file` | M2 |
+| TC-019 | 会后基础归档 | 会话包含多个 final 片段并持有正确 `archive_token` | 结束会议并打开归档页 | 按序显示英文 final、中文 final、时间戳；token 错误时拒绝访问 | M1-A |
+| TC-020 | Markdown 导出 | 会话有归档片段 | 点击 Markdown 导出 | 文件生成并上传 COS 私有对象，写入 `export_file`，返回短期签名 URL | M2 |
 | TC-021 | JSON 导出 | 会话有归档片段 | 点击 JSON 导出 | JSON 包含 session 和 segment 数据 | M2 |
 | TC-022 | COS 上传失败 | 模拟 COS 错误 | 点击导出 | 前端提示重试，记录 `export_failed` | M2 |
 | TC-023 | 预算保险丝 | 预估月成本达到阈值 | 点击开始会议 | 拒绝新会话，已有归档可查看 | M1-A |

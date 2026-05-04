@@ -2,13 +2,13 @@
 
 ## 文档目标
 
-本文面向 AI 开发者，基于 `docs/superpowers/specs/2026-04-24-meeting-mvp-design.md`、`tech-stack.md` 和 `meeting-prd.md` 拆解第一版开发工作。每一步都要求小而具体，先验证再继续，严禁在本文中写业务源码或代码片段。
+本文面向 AI 开发者，基于 `memory-bank/2026-04-24-meeting-mvp-design.md`、`memory-bank/tech-stack.md` 和 `memory-bank/meeting-prd.md` 拆解第一版开发工作。每一步都要求小而具体，先验证再继续，严禁在本文中写业务源码或代码片段。
 
 ## 依据文档
 
-- `docs/superpowers/specs/2026-04-24-meeting-mvp-design.md`：产品范围、架构、Provider、数据模型、里程碑和验收标准。
-- `tech-stack.md`：Vite + React + TypeScript、FastAPI、PostgreSQL、Redis、Tencent COS、Docker Compose、Caddy 等技术栈。
-- `meeting-prd.md`：用户画像、WebSocket 消息、字段说明、F01 到 F18 功能清单、测试用例、埋点、成功指标和风险边界。
+- `memory-bank/2026-04-24-meeting-mvp-design.md`：产品范围、架构、Provider、数据模型、里程碑和验收标准。
+- `memory-bank/tech-stack.md`：Vite + React + TypeScript、FastAPI、PostgreSQL、Redis、Tencent COS、Docker Compose、Caddy 等技术栈。
+- `memory-bank/meeting-prd.md`：用户画像、WebSocket 消息、字段说明、F01 到 F18 功能清单、测试用例、埋点、成功指标和风险边界。
 
 ## 执行规则
 
@@ -18,6 +18,19 @@
 - 正式档案只基于英文 final 和中文 final；interim 只用于实时预览。
 - 第一版默认不保存原始会议音频。
 - 不引入 Next.js SSR、Celery/RabbitMQ、自建 Whisper 生产链路、浏览器插件、桌面客户端、外部 BI SaaS。
+
+## 已锁定实施决策
+
+- 工程目录固定为 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`。
+- M1-A 必须包含基础归档页：用户结束会议后可通过归档入口按顺序查看已生成的 final 片段；搜索、复制、Markdown / JSON 导出仍属于 M2。
+- 免登录归档访问使用 `session_id + archive_token`；服务端只保存 token hash，不保存明文 token。
+- WebSocket 必须包含 `session_started` 响应，向前端返回 `session_id`、`archive_token`、`archive_url` 和剩余额度。
+- 浏览器上传音频固定为 16 kHz、mono、PCM16；通过 WebSocket binary frame 上传。
+- 中文 final 主路径固定为 Qwen `qwen3.6-max-preview`；OpenAI 只作为后续备用或对比。
+- COS 导出文件保持私有，后端生成短期签名 URL 给用户下载。
+- MVP 数据默认保留 30 天，到期清理会议归档和 COS 导出文件。
+- 真实 Google STT、Qwen、COS smoke test 在 Lighthouse 云端后端容器执行；Windows 本地只运行 mock Provider 和不依赖真实密钥的测试。
+- GitHub Actions 第一版只做检查，不自动部署到 Lighthouse。
 
 ## Codex 执行约束
 
@@ -34,9 +47,9 @@
 
 | 阶段 | 目标 | 完成标准 |
 |---|---|---|
-| M1-A 必须上线闭环 | 匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、final 归档。 | 测试用户能打开网页，捕获会议音频，看到英文和中文结果，并产生可追溯 final 片段。 |
+| M1-A 必须上线闭环 | 匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、基础归档页。 | 测试用户能打开网页，捕获会议音频，看到英文和中文结果，并通过基础归档页追溯 final 片段。 |
 | M1-B 上线后增强 | final 重试、轻量看板、Provider 开关、重点句增强、时间线增强。 | M1-A 跑通后，能降低运营风险并提升可观察性。 |
-| M2 会后归档与导出 | 会后记录、搜索、复制、Markdown / JSON 导出、Tencent COS。 | 用户能带走完整双语会议记录。 |
+| M2 会后归档增强与导出 | 搜索、复制、Markdown / JSON 导出、Tencent COS。 | 用户能带走完整双语会议记录。 |
 | M3 成本与运营 | 成本估算、漏斗分析、兼容性报告、OpenAI STT 对比入口。 | 产品负责人能判断价值、质量和成本是否值得继续迭代。 |
 
 ## 分步指令
@@ -45,9 +58,9 @@
 
 目标：确保实施者基于最新 PRD 和技术栈开始开发。
 
-具体指令：读取三份依据文档，确认当前分支、未提交变更、远端地址和根目录位置；记录 `meeting-prd.md` 中 F01 到 F18 的功能清单作为后续验收索引。
+具体指令：读取 `memory-bank/` 中的三份依据文档，确认当前分支、未提交变更、远端地址和根目录位置；记录 `memory-bank/meeting-prd.md` 中 F01 到 F18 的功能清单作为后续验收索引。
 
-验证测试：运行 `git status --short --branch`、`git remote -v`，并搜索 `meeting-prd.md` 中 `F01` 到 `F18`。
+验证测试：运行 `git status --short --branch`、`git remote -v`，并搜索 `memory-bank/meeting-prd.md` 中 `F01` 到 `F18`。
 
 预期结果：当前工作目录为项目根目录，远端指向 `Zero-Zero001/meeting_mvp`，F01 到 F18 均能在 PRD 中找到。
 
@@ -55,9 +68,9 @@
 
 目标：为前端、后端、部署和文档建立清晰边界。
 
-具体指令：创建前端应用目录、后端应用目录、部署目录、脚本目录和测试目录；目录命名应能清楚表达职责，避免再创建嵌套的 `meeting_mvp` 子目录。
+具体指令：创建 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`；避免再创建嵌套的 `meeting_mvp` 子目录。
 
-验证测试：运行目录列表检查，确认根目录下存在前端、后端、部署、脚本和测试相关目录。
+验证测试：运行目录列表检查，确认根目录下存在 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`。
 
 预期结果：后续开发者能直接判断前端、后端、部署文件应放在哪里，且没有重复项目根目录。
 
@@ -65,7 +78,7 @@
 
 目标：建立 Vite + React + TypeScript 前端基础。
 
-具体指令：在前端目录初始化 Vite React TypeScript 应用，接入 Tailwind CSS、shadcn/ui、lucide-react、Zustand、Vitest、Playwright，并配置基本 npm scripts。
+具体指令：在 `frontend/` 目录初始化 Vite React TypeScript 应用，接入 Tailwind CSS、shadcn/ui、lucide-react、Zustand、Vitest、Playwright，并配置基本 npm scripts。
 
 验证测试：运行 `npm run lint`、`npm run test`、`npm run build`。
 
@@ -75,7 +88,7 @@
 
 目标：建立 Python 3.12 + FastAPI 后端基础。
 
-具体指令：在后端目录初始化 uv 项目，创建 `pyproject.toml`、`uv.lock`、`.python-version`，并将项目解释器固定为 Python 3.12；加入 FastAPI、Uvicorn、Pydantic v2、pydantic-settings、SQLAlchemy async、Alembic、psycopg、redis asyncio、httpx、tenacity、structlog、pytest、pytest-asyncio、Ruff、mypy。
+具体指令：在 `backend/` 目录初始化 uv 项目，创建 `pyproject.toml`、`uv.lock`、`.python-version`，并将项目解释器固定为 Python 3.12；加入 FastAPI、Uvicorn、Pydantic v2、pydantic-settings、SQLAlchemy async、Alembic、psycopg、redis asyncio、httpx、tenacity、structlog、pytest、pytest-asyncio、Ruff、mypy。
 
 验证测试：先运行 `uv python install 3.12`、`uv python pin 3.12`、`uv sync`、`uv run python --version`，再运行 `uv run ruff check .`、`uv run mypy .`、`uv run pytest`。
 
@@ -85,9 +98,9 @@
 
 目标：让所有部署配置可由环境变量控制。
 
-具体指令：建立前端公开配置、后端服务配置、Provider 配置、数据库配置、Redis 配置、COS 配置和预算配置的环境变量清单；同时提供示例文件，但不得写入真实密钥。
+具体指令：建立前端公开配置、后端服务配置、Provider 配置、数据库配置、Redis 配置、COS 配置、预算配置、归档保留配置和签名 URL 配置的唯一环境变量清单；同时提供示例文件，但不得写入真实密钥。清单必须覆盖 `QWEN_FINAL_MODEL`、`QWEN_INTERIM_ENABLED`、`OPENAI_STT_ENABLED`、`OPENAI_STT_MODEL`、`TENCENT_COS_EXPORT_PREFIX`、`ARCHIVE_RETENTION_DAYS=30`、`COS_SIGNED_URL_TTL_SECONDS`。
 
-验证测试：启动后端时缺少必填密钥应得到明确配置错误；使用示例配置启动本地 mock 模式应成功。
+验证测试：启动后端时缺少必填密钥应得到明确配置错误；使用示例配置启动本地 mock 模式应成功；脱敏打印已加载配置名时不得出现任何密钥值。
 
 预期结果：开发、测试和生产环境可以用同一套配置名称切换，前端不会暴露 Provider 密钥。
 
@@ -95,9 +108,9 @@
 
 目标：形成云服务器单机部署基础。
 
-具体指令：配置 PostgreSQL 16、Redis 7、FastAPI 后端、Caddy、前端静态产物的 Docker Compose 拓扑；Caddy 负责 HTTPS/WSS、静态前端、`/api/*` 和 `/ws/*` 代理。PostgreSQL 和 Redis 必须通过 Docker Compose 容器运行，不直接安装到 Lighthouse 宿主机；PostgreSQL 必须挂载持久化 volume 或 `/opt/meeting_mvp/data/postgres`，Redis 必须挂载持久化 volume 或 `/opt/meeting_mvp/data/redis`；5432 和 6379 只允许 Docker 内网服务访问，不映射到公网。
+具体指令：在 `deploy/` 中配置 PostgreSQL 16、Redis 7、FastAPI 后端、Caddy、前端静态产物的 Docker Compose 拓扑；Caddy 负责 HTTPS/WSS、静态前端、`/api/*` 和 `/ws/*` 代理。PostgreSQL 和 Redis 必须通过 Docker Compose 容器运行，不直接安装到 Lighthouse 宿主机；PostgreSQL 必须挂载持久化 volume 或 `/opt/meeting_mvp/data/postgres`，Redis 必须挂载持久化 volume 或 `/opt/meeting_mvp/data/redis`；5432 和 6379 只允许 Docker 内网服务访问，不映射到公网。
 
-验证测试：通过 SSH 在 Lighthouse 或 CI 环境运行 `docker compose config`，再运行 `docker compose ps` 检查服务状态；检查 PostgreSQL 和 Redis 有持久化挂载；检查 Compose 文件没有把 5432 和 6379 暴露到公网网卡。
+验证测试：通过 SSH 在 Lighthouse 或 CI 环境运行 `docker compose config`；检查 PostgreSQL 和 Redis 有持久化挂载；检查 Compose 文件没有把 5432 和 6379 暴露到公网网卡。此步骤只要求配置合法，`docker compose up -d` 和 `docker compose ps` 放到 Step 32。
 
 预期结果：Compose 配置合法，Caddy 能代理 API 和 WebSocket，PostgreSQL 与 Redis 服务名称可被后端解析；数据库和 Redis 重启容器后仍能保留必要状态；公网不能直接连接 PostgreSQL 或 Redis。
 
@@ -105,7 +118,7 @@
 
 目标：落地 PRD 字段说明中的核心表。
 
-具体指令：使用 Alembic 管理 `anonymous_client`、`meeting_session`、`transcript_segment`、`usage_event`、`export_file`，字段语义与 `meeting-prd.md` 保持一致。
+具体指令：使用 Alembic 管理 `anonymous_client`、`meeting_session`、`transcript_segment`、`usage_event`、`export_file`，字段语义与 `memory-bank/meeting-prd.md` 保持一致。`meeting_session` 必须支持 `pending_audio` 状态、`archive_token_hash` 和 `retention_expires_at`。
 
 验证测试：本地运行不依赖真实数据库的模型和 schema 单元测试；通过 SSH 在 Lighthouse 的 Docker Compose 环境运行 `uv run alembic upgrade head` 和数据库集成测试，确认五张表存在且关键字段可写入和读取。
 
@@ -135,7 +148,7 @@
 
 目标：让前后端共享可测试的实时消息契约。
 
-具体指令：定义 `session_start`、`audio_chunk`、`heartbeat`、`session_stop`、`quota_update`、`audio_status`、`asr_interim`、`translation_interim`、`segment_final`、`key_sentence_update`、`timeline_update`、`warning`、`error`、`session_closed` 的消息结构和校验规则。
+具体指令：定义 `session_start`、`audio_chunk`、`heartbeat`、`session_stop`、`session_started`、`quota_update`、`audio_status`、`asr_interim`、`translation_interim`、`segment_final`、`key_sentence_update`、`timeline_update`、`warning`、`error`、`session_closed` 的消息结构和校验规则。`session_started` 必须返回 `session_id`、`archive_token`、`archive_url` 和 `remaining_seconds_today`。
 
 验证测试：运行前后端协议解析测试，分别验证合法消息通过、缺失必填字段失败、未知消息类型失败、binary 音频帧被识别。
 
@@ -145,7 +158,7 @@
 
 目标：建立、保持、关闭实时会议会话。
 
-具体指令：后端 WebSocket endpoint 接收 `session_start`，完成额度校验和会话创建；接收 `heartbeat` 保活；接收 `session_stop` 时关闭 Provider、结算额度、清理 Redis active session。
+具体指令：后端 WebSocket endpoint 接收 `session_start`，完成额度校验并创建 `pending_audio` 会话，返回 `session_started`；检测到有效音频后将会话转为 `active` 并开始消耗额度；接收 `heartbeat` 保活；接收 `session_stop` 时关闭 Provider、结算额度、清理 Redis active session。
 
 验证测试：本地使用 mock Redis 或内存替身运行 WebSocket 行为测试；通过 SSH 在 Lighthouse 运行真实 Redis WebSocket 集成测试，覆盖正常开始、心跳保持、用户停止、浏览器断开、重复会话拒绝。
 
@@ -173,11 +186,11 @@
 
 ### Step 14：实现 F04 音频前处理
 
-目标：浏览器侧输出 Google STT 友好的 mono PCM16 音频帧。
+目标：浏览器侧输出 Google STT 友好的 16 kHz mono PCM16 音频帧。
 
-具体指令：前端用 Web Audio API 和 AudioWorklet 将捕获音频转换为单声道 PCM16，并通过 WebSocket binary frame 持续上传；静音时不应开始正式消耗额度。
+具体指令：前端用 Web Audio API 和 AudioWorklet 将捕获音频转换为 16 kHz、mono、PCM16，并通过 WebSocket binary frame 持续上传；静音时不应开始正式消耗额度。
 
-验证测试：运行音频处理单元测试，验证采样率、声道、音量电平、静音检测和 binary frame 发送节奏；手动测试会议无声 30 秒。
+验证测试：运行音频处理单元测试，验证采样率固定为 16000、声道为 1、编码为 PCM16、音量电平、静音检测和 binary frame 发送节奏；手动测试会议无声 30 秒。
 
 预期结果：后端持续收到稳定音频帧；无有效音频时前端提示检查共享音频，不消耗会议额度。
 
@@ -197,7 +210,7 @@
 
 具体指令：后端创建 Google STT streaming 会话，转发 PCM16 音频帧，接收英文 interim 和英文 final；Google STT 失败时发送 `error` 并清理会话。
 
-验证测试：使用真实 Google STT 凭证运行英文音频测试，确认 10 秒内出现英文 interim，停顿后产生英文 final。
+验证测试：通过 SSH 在 Lighthouse 云端后端容器中使用真实 Google STT 凭证运行英文音频 smoke test，确认 10 秒内出现英文 interim，停顿后产生英文 final。
 
 预期结果：英文 interim 实时显示，英文 final 稳定追加，并能进入中文 final 流程。
 
@@ -207,7 +220,7 @@
 
 具体指令：后端仅对节流后的英文 interim 请求 Qwen；中文 interim 标记为临时状态，不写入正式归档；Qwen 失败不阻塞英文转写和中文 final。
 
-验证测试：运行 Qwen 成功、节流、失败三类测试；前端检查中文 interim 样式与 final 明显区分。
+验证测试：本地运行 Qwen mock 成功、节流、失败三类测试；通过 SSH 在 Lighthouse 云端后端容器中运行真实 Qwen interim smoke test；前端检查中文 interim 样式与 final 明显区分。
 
 预期结果：用户能看到临时中文理解；请求频率可控；失败时主链路继续运行。
 
@@ -215,9 +228,9 @@
 
 目标：用 Qwen `qwen3.6-max-preview` 生成正式中文翻译并归档。
 
-具体指令：当英文 final 出现时，后端携带当前片段和最近 3 到 5 个 final 上下文请求阿里云百炼 Qwen OpenAI-compatible API；`QWEN_FINAL_MODEL` 默认使用 `qwen3.6-max-preview`；保存英文 final、中文 final、时间戳、序号和翻译状态。
+具体指令：当英文 final 出现时，后端携带当前片段和最近 5 个 final 上下文请求阿里云百炼 Qwen OpenAI-compatible API；`QWEN_FINAL_MODEL` 默认使用 `qwen3.6-max-preview`；保存英文 final、中文 final、时间戳、序号和翻译状态。
 
-验证测试：运行中文 final 单元测试和真实 Provider smoke test，检查语义准确、顺序稳定、上下文传递、失败状态。
+验证测试：运行中文 final 单元测试；通过 SSH 在 Lighthouse 云端后端容器中运行真实 Qwen final smoke test，检查语义准确、顺序稳定、上下文传递、失败状态。
 
 预期结果：中文 final 表达自然，适合中国职场阅读；成功片段进入 `transcript_segment`。
 
@@ -245,19 +258,19 @@
 
 目标：为漏斗、质量和成本分析收集基础事件。
 
-具体指令：后端写入 `client_created`、`quota_checked`、`capture_started`、`capture_failed`、`audio_detected`、`session_started`、`asr_interim_received`、`asr_final_received`、`translation_interim_requested`、`translation_final_completed`、`segment_archived`、`provider_error`、`quota_exhausted`、`budget_fuse_triggered`、`session_closed`。
+具体指令：后端写入 `client_created`、`quota_checked`、`capture_started`、`capture_failed`、`audio_detected`、`session_started`、`asr_interim_received`、`asr_final_received`、`translation_interim_requested`、`translation_final_completed`、`segment_archived`、`archive_viewed`、`provider_error`、`quota_exhausted`、`budget_fuse_triggered`、`session_closed`。
 
 验证测试：运行事件写入测试，确认每个事件包含 `client_id`、可选 `session_id`、`event_type`、`payload` 和 `created_at`，且不保存原始音频和密钥。
 
 预期结果：首次使用漏斗和会议质量漏斗能从事件表计算。
 
-### Step 22：实现 F10 会后双语归档
+### Step 22：实现 F10 会后基础双语归档
 
-目标：让用户会后按时间顺序回看 final 片段。
+目标：让用户会后按时间顺序回看 final 片段；这是 M1-A 的基础归档页，搜索、复制和导出仍在 M2。
 
-具体指令：构建会后归档页和查询 API，按 `sequence` 或时间戳返回英文 final、中文 final、时间戳、翻译状态、重点句标记和结束原因。
+具体指令：构建基础会后归档页和查询 API，访问方式固定为 `session_id + archive_token`；服务端校验 token hash 后，按 `sequence` 返回英文 final、中文 final、时间戳、翻译状态、重点句标记和结束原因。
 
-验证测试：运行归档 API 测试和前端归档页测试，覆盖正常结束、额度结束、Provider 错误结束和 WebSocket 断开。
+验证测试：运行归档 API 测试和前端归档页测试，覆盖 token 正确、token 缺失、token 错误、正常结束、额度结束、Provider 错误结束和 WebSocket 断开。
 
 预期结果：无论会话如何结束，已归档 final 片段都能查看，异常结束原因清晰可见。
 
@@ -275,9 +288,9 @@
 
 目标：生成可带走的双语会议文件。
 
-具体指令：后端按 final 片段顺序生成 Markdown 和 JSON 导出文件，上传腾讯 COS，写入 `export_file`，返回下载或访问地址。
+具体指令：后端按 final 片段顺序生成 Markdown 和 JSON 导出文件，上传腾讯 COS 私有对象，写入 `export_file`，返回短期签名 URL。
 
-验证测试：运行导出测试，覆盖 Markdown、JSON、空归档拒绝、COS 上传失败、导出事件记录。
+验证测试：运行导出测试，覆盖 Markdown、JSON、空归档拒绝、COS 上传失败、签名 URL 生成、导出事件记录。
 
 预期结果：导出文件包含 session 信息和双语 final 片段；COS 失败时提示重试并记录 `export_failed`。
 
@@ -329,7 +342,7 @@
 
 验证测试：运行 Provider 开关测试，覆盖关闭 Qwen interim、关闭 Qwen final、启用 OpenAI STT 对比入口、配置缺失。
 
-预期结果：单个 Provider 关闭时，系统能按 PRD 定义降级；关闭 Qwen 不影响英文转写和中文 final。
+预期结果：单个 Provider 关闭时，系统能按 PRD 定义降级；关闭 Qwen interim 不影响英文转写和 Qwen final；关闭 Qwen final 时，英文 final 仍归档，中文 final 标记为失败并进入待重试状态。
 
 ### Step 30：完成兼容性测试矩阵
 
@@ -345,9 +358,9 @@
 
 目标：防止后续提交破坏基础质量。
 
-具体指令：配置 GitHub Actions 执行前端 lint、前端测试、前端构建、后端 Ruff、后端 mypy、后端 pytest、Docker Compose 配置检查。
+具体指令：配置 GitHub Actions 执行前端 lint、前端测试、前端构建、后端 Ruff、后端 mypy、后端 pytest、Docker Compose 配置检查。第一版 CI 只做检查，不自动部署到 Lighthouse。
 
-验证测试：推送分支或本地触发 CI 等价命令，确认所有检查能运行并失败即阻塞合并。
+验证测试：推送分支或本地触发 CI 等价命令，确认所有检查能运行并失败即阻塞合并；确认 workflow 不包含自动 SSH 部署步骤。
 
 预期结果：主分支不会合入无法构建、类型错误、测试失败或 Compose 配置非法的变更。
 
@@ -355,7 +368,7 @@
 
 目标：在腾讯云 Lighthouse 上验证单机部署可行。
 
-具体指令：部署 Docker Compose、PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物；后端容器使用 `uv.lock` 锁定依赖并运行 Python 3.12，避免本地系统 Python 3.13.9 与生产环境依赖漂移；配置 HTTPS/WSS、Provider 凭证、COS、预算保险丝和健康检查。部署前创建 PostgreSQL 备份目录，部署后执行一次 PostgreSQL 备份和恢复演练；Redis 只保存短期状态，不能作为正式会议档案来源。
+具体指令：通过 SSH 手动部署 Docker Compose、PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物；后端容器使用 `uv.lock` 锁定依赖并运行 Python 3.12，避免本地系统 Python 3.13.9 与生产环境依赖漂移；配置 HTTPS/WSS、Provider 凭证、COS、预算保险丝和健康检查。部署前创建 PostgreSQL 备份目录，部署后执行一次 PostgreSQL 备份和恢复演练；Redis 只保存短期状态，不能作为正式会议档案来源。
 
 验证测试：通过 SSH 在 Lighthouse 运行部署检查，访问 HTTPS 页面，测试 `/api` 健康检查、`/ws` WebSocket、PostgreSQL migration、Redis 连接、Provider smoke test、COS 导出；执行一次 PostgreSQL 备份文件生成检查和恢复演练检查；确认 5432、6379 不对公网开放。
 
@@ -365,7 +378,7 @@
 
 目标：确认 MVP 可以给 10 到 50 名测试用户试用。
 
-具体指令：按 `meeting-prd.md` 的 TC-001 到 TC-026 执行验收，重点检查 M1-A 闭环、腾讯会议降级、额度、异常、归档、导出、埋点和预算保险丝。
+具体指令：按 `memory-bank/meeting-prd.md` 的 TC-001 到 TC-026 执行验收，重点检查 M1-A 闭环、腾讯会议降级、额度、异常、基础归档、导出、埋点和预算保险丝。
 
 验证测试：逐项记录 TC-001 到 TC-026 的通过或失败结果，并补充浏览器、平台、Provider、错误码和截图证据。
 
@@ -384,7 +397,7 @@
 | F07 中文 interim | Step 17 |
 | F08 中文 final | Step 18 |
 | F09 四区实时 UI | Step 12、Step 19 |
-| F10 会后双语归档 | Step 22 |
+| F10 会后基础双语归档 | Step 22 |
 | F11 搜索与复制 | Step 23 |
 | F12 Markdown / JSON 导出 | Step 24 |
 | F13 final 翻译重试 | Step 25 |
@@ -396,9 +409,10 @@
 
 ## 最终验收清单
 
-- M1-A：匿名初始化、额度、捕获、音频处理、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础归档、异常提示全部通过。
+- M1-A：匿名初始化、额度、捕获、音频处理、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础归档页、异常提示全部通过。
 - M1-B：final 重试、看板、Provider 开关、重点句增强、时间线增强有独立测试。
 - M2：归档、搜索、复制、Markdown / JSON 导出和 COS 上传通过。
 - M3：漏斗、成本、兼容性和 Provider 状态可观察。
 - 安全：前端无 Provider 密钥，不保存原始会议音频，不保存明文 IP。
 - 成本：每日 40 分钟、单场 30 分钟、并发 1 场、400 RMB 预算保险丝可验证。
+- 数据保留：会议归档和 COS 导出默认 30 天后清理。
