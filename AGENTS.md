@@ -13,7 +13,7 @@
   - `memory-bank/meeting-prd.md`
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 当前为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已在 2026-05-04 Step 01 后记录基线架构洞察和执行进度，不再为空文件。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
