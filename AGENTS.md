@@ -6,14 +6,15 @@
 
 - 本地仓库根目录：`D:\meeting_mvp`。
 - GitHub 远端：`https://github.com/Zero-Zero001/meeting_mvp.git`。
-- 当前应用工程尚未初始化：暂时没有 `frontend/`、`backend/`、根目录 `package.json`、根目录 `pyproject.toml`。
+- 当前已建立工程目录边界：存在 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`，每个目录内有边界说明 `README.md`。
+- 当前应用工程尚未初始化：暂时没有 `frontend/package.json`、`backend/pyproject.toml`、根目录 `package.json`、根目录 `pyproject.toml`。
 - 当前有效产品/技术文档集中在 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
   - `memory-bank/tech-stack.md`
   - `memory-bank/meeting-prd.md`
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已在 2026-05-04 Step 01 后记录基线架构洞察和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已在 2026-05-04 Step 01 和 Step 02 后记录基线架构、工程目录边界和执行进度，不再为空文件。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
