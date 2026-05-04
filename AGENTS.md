@@ -6,15 +6,16 @@
 
 - 本地仓库根目录：`D:\meeting_mvp`。
 - GitHub 远端：`https://github.com/Zero-Zero001/meeting_mvp.git`。
-- 当前已建立工程目录边界：存在 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`，每个目录内有边界说明 `README.md`。
-- 当前应用工程尚未初始化：暂时没有 `frontend/package.json`、`backend/pyproject.toml`、根目录 `package.json`、根目录 `pyproject.toml`。
+- 当前已建立工程目录边界：存在 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`。
+- 前端工程已在 `frontend/` 初始化：Vite + React + TypeScript，使用 Tailwind CSS v4、shadcn/ui、lucide-react、Zustand、Vitest、Playwright 和 npm。
+- 后端工程尚未初始化：暂时没有 `backend/pyproject.toml`、`backend/uv.lock`、根目录 `package.json`、根目录 `pyproject.toml`。
 - 当前有效产品/技术文档集中在 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
   - `memory-bank/tech-stack.md`
   - `memory-bank/meeting-prd.md`
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已在 2026-05-04 Step 01 和 Step 02 后记录基线架构、工程目录边界和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已在 2026-05-04 Step 01、Step 02 和 Step 03 后记录基线架构、工程目录边界、前端工程骨架和执行进度，不再为空文件。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
@@ -212,6 +213,7 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 前端：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
 - 后端：`uv run ruff check .`、`uv run mypy .`、`uv run pytest`、`uv run alembic upgrade head`。
 - 云端部署：`docker compose config`、`docker compose up -d`、`docker compose ps`。
+- 本机若默认 npm cache 遇到 `EPERM` 权限错误，可临时设置 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'`；该目录已被根目录 `.gitignore` 忽略。
 
 ## 12. 开发约定
 
