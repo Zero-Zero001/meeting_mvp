@@ -10,9 +10,11 @@
 - 前端工程已在 `frontend/` 初始化：Vite + React + TypeScript，使用 Tailwind CSS v4、shadcn/ui、lucide-react、Zustand、Vitest、Playwright 和 npm。
 - 后端工程已在 `backend/` 初始化：Python 3.12 + FastAPI + uv，包名为 `meeting_mvp_backend`，当前 ASGI 入口为 `meeting_mvp_backend.main:app`，健康检查为 `GET /health`。
 - 后端当前已有 `backend/pyproject.toml`、`backend/uv.lock`、`backend/.python-version`；根目录仍没有 `package.json` 或 `pyproject.toml`。
+- Step 07 已建立后端数据库层：`meeting_mvp_backend.db` 包、Alembic 配置、初始 migration 和 PostgreSQL 集成测试。
 - Step 05 已建立环境变量边界：唯一清单为 `memory-bank/environment-variables.md`；后端示例为 `backend/.env.example`；前端公开示例为 `frontend/.env.example`。
 - Step 06 已建立部署骨架：`deploy/docker-compose.yml`、`deploy/Caddyfile`、`deploy/.env.example`、`backend/Dockerfile`、`frontend/Dockerfile` 和 `.dockerignore`。
 - Step 06 本地静态检查、前后端既有验证和 Lighthouse `docker compose config --quiet` 均已通过；远端验收使用用户提供的 SSH 私钥完成，没有输出生产 `.env.production` 内容。
+- Step 07 本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e、Lighthouse backend build、Alembic migration 和 PostgreSQL 集成测试均已通过；未进入 Step 08。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -21,7 +23,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 05 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 07 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型和执行进度，不再为空文件。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
@@ -159,6 +161,9 @@
 - Step 06 Compose 骨架中 Caddy 是唯一公网入口，只映射 80/443；PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`，Redis 挂载 `/opt/meeting_mvp/data/redis`。
 - Step 06 Compose 骨架中后端容器只读挂载 `GOOGLE_APPLICATION_CREDENTIALS` 指向的 Google STT 服务账号 JSON；该文件仍只允许位于服务器安全目录，不进入镜像或 Git。
 - 远端配置检查命令为：`cd /opt/meeting_mvp/app && docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`；Step 06 已执行通过，但未执行 `docker compose up -d`、`docker compose ps` 或 Alembic migration。
+- Step 07 远端 migration 和 PostgreSQL 集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step07` 完成，验收后已清理临时容器、临时数据目录、远端临时脚本和测试缓存。
+- Step 07 backend build 曾卡在 Lighthouse Docker build 的 `uv sync` 依赖下载阶段；`backend/Dockerfile` 已增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120`，后续 Compose backend build 已通过。
+- Step 07 发现远端 `.env.production` 当前未包含 Compose 所需的数据库、Redis 和站点变量名；后续正式部署前需要补齐这些变量，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
 - 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
 
 ## 9. 密钥与安全
@@ -179,6 +184,21 @@
 - `transcript_segment`
 - `usage_event`
 - `export_file`
+
+Step 07 数据库模型已落地：
+
+- `backend/src/meeting_mvp_backend/db/base.py`：SQLAlchemy `Base` 和命名约定。
+- `backend/src/meeting_mvp_backend/db/models.py`：五张核心表、枚举、关系、索引和约束。
+- `backend/src/meeting_mvp_backend/db/session.py`：async engine/sessionmaker 工具。
+- `backend/alembic.ini` 与 `backend/migrations/`：Alembic 配置和初始 schema migration。
+- `backend/tests/test_database_models.py`：本地无真实 DB 的 schema/model 测试。
+- `backend/tests/integration/test_database_schema.py`：Lighthouse PostgreSQL 集成测试。
+
+Step 07 表边界：
+
+- `meeting_session` 支持 `pending_audio`、`archive_token_hash`、`retention_expires_at`；不保存明文 `archive_token`。
+- `usage_event.payload` 使用 PostgreSQL `JSONB`；不得保存密钥、原始音频或隐私明文。
+- `transcript_segment` 只保存英文 final、中文 final 和片段元数据；不保存 interim 或原始音频。
 
 核心 WebSocket 请求消息：
 
@@ -221,6 +241,7 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 
 - 前端：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
 - 后端：在 `backend/` 内执行 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；数据库步骤完成后再执行 `uv run alembic upgrade head`。
+- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`。
 - 云端部署：`docker compose config`、`docker compose up -d`、`docker compose ps`。
 - 本机若默认 npm cache 遇到 `EPERM` 权限错误，可临时设置 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'`；该目录已被根目录 `.gitignore` 忽略。
 

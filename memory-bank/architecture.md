@@ -214,3 +214,62 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 前端 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
 - Lighthouse `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet` 已在 `/opt/meeting_mvp/app` 执行通过。
 - 远端边界检查已确认只发布 `80` / `443`，不发布 `5432` / `6379`，保留 PostgreSQL 与 Redis 的 `/opt/meeting_mvp/data/*` 挂载路径，并包含后端只读 Google STT 凭据挂载。
+
+## 2026-05-05 Step 07 数据库迁移和数据模型
+
+### 当前架构状态
+
+- 后端已新增 `meeting_mvp_backend.db` 数据层包，使用 SQLAlchemy 2 typed ORM 表达 PostgreSQL 正式档案模型。
+- Alembic 已成为后端 schema 变更入口；当前唯一迁移版本为 `20260505_0001_initial_schema`。
+- PostgreSQL 正式数据边界已落地为五张核心表：匿名用户、会议会话、final 片段、使用事件和导出文件。
+- Redis 未参与 Step 07；后续仍只用于活跃会话、额度、限流、预算保险丝和短期 WebSocket 协调状态。
+- `meeting_session` 的初始状态支持 `pending_audio`，用于“检测到有效音频前不正式消耗额度”的后续会话编排。
+- 会后归档访问边界已体现在数据模型中：只保存 `archive_token_hash`，不保存明文 `archive_token`。
+- 第一版不保存原始音频的边界已体现在 schema 和测试中；Step 07 未新增任何 raw audio/blob/bytes 字段。
+- 后端容器构建现在包含 Alembic 和测试文件，Lighthouse 可以通过一次性 backend 容器执行 migration 和数据库集成测试。
+
+### 数据模型文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/db/__init__.py` | 数据层包入口，标记 `db` 为后端数据库相关模块集合。 |
+| `backend/src/meeting_mvp_backend/db/base.py` | SQLAlchemy Declarative `Base` 和统一命名约定，保证索引、外键、唯一约束和主键命名稳定。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 五张核心 ORM 表、枚举、关系、索引和约束定义；是后续仓储层、API、WebSocket 会话编排和归档查询的模型基础。 |
+| `backend/src/meeting_mvp_backend/db/session.py` | async SQLAlchemy engine/sessionmaker 创建工具；后续业务代码和集成测试通过 `DATABASE_URL` 创建数据库会话。 |
+| `backend/tests/test_database_models.py` | 本地无真实数据库的模型/schema 测试，验证核心表、关键字段、枚举值、JSONB payload、UUID 主键和安全字段边界。 |
+| `backend/tests/integration/test_database_schema.py` | Lighthouse PostgreSQL 集成测试，执行真实表反射和五张表关键字段写入/读取。 |
+
+### Alembic 文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `backend/alembic.ini` | Alembic 命令入口配置；本地 `uv run alembic history` 可读取迁移链，真实连接串由 `DATABASE_URL` 注入。 |
+| `backend/migrations/env.py` | Alembic runtime 环境；加载后端 `Settings`，读取 `DATABASE_URL`，使用 async engine 执行在线 migration。 |
+| `backend/migrations/script.py.mako` | Alembic 新迁移文件模板，保持类型标注和项目格式。 |
+| `backend/migrations/versions/20260505_0001_initial_schema.py` | 初始 schema migration；创建五张核心表、PostgreSQL enum、外键、索引和唯一约束。 |
+
+### 表与持久化边界
+
+- `anonymous_client`：保存免登录匿名用户身份、首次/最近访问时间、每日已用分钟、IP hash 和 User-Agent hash；不保存明文 IP。
+- `meeting_session`：保存会议会话、平台、捕获模式、会话状态、有效时长、额度消耗、`archive_token_hash` 和 30 天保留期。
+- `transcript_segment`：保存按 `session_id + sequence` 唯一排序的英文 final、中文 final、时间戳、重点句和翻译状态；不保存 interim 或原始音频。
+- `usage_event`：保存埋点事件和 JSONB payload；payload 仍必须避免密钥、原始音频和隐私明文。
+- `export_file`：保存 Markdown/JSON 导出对象 key、短期 URL 字段和导出保留期；COS 对象仍保持私有。
+
+### 部署与验证洞察
+
+- `backend/Dockerfile` 已复制 `alembic.ini`、`migrations/` 和 `tests/`，因此 backend 镜像可直接执行 `uv run alembic upgrade head` 和数据库集成测试。
+- Lighthouse Docker build 曾卡在 `uv sync` 依赖下载阶段；加入 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120` 后，Compose backend build 通过。
+- Step 07 远端验收使用临时 PostgreSQL 数据目录 `/opt/meeting_mvp/data/postgres_step07`，没有使用 `deploy/.env.example` 的占位密码初始化正式数据目录。
+- Step 07 远端验收后已清理临时 PostgreSQL 容器、临时数据目录、临时脚本和远端测试 `.venv`/缓存。
+- 当前未启动 Caddy、Redis 或常驻 backend 服务；未进入 Step 08。
+
+### Step 07 验证结论
+
+- 本地 `uv run python --version` 输出 `Python 3.12.11`。
+- 本地 `uv run alembic history` 显示 `<base> -> 20260505_0001 (head)`。
+- 本地 `uv run ruff check .`、`uv run mypy .`、`uv run pytest` 已通过；pytest 结果为 11 passed、1 integration deselected。
+- 前端 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
+- Lighthouse `docker compose --env-file .env.production -f deploy/docker-compose.yml build --progress plain backend` 已通过。
+- Lighthouse `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps backend uv run alembic upgrade head` 已通过。
+- Lighthouse `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps backend uv run --group dev pytest -o addopts= -m integration` 已通过，1 个真实 PostgreSQL 集成测试通过。

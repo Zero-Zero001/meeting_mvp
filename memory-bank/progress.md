@@ -277,3 +277,71 @@
 - Step 06 的部署骨架和远端 Compose 配置验收已完成；后续仍需等用户明确允许后才能开始 Step 07。
 - 在用户明确允许开始 Step 07 前，不得创建 Alembic migration、数据库模型或执行数据库升级。
 - 生产真实 `.env.production`、Google 服务账号 JSON、COS SecretId / SecretKey 仍只能放在服务器安全位置，不得进入 Git。
+
+## 2026-05-05 Step 07：建立数据库迁移和数据模型
+
+### 本次完成内容
+
+- 已重新阅读 `memory-bank/2026-04-24-meeting-mvp-design.md` 和 `memory-bank/architecture.md`，并检查 Step 06 已完成。
+- 已确认 Step 07 开始前后端没有 `alembic.ini`、`migrations/`、`meeting_mvp_backend.db` 包或 ORM 模型。
+- 已按 TDD 先新增 `backend/tests/test_database_models.py`，首次运行因缺少 `meeting_mvp_backend.db` 包失败，随后补实现使测试通过。
+- 已新增 SQLAlchemy 2 数据模型和数据库工具：
+  - `backend/src/meeting_mvp_backend/db/base.py`
+  - `backend/src/meeting_mvp_backend/db/models.py`
+  - `backend/src/meeting_mvp_backend/db/session.py`
+- 已新增 Alembic 配置和初始迁移：
+  - `backend/alembic.ini`
+  - `backend/migrations/env.py`
+  - `backend/migrations/script.py.mako`
+  - `backend/migrations/versions/20260505_0001_initial_schema.py`
+- 已落地五张核心表：`anonymous_client`、`meeting_session`、`transcript_segment`、`usage_event`、`export_file`。
+- `meeting_session` 已支持 `pending_audio` 状态、`archive_token_hash` 和 `retention_expires_at`；未保存明文 `archive_token`。
+- `usage_event.payload` 使用 PostgreSQL `JSONB`，未新增原始音频或密钥字段。
+- 已新增 `backend/tests/integration/test_database_schema.py`，用于 Lighthouse PostgreSQL 集成测试，确认五张表存在且关键字段可写入/读取。
+- 已更新 `backend/pyproject.toml`，登记 `integration` pytest marker，并让本地默认 `uv run pytest` 排除真实数据库集成测试。
+- 已更新 `backend/Dockerfile`：
+  - 复制 `alembic.ini`、`migrations/` 和 `tests/`，确保容器内可运行 migration 和集成测试。
+  - 增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 和 `UV_HTTP_TIMEOUT=120`，解决 Lighthouse Docker build 中 `uv sync` 依赖下载卡住的问题。
+- 未实现 F01 匿名用户初始化 API 或前端 `client_id` 生成，未开始 Step 08。
+
+### 远端执行说明
+
+- Lighthouse `/opt/meeting_mvp/app/.env.production` 当前只包含 Provider/COS 相关变量名，未包含 Compose 所需的数据库、Redis 和站点变量名。
+- 为避免使用 `deploy/.env.example` 的占位密码污染正式持久化目录，本次 Step 07 使用临时 PostgreSQL 环境覆盖：
+  - PostgreSQL 临时数据目录：`/opt/meeting_mvp/data/postgres_step07`
+  - Redis 临时数据目录：`/opt/meeting_mvp/data/redis_step07`
+  - 仅启动 `postgres` 服务用于 migration 和集成测试。
+- 本次未启动 Caddy、Redis 或常驻 backend 服务；未执行 Step 08。
+- 验收完成后已停止并删除临时 PostgreSQL 容器，清理 Step 07 临时数据目录、远端临时脚本和远端挂载式测试产生的 `.venv`/缓存。
+
+### 调试记录
+
+- 首次远端 backend build 失败：`backend/.python-version` 未同步到 `/opt/meeting_mvp/app/backend/`，补同步后继续。
+- 后续远端 build 一度卡在 Docker BuildKit 的 `uv sync --frozen --no-dev --no-install-project`；确认不是 Alembic、pytest、磁盘或内存问题后，在 `backend/Dockerfile` 中加入 uv 镜像源和超时配置，再次 `docker compose build backend` 通过。
+- 首次 Alembic migration 失败：手动创建 PostgreSQL enum 后，`op.create_table()` 又触发同名 enum 自动创建，报 `DuplicateObject: type "source_platform" already exists`。已将 migration 中的 PostgreSQL enum 声明改为 `create_type=False`，保留显式 `checkfirst=True` 创建，重跑通过。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| TDD RED | `uv run pytest tests/test_database_models.py` | 首次失败，`ModuleNotFoundError: No module named 'meeting_mvp_backend.db'` |
+| 后端 Python 版本 | `uv run python --version` | `Python 3.12.11` |
+| Alembic history | `uv run alembic history` | 通过，显示 `<base> -> 20260505_0001 (head)` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 13 source files` |
+| 后端本地 pytest | `uv run pytest` | 11 个测试通过，1 个 integration 测试被默认排除 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 3 个测试文件、6 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 e2e smoke test | `npm run test:e2e` | 1 个 Chromium 测试通过 |
+| 安全静态检查 | 检查 Git 跟踪/新增文件和 DB schema | 通过，未发现真实 `.env`、密钥文件、原始音频字段或明文 `archive_token` 字段 |
+| Lighthouse backend build | `docker compose --env-file .env.production -f deploy/docker-compose.yml build --progress plain backend` | 通过，输出 `Image meeting_mvp-backend Built` |
+| Lighthouse migration | `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps backend uv run alembic upgrade head` | 通过，Alembic 使用 PostgreSQL dialect，升级到 head |
+| Lighthouse DB integration | `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps backend uv run --group dev pytest -o addopts= -m integration` | 通过，1 个集成测试通过，确认五张表存在且关键字段可写入/读取 |
+
+### 后续注意事项
+
+- 下一步只能在用户明确允许后执行 Step 08：实现 F01 匿名用户初始化。
+- Step 08 可复用本次新增的 `AnonymousClient` ORM 模型和 `create_session_factory_from_settings()`。
+- 生产发布前仍需使用真实生产数据库环境变量执行 migration；本次 Step 07 只在临时 PostgreSQL 数据目录完成 schema 验收。
+- 远端 `.env.production` 后续需要补齐数据库、Redis 和站点相关变量，才能直接作为 Compose 生产环境文件使用。
