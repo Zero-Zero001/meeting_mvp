@@ -135,3 +135,38 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Uvicorn 本地启动后，`GET http://127.0.0.1:8000/health` 返回 HTTP `200` 和 `{"status":"ok"}`。
 - 防越界检查确认未创建根目录 `package.json`、根目录 `pyproject.toml`、`.env`、`.env.example`、Docker Compose 或 Alembic migration。
 - Step 05 尚未开始；环境变量清单、配置加载、密钥脱敏和 mock 模式启动边界应等待用户明确允许后再执行。
+
+## 2026-05-05 Step 05 配置边界
+
+### 当前架构状态
+
+- 项目已建立统一环境变量清单：`memory-bank/environment-variables.md`。
+- 后端配置由 `pydantic-settings` 统一加载，`APP_ENV=local` 支持 Windows 本地 mock 模式，`staging` / `production` 会强制校验必填配置。
+- 后端启动时通过 FastAPI lifespan 加载配置，并用 `structlog` 输出配置项名称和 `set` / `unset` 状态，不输出任何配置值。
+- 前端配置边界固定为 Vite `VITE_*` 公开变量；Provider、数据库、Redis、COS 密钥不得进入前端代码或构建产物。
+- 示例配置拆分为 `backend/.env.example` 和 `frontend/.env.example`；真实 `.env`、`.env.*` 仍由 `.gitignore` 忽略。
+- Step 05 未创建 Docker Compose、Alembic migration、真实数据库/Redis 集成、Provider 客户端或真实密钥文件；这些仍属于后续步骤。
+
+### 配置文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `memory-bank/environment-variables.md` | Step 05 建立的唯一环境变量清单，区分后端私有变量和前端 `VITE_*` 公开变量。 |
+| `backend/.env.example` | 后端 local mock 示例配置，覆盖后端配置清单，使用空值或 placeholder，不包含真实密钥。 |
+| `backend/src/meeting_mvp_backend/config.py` | 后端配置模型、环境文件解析、生产必填配置校验、OpenAI STT 条件校验和脱敏状态输出。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 应用入口；Step 05 增加 lifespan，在启动时加载配置并输出脱敏配置状态。 |
+| `backend/tests/test_config.py` | 后端配置测试，覆盖 local 示例配置、production 缺失配置、OpenAI STT 条件必填和脱敏状态。 |
+| `frontend/.env.example` | 前端公开配置示例，只包含 `VITE_APP_ENV`、`VITE_PUBLIC_BASE_URL`、`VITE_API_BASE_URL`、`VITE_WS_BASE_URL`。 |
+| `frontend/src/config/public-config.ts` | 前端公开配置读取模块，只映射允许进入浏览器的 `VITE_*` 变量。 |
+| `frontend/src/config/public-config.test.ts` | 前端配置边界测试，确认 public config 不包含私有 Provider、数据库、Redis、COS 变量名。 |
+| `frontend/src/vite-env.d.ts` | Vite 环境变量类型声明，限制当前前端可读公开配置名。 |
+| `.gitignore` | 继续忽略真实 `.env` 与 `.env.*`；Step 05 增加 `!**/.env.example`，允许提交嵌套示例配置。 |
+| `backend/README.md` | 后端 README 增加配置边界、mock 示例启动命令和配置相关文件入口。 |
+
+### Step 05 验证结论
+
+- `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest` 已通过。
+- 使用 `MEETING_MVP_ENV_FILE=backend/.env.example` 启动本地后端 mock 模式后，`GET /health` 返回 HTTP `200` 和 `{"status":"ok"}`。
+- `APP_ENV=production` 且缺少必填配置时，`load_settings()` 抛出 `SettingsError` 并列出缺失变量名，不输出密钥值。
+- `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
+- 防越界检查确认未创建 Docker Compose、Alembic migration、真实 `.env`、根目录 Node/Python 工程文件。

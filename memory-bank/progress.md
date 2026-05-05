@@ -167,3 +167,52 @@
 - Step 04 只加入 Alembic 依赖，未执行 `alembic init`；迁移目录和数据库连接留给后续数据库步骤。
 - 本地后端验证仍只覆盖不依赖真实 PostgreSQL、Redis、Google STT、Qwen、COS 密钥的轻量测试。
 - 后续所有后端命令继续在 `backend/` 内使用 `uv run ...` 执行。
+
+## 2026-05-05 Step 05：定义环境变量和配置边界
+
+### 本次完成内容
+
+- 已重新阅读 `memory-bank/` 全部 7 份文档，并阅读 `memory-bank/progress.md` 确认 Step 04 已完成。
+- 已检查 Step 04 后端骨架：`backend/pyproject.toml`、`backend/uv.lock`、`backend/.python-version` 存在，后端测试可运行。
+- 已新增唯一环境变量清单：`memory-bank/environment-variables.md`。
+- 已新增后端配置模块：
+  - `backend/src/meeting_mvp_backend/config.py` 使用 `pydantic-settings` 定义 `Settings`、`AppEnv`、`load_settings()` 和 `settings_status()`。
+  - `APP_ENV=local` 作为本地 mock 模式，不要求真实 Provider、数据库、Redis、COS 密钥。
+  - `APP_ENV=staging` 或 `APP_ENV=production` 缺少必填配置时抛出 `SettingsError`，错误信息只包含缺失变量名。
+  - `OPENAI_STT_ENABLED=true` 时才要求 OpenAI STT 配置，默认关闭。
+- 已让 FastAPI startup 加载配置，并通过 `structlog` 输出配置项 `set` / `unset` 脱敏状态。
+- 已新增示例文件：
+  - `backend/.env.example`：后端 local mock 示例配置，只包含 placeholder 或空值。
+  - `frontend/.env.example`：前端 Vite 公开配置，只包含 `VITE_*`。
+- 已新增前端公开配置模块：
+  - `frontend/src/config/public-config.ts` 只读取 `VITE_APP_ENV`、`VITE_PUBLIC_BASE_URL`、`VITE_API_BASE_URL`、`VITE_WS_BASE_URL`。
+  - `frontend/src/vite-env.d.ts` 声明 Vite 公开环境变量类型。
+  - `frontend/src/config/public-config.test.ts` 验证前端公开配置不包含 Provider、数据库、Redis、COS 私有变量名。
+- 已补充测试：
+  - 后端配置测试先按 TDD 写入并确认因缺少 `config.py` 失败，再补实现使其通过。
+  - 前端 public config 测试先确认因缺少模块失败，再补实现使其通过。
+- 已更新 `.gitignore`，明确允许提交嵌套 `.env.example`，继续忽略真实 `.env` 与 `.env.*`。
+- 已更新 `backend/README.md`、`memory-bank/architecture.md` 与 `AGENTS.md`。
+- 未创建 `deploy/docker-compose.yml`、`backend/alembic.ini`、`backend/migrations/`、真实 `.env`、`.env.production`、根目录 `package.json` 或根目录 `pyproject.toml`，未开始 Step 06。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 后端 Python 版本 | `uv run python --version` | `Python 3.12.11` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 5 source files` |
+| 后端 pytest | `uv run pytest` | 5 个测试通过 |
+| 后端 local mock 启动 | `MEETING_MVP_ENV_FILE=backend/.env.example uv --project backend run uvicorn ...` 后请求 `/health` | HTTP `200`，响应 `{"status":"ok"}` |
+| production 缺失配置 | `APP_ENV=production` 后调用 `load_settings()` | 抛出 `SettingsError`，输出缺失配置名，不输出密钥值 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 3 个测试文件、6 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 e2e smoke test | `npm run test:e2e` | 1 个 Chromium 测试通过 |
+
+### 后续注意事项
+
+- 下一步只能在用户明确允许后执行 Step 06。
+- 后续新增环境变量必须先更新 `memory-bank/environment-variables.md`，再同步示例文件、配置模型和测试。
+- 前端只允许读取 `VITE_*` 变量；不得把 `QWEN_*`、`OPENAI_*`、`GOOGLE_*`、`DATABASE_URL`、`REDIS_URL`、`TENCENT_COS_*` 暴露到前端。
+- 真实密钥仍只能放入本地未提交 `.env` 或服务器安全配置；示例文件继续只使用 placeholder 或空值。

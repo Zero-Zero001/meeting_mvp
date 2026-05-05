@@ -10,13 +10,16 @@
 - 前端工程已在 `frontend/` 初始化：Vite + React + TypeScript，使用 Tailwind CSS v4、shadcn/ui、lucide-react、Zustand、Vitest、Playwright 和 npm。
 - 后端工程已在 `backend/` 初始化：Python 3.12 + FastAPI + uv，包名为 `meeting_mvp_backend`，当前 ASGI 入口为 `meeting_mvp_backend.main:app`，健康检查为 `GET /health`。
 - 后端当前已有 `backend/pyproject.toml`、`backend/uv.lock`、`backend/.python-version`；根目录仍没有 `package.json` 或 `pyproject.toml`。
+- Step 05 已建立环境变量边界：唯一清单为 `memory-bank/environment-variables.md`；后端示例为 `backend/.env.example`；前端公开示例为 `frontend/.env.example`。
+- 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
   - `memory-bank/tech-stack.md`
   - `memory-bank/meeting-prd.md`
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已在 2026-05-04 Step 01、Step 02、Step 03 和 2026-05-05 Step 04 后记录基线架构、工程目录边界、前端工程骨架、后端工程骨架和执行进度，不再为空文件。
+  - `memory-bank/environment-variables.md`
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 05 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界和执行进度，不再为空文件。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
