@@ -1,0 +1,31 @@
+# Git and local caches
+.git/
+.cache/
+tmp/
+temp/
+*.log
+
+# Environment files and secrets
+.env
+.env.*
+!**/.env.example
+**/*secret*
+**/*private*
+**/*.pem
+**/*.key
+**/*google*sa*.json
+
+# Python local artifacts
+backend/.venv/
+backend/.mypy_cache/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/**/__pycache__/
+backend/**/*.py[cod]
+
+# Node local artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/coverage/

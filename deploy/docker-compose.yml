@@ -1,0 +1,129 @@
+name: meeting_mvp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - type: bind
+        source: ${POSTGRES_DATA_DIR:-/opt/meeting_mvp/data/postgres}
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meeting_mvp
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - type: bind
+        source: ${REDIS_DATA_DIR:-/opt/meeting_mvp/data/redis}
+        target: /data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meeting_mvp
+
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Asia/Shanghai}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      API_BASE_URL: ${API_BASE_URL:?API_BASE_URL is required}
+      WS_BASE_URL: ${WS_BASE_URL:?WS_BASE_URL is required}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      DAILY_FREE_SECONDS: ${DAILY_FREE_SECONDS:-2400}
+      SESSION_MAX_SECONDS: ${SESSION_MAX_SECONDS:-1800}
+      MAX_ACTIVE_SESSIONS_PER_CLIENT: ${MAX_ACTIVE_SESSIONS_PER_CLIENT:-1}
+      MONTHLY_BUDGET_RMB: ${MONTHLY_BUDGET_RMB:-500}
+      BUDGET_FUSE_RMB: ${BUDGET_FUSE_RMB:-400}
+      ARCHIVE_RETENTION_DAYS: ${ARCHIVE_RETENTION_DAYS:-30}
+      COS_SIGNED_URL_TTL_SECONDS: ${COS_SIGNED_URL_TTL_SECONDS:-3600}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:?GOOGLE_APPLICATION_CREDENTIALS is required}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:?GOOGLE_CLOUD_PROJECT is required}
+      GOOGLE_STT_LOCATION: ${GOOGLE_STT_LOCATION:?GOOGLE_STT_LOCATION is required}
+      GOOGLE_STT_RECOGNIZER: ${GOOGLE_STT_RECOGNIZER:?GOOGLE_STT_RECOGNIZER is required}
+      QWEN_API_KEY: ${QWEN_API_KEY:?QWEN_API_KEY is required}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:?QWEN_BASE_URL is required}
+      QWEN_INTERIM_MODEL: ${QWEN_INTERIM_MODEL:?QWEN_INTERIM_MODEL is required}
+      QWEN_INTERIM_ENABLED: ${QWEN_INTERIM_ENABLED:-true}
+      QWEN_FINAL_MODEL: ${QWEN_FINAL_MODEL:-qwen3.6-max-preview}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_FINAL_MODEL: ${OPENAI_FINAL_MODEL:-}
+      OPENAI_STT_ENABLED: ${OPENAI_STT_ENABLED:-false}
+      OPENAI_STT_MODEL: ${OPENAI_STT_MODEL:-}
+      TENCENT_COS_SECRET_ID: ${TENCENT_COS_SECRET_ID:?TENCENT_COS_SECRET_ID is required}
+      TENCENT_COS_SECRET_KEY: ${TENCENT_COS_SECRET_KEY:?TENCENT_COS_SECRET_KEY is required}
+      TENCENT_COS_REGION: ${TENCENT_COS_REGION:?TENCENT_COS_REGION is required}
+      TENCENT_COS_BUCKET: ${TENCENT_COS_BUCKET:?TENCENT_COS_BUCKET is required}
+      TENCENT_COS_EXPORT_PREFIX: ${TENCENT_COS_EXPORT_PREFIX:-exports/}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${GOOGLE_APPLICATION_CREDENTIALS:?GOOGLE_APPLICATION_CREDENTIALS is required}
+        target: ${GOOGLE_APPLICATION_CREDENTIALS:?GOOGLE_APPLICATION_CREDENTIALS is required}
+        read_only: true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - meeting_mvp
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:?CADDY_SITE_ADDRESS is required}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?CADDY_ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - meeting_mvp
+
+networks:
+  meeting_mvp:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

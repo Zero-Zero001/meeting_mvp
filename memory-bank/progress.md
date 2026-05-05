@@ -216,3 +216,64 @@
 - 后续新增环境变量必须先更新 `memory-bank/environment-variables.md`，再同步示例文件、配置模型和测试。
 - 前端只允许读取 `VITE_*` 变量；不得把 `QWEN_*`、`OPENAI_*`、`GOOGLE_*`、`DATABASE_URL`、`REDIS_URL`、`TENCENT_COS_*` 暴露到前端。
 - 真实密钥仍只能放入本地未提交 `.env` 或服务器安全配置；示例文件继续只使用 placeholder 或空值。
+
+## 2026-05-05 Step 06：建立 Docker Compose 与 Caddy 部署骨架
+
+### 本次完成内容
+
+- 已重新阅读 `memory-bank/2026-04-24-meeting-mvp-design.md` 和 `memory-bank/architecture.md`，并检查 Step 05 已完成。
+- 已确认 Step 06 开始前 `deploy/` 只有 `README.md`，没有 `deploy/docker-compose.yml`、`deploy/Caddyfile`、`backend/Dockerfile` 或 `frontend/Dockerfile`。
+- 已新增部署骨架文件：
+  - `deploy/docker-compose.yml`：定义 `postgres`、`redis`、`backend`、`caddy` 四个服务。
+  - `deploy/Caddyfile`：服务前端静态文件，并反向代理 `/api/*` 和 `/ws/*`。
+  - `deploy/.env.example`：Docker Compose 示例配置，只包含 placeholder。
+  - `backend/Dockerfile`：基于 Python 3.12 / uv 的 FastAPI 后端镜像构建文件。
+  - `frontend/Dockerfile`：基于 Node 24 构建 Vite 静态产物，并生成 Caddy 静态服务镜像。
+  - `.dockerignore`：排除 `.env`、本地缓存、虚拟环境、node_modules、构建产物和常见密钥文件形态，降低 Docker build context 风险。
+- 已更新 `deploy/README.md`，记录 Compose 验证命令、端口边界和数据目录边界。
+- Compose 约束已按 Step 06 落地：
+  - Caddy 只映射 `80:80` 和 `443:443`。
+  - PostgreSQL 未映射 `5432` 到宿主机公网。
+  - Redis 未映射 `6379` 到宿主机公网。
+  - PostgreSQL 数据挂载路径为 `/opt/meeting_mvp/data/postgres`。
+  - Redis 数据挂载路径为 `/opt/meeting_mvp/data/redis`。
+  - 后端容器只读挂载 `GOOGLE_APPLICATION_CREDENTIALS` 指向的 Google STT 服务账号 JSON，确保容器内路径可访问且不会写入密钥文件。
+- 未执行 `docker compose up -d`、`docker compose ps`、Alembic migration，未开始 Step 07。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 本地静态部署检查 | PowerShell 检查 `deploy/docker-compose.yml` 端口、挂载、真实 `.env` 和常见密钥形态 | 通过，输出 `local static deployment checks passed` |
+| 本地 Docker 可用性 | `docker compose version` | 未安装 Docker，符合 Windows 本地不安装 Docker 的项目边界 |
+| Lighthouse SSH 探测 | 使用用户提供的 SSH 私钥连接 `ubuntu@meeting.youroristore.com` | 通过，输出 `ubuntu`、`VM-0-9-ubuntu`、`/home/ubuntu` |
+| 远端文件同步 | 将 `.dockerignore`、`backend/Dockerfile`、`frontend/Dockerfile`、`deploy/docker-compose.yml`、`deploy/Caddyfile`、`deploy/.env.example`、`deploy/README.md` 复制到 `/opt/meeting_mvp/app` | 通过，远端文件均存在；补充只读 Google 凭据挂载后已再次同步 `deploy/docker-compose.yml` |
+| 远端 Compose 配置 | `cd /opt/meeting_mvp/app && docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet` | 通过，无输出，退出码 0 |
+| 远端端口与挂载边界 | 基于远端 `docker compose config` 输出检查发布端口和数据目录 | 通过，输出 `remote-compose-boundary-checks-passed` |
+| 后端 Python 版本 | `uv run python --version` | `Python 3.12.11` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 5 source files` |
+| 后端 pytest | `uv run pytest` | 5 个测试通过 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 3 个测试文件、6 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 e2e smoke test | `npm run test:e2e` | 1 个 Chromium 测试通过 |
+
+### Lighthouse 验收状态
+
+- 已使用用户提供的 SSH 私钥完成 Lighthouse 连接和 Step 06 文件同步。
+- 已在 `/opt/meeting_mvp/app` 执行 `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`，配置合法。
+- 已基于远端 `docker compose config` 输出确认：
+  - 仅发布 Caddy `80` 和 `443`。
+  - 未发布 PostgreSQL `5432`。
+  - 未发布 Redis `6379`。
+  - PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`。
+  - Redis 挂载 `/opt/meeting_mvp/data/redis`。
+  - 后端只读挂载 `/opt/meeting_mvp/secrets/google-stt-sa.json`。
+- 本次远端验收只使用 `deploy/.env.example` 占位配置，没有输出生产 `.env.production` 内容。
+
+### 后续注意事项
+
+- Step 06 的部署骨架和远端 Compose 配置验收已完成；后续仍需等用户明确允许后才能开始 Step 07。
+- 在用户明确允许开始 Step 07 前，不得创建 Alembic migration、数据库模型或执行数据库升级。
+- 生产真实 `.env.production`、Google 服务账号 JSON、COS SecretId / SecretKey 仍只能放在服务器安全位置，不得进入 Git。

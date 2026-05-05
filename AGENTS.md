@@ -11,6 +11,8 @@
 - 后端工程已在 `backend/` 初始化：Python 3.12 + FastAPI + uv，包名为 `meeting_mvp_backend`，当前 ASGI 入口为 `meeting_mvp_backend.main:app`，健康检查为 `GET /health`。
 - 后端当前已有 `backend/pyproject.toml`、`backend/uv.lock`、`backend/.python-version`；根目录仍没有 `package.json` 或 `pyproject.toml`。
 - Step 05 已建立环境变量边界：唯一清单为 `memory-bank/environment-variables.md`；后端示例为 `backend/.env.example`；前端公开示例为 `frontend/.env.example`。
+- Step 06 已建立部署骨架：`deploy/docker-compose.yml`、`deploy/Caddyfile`、`deploy/.env.example`、`backend/Dockerfile`、`frontend/Dockerfile` 和 `.dockerignore`。
+- Step 06 本地静态检查、前后端既有验证和 Lighthouse `docker compose config --quiet` 均已通过；远端验收使用用户提供的 SSH 私钥完成，没有输出生产 `.env.production` 内容。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -154,6 +156,9 @@
 - Docker 和 Docker Compose 已在 Lighthouse 上安装并验证过。
 - 生产部署目标：Caddy 服务 Vite 静态前端，并通过 HTTPS/WSS 反向代理 `/api/*` 和 `/ws/*` 到 FastAPI。
 - PostgreSQL 和 Redis 通过 Docker Compose 容器运行；5432 和 6379 不对公网开放。
+- Step 06 Compose 骨架中 Caddy 是唯一公网入口，只映射 80/443；PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`，Redis 挂载 `/opt/meeting_mvp/data/redis`。
+- Step 06 Compose 骨架中后端容器只读挂载 `GOOGLE_APPLICATION_CREDENTIALS` 指向的 Google STT 服务账号 JSON；该文件仍只允许位于服务器安全目录，不进入镜像或 Git。
+- 远端配置检查命令为：`cd /opt/meeting_mvp/app && docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`；Step 06 已执行通过，但未执行 `docker compose up -d`、`docker compose ps` 或 Alembic migration。
 - 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
 
 ## 9. 密钥与安全

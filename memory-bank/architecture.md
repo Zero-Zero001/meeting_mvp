@@ -170,3 +170,47 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `APP_ENV=production` 且缺少必填配置时，`load_settings()` 抛出 `SettingsError` 并列出缺失变量名，不输出密钥值。
 - `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
 - 防越界检查确认未创建 Docker Compose、Alembic migration、真实 `.env`、根目录 Node/Python 工程文件。
+
+## 2026-05-05 Step 06 Docker Compose 与 Caddy 部署骨架
+
+### 当前架构状态
+
+- `deploy/` 已从占位目录升级为单机 Docker Compose 部署骨架目录。
+- 部署拓扑包含 `postgres`、`redis`、`backend`、`caddy` 四个服务；前端静态产物在 Caddy 镜像构建阶段由 `frontend/Dockerfile` 生成并复制到 `/srv`。
+- Caddy 是唯一公网入口，只映射 `80` 和 `443`，负责 HTTPS/WSS、静态前端、`/api/*` 和 `/ws/*` 反向代理。
+- PostgreSQL 16 和 Redis 7 通过 Compose 容器运行，不安装到 Lighthouse 宿主机；两者均不发布 `5432` 或 `6379` 到宿主机公网。
+- PostgreSQL 数据绑定挂载到 `/opt/meeting_mvp/data/postgres`；Redis 数据绑定挂载到 `/opt/meeting_mvp/data/redis`。
+- 后端容器基于 Python 3.12 与 `uv.lock` 构建，运行 `meeting_mvp_backend.main:app`，并通过 Compose 环境变量接收数据库、Redis、Provider、COS、额度和归档配置；Google STT 服务账号 JSON 通过 `GOOGLE_APPLICATION_CREDENTIALS` 指向的只读 bind mount 进入容器。
+- Step 06 只建立部署骨架和配置合法性边界；已在 Lighthouse 上完成 `docker compose config --quiet` 验收，但尚未启动生产容器，尚未执行 Alembic migration，尚未进入 Step 07 数据模型。
+- Windows 本地仍不安装 Docker；本地只做静态部署检查和前后端现有测试。
+- Lighthouse 远端验收使用用户提供的 SSH 私钥完成；本轮没有输出生产 `.env.production` 内容。
+
+### 部署文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `.dockerignore` | Docker build context 忽略规则，排除 Git、本地缓存、真实 `.env`、虚拟环境、`node_modules`、构建产物和常见密钥文件形态。 |
+| `backend/Dockerfile` | 后端容器构建文件；使用 Python 3.12 / uv 镜像，按 `uv.lock` 安装生产依赖，暴露 8000 并启动 Uvicorn。 |
+| `frontend/Dockerfile` | 前端/Caddy 容器构建文件；先用 Node 24 执行 `npm ci` 和 `npm run build`，再把 `dist/` 与 `deploy/Caddyfile` 复制进 Caddy 镜像。 |
+| `deploy/docker-compose.yml` | 单机部署拓扑；定义 PostgreSQL、Redis、后端、Caddy 服务、健康检查、数据挂载、端口映射和容器网络。 |
+| `deploy/Caddyfile` | Caddy 路由配置；以 Vite 静态产物作为根目录，代理 `/api/*` 与 `/ws/*` 到 `backend:8000`。 |
+| `deploy/.env.example` | Docker Compose 示例环境变量；只包含 placeholder，用于安全地运行 `docker compose config`，不包含真实密钥。 |
+| `deploy/README.md` | 部署目录说明；记录 Step 06 验证命令、端口边界、持久化路径和禁止放置真实密钥的规则。 |
+
+### 网络与数据边界
+
+- 公网入口：仅 `caddy` 服务通过宿主机 `80` 和 `443` 暴露。
+- 后端入口：`backend` 不映射宿主机端口，只由 Caddy 通过 Compose 网络访问 `backend:8000`。
+- 数据库入口：`postgres` 仅由 Compose 网络内服务访问 `postgres:5432`，不对公网发布端口。
+- Redis 入口：`redis` 仅由 Compose 网络内服务访问 `redis:6379`，不对公网发布端口。
+- 正式档案仍以未来 PostgreSQL 数据模型为准；Redis 只保存短期状态，不能作为正式会议归档来源。
+- 生产真实配置仍应放在服务器安全环境文件中；`deploy/.env.example` 只用于示例和安全配置检查。
+- Google STT 服务账号 JSON 不进入镜像和 Git，只在服务器 `/opt/meeting_mvp/secrets/google-stt-sa.json` 以只读挂载方式提供给后端容器。
+
+### Step 06 验证结论
+
+- 本地静态部署检查已确认 Compose 不发布 `5432` / `6379`，只发布 `80` / `443`，并包含 PostgreSQL 与 Redis 持久化挂载路径。
+- 后端 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest` 已通过。
+- 前端 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
+- Lighthouse `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet` 已在 `/opt/meeting_mvp/app` 执行通过。
+- 远端边界检查已确认只发布 `80` / `443`，不发布 `5432` / `6379`，保留 PostgreSQL 与 Redis 的 `/opt/meeting_mvp/data/*` 挂载路径，并包含后端只读 Google STT 凭据挂载。

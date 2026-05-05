@@ -1,10 +1,31 @@
 # Deploy
 
-本目录用于后续放置单机部署配置。
+本目录保存 Step 06 建立的单机部署骨架。真实部署目标是腾讯云 Lighthouse 上的 `/opt/meeting_mvp/app`，通过 Docker Compose 编排 PostgreSQL、Redis、FastAPI 后端和 Caddy 静态前端入口。
 
-边界：
+## 文件作用
 
-- 放置 Docker Compose、Caddy、容器启动、云端部署和生产检查相关文件。
-- 后续 Step 06 才能添加 PostgreSQL、Redis、FastAPI、Caddy 和前端静态产物的部署配置。
-- 不放置真实密钥、生产 `.env`、Google 服务账号 JSON 或 COS Secret。
+| 文件 | 作用 |
+|---|---|
+| `docker-compose.yml` | 定义 `postgres`、`redis`、`backend`、`caddy` 服务、持久化挂载、健康检查和容器网络。 |
+| `Caddyfile` | 由 Caddy 服务 Vite 静态前端，并把 `/api/*` 与 `/ws/*` 反向代理到后端容器。 |
+| `.env.example` | Compose 验证用占位配置，不包含真实密钥。生产环境变量仍应放在服务器安全位置。 |
 
+## 验证命令
+
+在服务器项目目录执行配置检查：
+
+```bash
+cd /opt/meeting_mvp/app
+docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config
+```
+
+Step 06 只要求配置合法；不要在本步骤执行 `docker compose up -d`、`docker compose ps` 或 Alembic migration。
+
+## 安全边界
+
+- 只允许 Caddy 映射公网 `80` 和 `443`。
+- PostgreSQL `5432` 与 Redis `6379` 不映射到宿主机公网端口，只允许容器网络内访问。
+- PostgreSQL 数据目录使用 `/opt/meeting_mvp/data/postgres`。
+- Redis 数据目录使用 `/opt/meeting_mvp/data/redis`。
+- 后端容器只读挂载 `GOOGLE_APPLICATION_CREDENTIALS` 指向的 Google STT 服务账号 JSON；该文件只放在服务器安全目录，不进入镜像和 Git。
+- 不在本目录放置真实 `.env`、生产密钥、Google 服务账号 JSON、COS SecretId 或 SecretKey。
