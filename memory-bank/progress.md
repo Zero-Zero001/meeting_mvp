@@ -112,3 +112,58 @@
 - 后续前端正式功能应继续复用 `src/stores/`、`src/components/ui/`、`src/lib/` 和 `@/*` 别名。
 - Playwright 当前只配置 Chromium smoke test；多浏览器矩阵、真实音频捕获、WebSocket mock 与导出流程留到后续相关步骤。
 - Windows 本机如果再次遇到 npm cache 权限问题，继续使用 `D:\meeting_mvp\.cache\npm` 作为临时 npm cache；该目录已被根目录 `.gitignore` 忽略。
+
+## 2026-05-05 Step 04：初始化后端工程骨架
+
+### 本次完成内容
+
+- 已重新阅读 `memory-bank/` 全部 7 份文档，并阅读 `memory-bank/progress.md` 确认 Step 03 已完成。
+- 已检查 Step 03 文件边界：`frontend/package.json` 与 `frontend/vite.config.ts` 存在；Step 04 开始前没有 `backend/pyproject.toml`、`backend/uv.lock`、`backend/.python-version`、根目录 `package.json` 或根目录 `pyproject.toml`。
+- 已在 `backend/` 内初始化 uv 后端工程：
+  - `.python-version` 固定为 `3.12`。
+  - `pyproject.toml` 限定 Python `>=3.12,<3.13`。
+  - `uv.lock` 锁定后端依赖。
+  - `.venv` 由 `uv sync` 本地生成，仍由 `.gitignore` 忽略。
+- 已加入运行依赖：FastAPI、Uvicorn、Pydantic v2、pydantic-settings、SQLAlchemy async、Alembic、psycopg、redis、httpx、tenacity、structlog。
+- 已加入开发依赖：pytest、pytest-asyncio、Ruff、mypy。
+- 已创建最小可验证后端服务：
+  - `src/meeting_mvp_backend/main.py` 暴露 `meeting_mvp_backend.main:app`。
+  - `GET /health` 返回 `{"status":"ok"}`。
+  - `tests/test_health.py` 使用 `httpx.ASGITransport` 验证健康检查，不依赖真实 PostgreSQL、Redis 或外部 Provider。
+- 已配置 Ruff、mypy、pytest 基础规则。
+- 已更新根目录 `.gitignore`，忽略后端验证生成的 `.mypy_cache/` 与 `.ruff_cache/` 本地缓存。
+- 已更新 `backend/README.md`、`memory-bank/architecture.md` 与 `AGENTS.md`。
+- 未创建 `.env`、`.env.example`、Docker Compose、Alembic migration、真实数据库/Redis 集成测试，未开始 Step 05。
+
+### 环境与执行记录
+
+- `uv --version`：`uv 0.11.8`。
+- `uv python install 3.12`：Python 3.12 已安装。
+- `uv python pin 3.12`：已写入 `.python-version`。
+- `uv init --bare --name meeting-mvp-backend --python 3.12 --no-workspace .`：已创建后端 uv 项目。
+- `uv add ...` 与 `uv add --dev ...`：已写入依赖并生成/更新 `uv.lock`。
+- `uv sync`：已创建/同步项目级 `.venv`，并安装当前后端包。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Python 版本 | `uv run python --version` | `Python 3.12.11` |
+| Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| mypy | `uv run mypy .` | 通过，`Success: no issues found in 3 source files` |
+| pytest | `uv run pytest` | 1 个测试通过 |
+| 健康检查服务 | `uv run uvicorn meeting_mvp_backend.main:app --host 127.0.0.1 --port 8000` 后请求 `/health` | HTTP `200`，响应 `{"status":"ok"}` |
+| 前端初始化边界 | `Test-Path .\frontend\package.json` | `True` |
+| 后端 pyproject | `Test-Path .\backend\pyproject.toml` | `True` |
+| 后端锁文件 | `Test-Path .\backend\uv.lock` | `True` |
+| 后端 Python 版本锁 | `Test-Path .\backend\.python-version` | `True` |
+| 根目录前端防越界 | `Test-Path .\package.json` | `False` |
+| 根目录后端防越界 | `Test-Path .\pyproject.toml` | `False` |
+| Step 05 防越界 | 检查根目录和 `backend/` 下 `.env`、`.env.example` | 均为 `False` |
+
+### 后续注意事项
+
+- 下一步只能在用户明确允许后执行 Step 05：定义环境变量和配置边界。
+- Step 04 只加入 Alembic 依赖，未执行 `alembic init`；迁移目录和数据库连接留给后续数据库步骤。
+- 本地后端验证仍只覆盖不依赖真实 PostgreSQL、Redis、Google STT、Qwen、COS 密钥的轻量测试。
+- 后续所有后端命令继续在 `backend/` 内使用 `uv run ...` 执行。
