@@ -16,7 +16,8 @@
 - Step 06 本地静态检查、前后端既有验证和 Lighthouse `docker compose config --quiet` 均已通过；远端验收使用用户提供的 SSH 私钥完成，没有输出生产 `.env.production` 内容。
 - Step 07 本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e、Lighthouse backend build、Alembic migration 和 PostgreSQL 集成测试均已通过。
 - Step 08 已实现 F01 匿名用户初始化：前端生成并持久化 `client_id`，后端提供 `POST /api/anonymous-clients` 并 upsert `anonymous_client`；本地前后端验证和 Lighthouse PostgreSQL 匿名接口集成测试均已通过。
-- Step 09 已实现 F02 后端内部额度与预算校验：新增 `meeting_mvp_backend.quota`，用 Redis 保存每日已用秒数、活跃会话和预算保险丝状态；本地后端/前端验证和 Lighthouse Redis 集成测试均已通过；未进入 Step 10。
+- Step 09 已实现 F02 后端内部额度与预算校验：新增 `meeting_mvp_backend.quota`，用 Redis 保存每日已用秒数、活跃会话和预算保险丝状态；本地后端/前端验证和 Lighthouse Redis 集成测试均已通过。
+- Step 10 已实现 WebSocket 消息 schema：后端新增 `meeting_mvp_backend.ws_messages`，前端新增 `frontend/src/protocol/websocket-messages.ts` 并引入 Zod；本地前后端协议解析测试与完整本地验证均已通过；未进入 Step 11。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -25,7 +26,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 09 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 10 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema 和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -227,7 +228,14 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 10 WebSocket 会话编排必须等用户明确允许后再开始。
+- Step 11 WebSocket 会话编排必须等用户明确允许后再开始。
+
+Step 10 WebSocket 消息 schema 已落地：
+
+- 后端 `backend/src/meeting_mvp_backend/ws_messages.py` 定义 Pydantic v2 JSON 消息 schema 与 `parse_client_message()`、`parse_server_message()`、`is_audio_chunk_frame()`；所有 JSON 消息使用顶层 `type` 字段，`audio_chunk` 只通过 binary frame 识别。
+- 前端 `frontend/src/protocol/websocket-messages.ts` 使用 Zod 镜像同一套 wire schema，并导出 `parseClientMessage()`、`parseServerMessage()`、`isAudioChunkFrame()` 和推导类型。
+- `session_start.audio_format` 固定为 16 kHz、1 channel、`pcm16`；Step 10 不新增 `/ws` endpoint，不接入 Redis、PostgreSQL、Provider 或 `QuotaService`。
+- `backend/tests/test_ws_messages.py` 和 `frontend/src/protocol/websocket-messages.test.ts` 覆盖合法消息、缺失字段、未知消息类型、非固定音频格式和 binary frame 识别。
 
 核心 WebSocket 请求消息：
 
@@ -280,5 +288,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 10 及后续 WebSocket 会话编排必须等待用户明确允许后再开始；Step 09 当前只提供内部额度服务。
+- Step 11 及后续 WebSocket 会话编排必须等待用户明确允许后再开始；Step 10 当前只提供消息 schema。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

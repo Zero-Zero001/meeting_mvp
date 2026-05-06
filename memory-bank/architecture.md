@@ -370,3 +370,46 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Lighthouse 使用独立 Compose project `meeting_mvp_step09` 构建 backend 镜像，只启动临时 Redis 和一次性 backend 测试容器；`tests/integration/test_quota_redis_integration.py` 已通过。
 - 远端 Step 09 临时 `.env.step09`、占位凭据、临时 Redis 容器、临时 backend 镜像和 `/opt/meeting_mvp/data/redis_step09` 已清理。
 - Step 10 尚未开始；额度服务尚未接入 WebSocket `session_start`。
+
+## 2026-05-06 Step 10 WebSocket 消息 Schema
+
+### 架构状态
+
+- Step 10 建立了前后端共享的 WebSocket wire protocol 契约层，但没有启动运行时会话链路：未新增 `/ws` endpoint，未实现 session lifecycle，未接入 Redis、PostgreSQL、Provider 或 `QuotaService`。
+- WebSocket JSON 消息统一使用顶层 `type` 字段做判别，字段名继续使用 snake_case，保持与后端 API、PRD 和数据库命名风格一致。
+- `audio_chunk` 不属于 JSON discriminated union，而是 WebSocket binary frame；浏览器上传音频格式固定为 16 kHz、mono、PCM16。
+- 前后端 schema 暂时镜像维护，不引入跨语言 codegen；后端 Pydantic 是服务端校验权威，前端 Zod 用于运行时协议校验和 TypeScript 类型推导。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/ws_messages.py` | 后端 WebSocket 协议模型。用 Pydantic v2 定义 client/server JSON 消息的 discriminated union，导出 `parse_client_message()`、`parse_server_message()` 和 `is_audio_chunk_frame()`；禁止额外字段，固定 `session_start.audio_format`。 |
+| `backend/tests/test_ws_messages.py` | 后端协议契约测试。覆盖合法消息、缺失必填字段、未知 `type`、非固定音频格式，以及 binary PCM16 音频帧识别。 |
+| `frontend/src/protocol/websocket-messages.ts` | 前端 WebSocket 协议模块。用 Zod 镜像后端 wire schema，导出 schema、推导类型、`parseClientMessage()`、`parseServerMessage()` 和 `isAudioChunkFrame()`，供后续真实 WebSocket client 复用。 |
+| `frontend/src/protocol/websocket-messages.test.ts` | 前端协议契约测试。覆盖与后端一致的消息解析失败/成功场景，以及 `ArrayBuffer`、typed array、`Blob` binary frame 识别。 |
+| `frontend/package.json` | 增加前端运行时依赖 `zod`。 |
+| `frontend/package-lock.json` | 锁定 `zod` 依赖版本，保证前端协议校验依赖可重复安装。 |
+
+### 协议边界
+
+- Client JSON request：
+  - `session_start`：必填 `client_id`、`capture_mode`、`source_platform`、`audio_format`。
+  - `heartbeat`：必填 `session_id`。
+  - `session_stop`：必填 `session_id`。
+- Server JSON response：
+  - `session_started`：必填 `session_id`、`archive_token`、`archive_url`、`remaining_seconds_today`。
+  - `quota_update`：必填 `remaining_seconds_today`。
+  - `audio_status`：必填 `has_audio`，`level` 可选且范围为 0 到 1。
+  - `asr_interim`、`translation_interim`、`key_sentence_update`：必填 `text`。
+  - `segment_final`：必填 `segment_id`、`sequence`、`start_ms`、`end_ms`、`english_text_final`、`chinese_text_final`。
+  - `timeline_update.items`：最小节点结构为 `id`、`item_type`、`timestamp_ms`、`text`，`segment_id` 可选。
+  - `warning`、`error`：必填 `code`，`message` 可选。
+  - `session_closed`：必填 `reason`。
+- Step 10 不定义公开 REST API，不持久化会议数据，不保存 interim 或原始音频；正式会话编排、额度扣减、Provider streaming、归档写入留给 Step 11 及后续步骤。
+
+### 验证结论
+
+- 后端本地协议测试、Ruff、mypy 和完整 pytest 已通过；默认 pytest 结果为 34 passed、3 integration deselected。
+- 前端 lint、Vitest、build 和 Playwright e2e 已通过；Vitest 结果为 6 个测试文件、22 个测试通过，Playwright 结果为 1 个 Chromium smoke test 通过。
+- `git diff --check` 已通过，仅有 Windows LF/CRLF 工作区提示；当前工作区只包含 Step 10 代码、依赖锁文件和记忆文档改动。

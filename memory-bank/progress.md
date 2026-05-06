@@ -477,3 +477,45 @@
 - Step 10/后续会话编排可以复用 `QuotaService`，在真正创建会议或处理 `session_start` 时接入额度检查和活跃会话登记。
 - `record_consumed_seconds()` 已具备累计能力，但“检测到有效音频前不正式消耗额度”的会话编排仍留给后续步骤。
 - Step 08 的匿名初始化 API 仍返回基础剩余额度；真正的会议级 Redis 额度扣减尚未接入公开接口或 WebSocket。
+
+## 2026-05-06 Step 10：WebSocket 消息 Schema
+
+### 本次完成
+
+- 只推进 Step 10 的 WebSocket 消息契约，未新增 `/ws` endpoint，未实现会话编排，未接入 `QuotaService`、Redis、PostgreSQL、Provider 或 DB 写入，未开始 Step 11。
+- 后端新增 `backend/src/meeting_mvp_backend/ws_messages.py`，使用 Pydantic v2 定义基于顶层 `type` 字段的 discriminated union：
+  - 请求 JSON 消息：`session_start`、`heartbeat`、`session_stop`。
+  - 响应 JSON 消息：`session_started`、`quota_update`、`audio_status`、`asr_interim`、`translation_interim`、`segment_final`、`key_sentence_update`、`timeline_update`、`warning`、`error`、`session_closed`。
+  - `audio_chunk` 不作为 JSON 消息进入 schema，保留为 WebSocket binary frame；`is_audio_chunk_frame()` 只识别 `bytes`、`bytearray`、`memoryview`。
+  - `session_start.audio_format` 固定为 `{ sample_rate_hz: 16000, channels: 1, encoding: "pcm16" }`。
+- 前端新增 `frontend/src/protocol/websocket-messages.ts`，引入 Zod 镜像同一套 wire schema，并导出 `parseClientMessage()`、`parseServerMessage()`、`isAudioChunkFrame()` 与推导类型，供 Step 11 后真实 WebSocket 连接复用。
+- 前端新增运行时依赖 `zod`，更新 `frontend/package.json` 与 `frontend/package-lock.json`；首次 `npm install zod` 遇到默认 npm cache `EPERM`，按既有约定使用 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'` 后安装成功。npm audit 仍提示 2 个 moderate vulnerabilities，本步未执行自动修复以避免越界依赖变更。
+- 新增测试：
+  - `backend/tests/test_ws_messages.py`
+  - `frontend/src/protocol/websocket-messages.test.ts`
+
+### TDD 与验证记录
+
+- 失败测试先行：
+  - 后端目标测试首次运行失败，原因为 `meeting_mvp_backend.ws_messages` 尚不存在。
+  - 前端目标测试首次运行失败，原因为 `src/protocol/websocket-messages.ts` 尚不存在。
+- 针对性验证已通过：
+  - `uv run pytest tests/test_ws_messages.py`：9 passed。
+  - `npm run test -- src/protocol/websocket-messages.test.ts`：9 passed。
+- 本地完整验证已通过：
+  - `uv run python --version`：`Python 3.12.11`。
+  - `uv run ruff check .`：通过，`All checks passed!`。
+  - `uv run mypy .`：通过，`Success: no issues found in 21 source files`。
+  - `uv run pytest`：34 passed，3 integration deselected。
+  - `npm run lint`：通过。
+  - `npm run test`：6 个测试文件、22 个测试通过。
+  - `npm run build`：通过。
+  - `npm run test:e2e`：1 个 Chromium smoke test 通过。
+  - `git diff --check`：通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
+  - `git status --short`：当前改动仅包含 Step 10 代码、前端 Zod 依赖锁文件和记忆文档。
+- Step 10 不需要 Lighthouse Redis/PostgreSQL/Docker/Provider 集成测试，因为本步只新增纯协议 schema 和本地可测试解析逻辑。
+
+### 后续注意
+
+- Step 11 WebSocket 会话编排必须等待用户明确允许后再开始。
+- Step 11 接入真实 `/ws` endpoint 时，应复用本步的后端 Pydantic schema 和前端 Zod schema；JSON 消息继续使用 snake_case 字段名与顶层 `type`，音频仍通过 16 kHz mono PCM16 binary frame 上传。
