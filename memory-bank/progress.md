@@ -345,3 +345,61 @@
 - Step 08 可复用本次新增的 `AnonymousClient` ORM 模型和 `create_session_factory_from_settings()`。
 - 生产发布前仍需使用真实生产数据库环境变量执行 migration；本次 Step 07 只在临时 PostgreSQL 数据目录完成 schema 验收。
 - 远端 `.env.production` 后续需要补齐数据库、Redis 和站点相关变量，才能直接作为 Compose 生产环境文件使用。
+
+## 2026-05-06 Step 08：实现 F01 匿名用户初始化
+
+### 本次完成内容
+
+- 已按计划只推进 Step 08，未开始 Step 09 的额度校验、Redis 活跃会话、并发限制或预算保险丝。
+- 已按 TDD 先补充匿名初始化接口、本地存储和 Zustand 状态测试，确认缺少实现时失败，再补实现使测试通过。
+- 前端已新增稳定匿名身份：
+  - `frontend/src/lib/anonymous-client.ts` 负责从 `localStorage` 读取或通过 `crypto.randomUUID()` 创建 `client_id`。
+  - `frontend/src/api/anonymous-clients.ts` 负责调用 `POST /api/anonymous-clients`，把后端 snake_case 响应映射为前端 camelCase 状态。
+  - `frontend/src/stores/session-store.ts` 已扩展 `clientId`、匿名初始化状态、服务端同步状态、同步错误和默认今日剩余额度。
+  - `frontend/src/App.tsx` 首屏加载时初始化匿名身份，并在工作台状态区显示匿名身份和服务端同步状态；本地存储不可用时提示启用浏览器存储。
+- 后端已新增匿名初始化 API：
+  - `POST /api/anonymous-clients` 接收 `{"client_id": "<uuid>"}`。
+  - 响应返回 `client_id`、`daily_free_seconds`、`remaining_seconds_today` 和 `is_new`。
+  - `backend/src/meeting_mvp_backend/anonymous_clients.py` 负责根据 `client_id`、请求 IP 和 User-Agent 计算 SHA-256 hash，并 upsert `anonymous_client`。
+  - 首次请求写入 `first_seen_at`、`last_seen_at`、`created_ip_hash`、`user_agent_hash`；重复请求更新 `last_seen_at` 和最近 `user_agent_hash`，保留首次 IP hash。
+  - 未配置 `DATABASE_URL` 时接口返回 HTTP 503；这只影响服务端同步，不阻塞前端本地 `client_id` 生成。
+- 未新增 migration，复用 Step 07 已建立的 `anonymous_client` 表。
+- Lighthouse 远端验证使用已记录的 SSH 私钥路径，只使用路径连接服务器，未读取、复制或输出 PEM 私钥内容。
+
+### 远端执行说明
+
+- 本次远端验证继续避免正式生产数据目录，使用临时 PostgreSQL 环境：
+  - PostgreSQL 临时数据目录：`/opt/meeting_mvp/data/postgres_step08`
+  - Redis 临时数据目录：`/opt/meeting_mvp/data/redis_step08`
+  - 临时环境文件：`/opt/meeting_mvp/app/.env.step08`
+- 已同步 Step 08 后端必要文件到 `/opt/meeting_mvp/app`，并构建 backend 镜像。
+- 远端只启动临时 `postgres` 和一次性 `backend` 测试容器；未启动 Redis、Caddy 或常驻 backend 服务。
+- 首次合并执行的远端命令在 backend 镜像和临时 PostgreSQL 已就绪后本地超时；随后拆分执行 Alembic migration 和匿名接口集成测试，均通过。
+- 验收完成后已删除临时 PostgreSQL 容器、`.env.step08`、`/opt/meeting_mvp/data/postgres_step08` 和 `/opt/meeting_mvp/data/redis_step08`，并清理远端测试缓存。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 后端 TDD RED | `uv run pytest tests/test_anonymous_clients_api.py` | 首次失败，`ModuleNotFoundError: No module named 'meeting_mvp_backend.anonymous_clients'` |
+| 前端 TDD RED | `npm run test -- src/lib/anonymous-client.test.ts src/stores/anonymous-client-store.test.ts` | 首次失败，缺少匿名 client 工具和 store action |
+| 后端 Python 版本 | `uv run python --version` | `Python 3.12.11` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 16 source files` |
+| 后端本地 pytest | `uv run pytest` | 15 个测试通过，2 个 integration 测试被默认排除 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 5 个测试文件、13 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 e2e smoke test | `npm run test:e2e` | 1 个 Chromium 测试通过 |
+| Lighthouse migration | `docker compose --env-file .env.step08 -f deploy/docker-compose.yml run --rm --no-deps backend uv run alembic upgrade head` | 通过，Alembic 使用 PostgreSQL dialect |
+| Lighthouse 匿名接口集成测试 | `docker compose --env-file .env.step08 -f deploy/docker-compose.yml run --rm --no-deps backend uv run --group dev pytest -o addopts= tests/integration/test_anonymous_clients_integration.py -q` | 通过，1 个真实 PostgreSQL 集成测试通过 |
+| Lighthouse 临时资源清理 | 检查 `.env.step08`、`/opt/meeting_mvp/data/postgres_step08` 和临时容器 | 通过，临时 env 和临时数据目录已清理，未保留 Step 08 临时容器 |
+| Markdown 空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+| PEM 内容静态扫描 | 扫描 Git 跟踪文件和未忽略新增文件中的 `-----BEGIN ... PRIVATE KEY-----` / `-----END ... PRIVATE KEY-----` | 通过，未发现 PEM 私钥正文 |
+
+### 后续注意事项
+
+- 下一步只能在用户明确允许后执行 Step 09：实现 F02 额度与预算校验。
+- Step 09 应在当前 `client_id` 与 `anonymous_client` 基础上接入真实日额度、单场时长、Redis 活跃会话、并发限制和预算保险丝。
+- 当前 `remaining_seconds_today` 仍基于 PostgreSQL `daily_minutes_used` 的占位剩余额度计算；会议级消耗和 Redis 限流留到 Step 09。
+- 前端在服务端同步失败时仍保留本地匿名身份，后续 Step 09 需要在真正创建会议前做服务端额度校验。

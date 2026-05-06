@@ -1,18 +1,33 @@
-import { Activity, CircleStop, Play } from 'lucide-react'
+import { useEffect } from 'react'
+import { Activity, CircleStop, Play, UserRound } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useSessionStore } from '@/stores/session-store'
 
 function App() {
   const {
+    anonymousClientError,
+    anonymousClientStatus,
     captureMode,
+    clientId,
+    initializeAnonymousClient,
     remainingSecondsToday,
+    serverSyncError,
+    serverSyncStatus,
     status,
     beginCapture,
     endSession,
   } = useSessionStore()
   const isCapturing = status === 'capturing'
   const quotaMinutes = Math.floor(remainingSecondsToday / 60)
+  const clientIdLabel =
+    anonymousClientStatus === 'ready' && clientId
+      ? clientId.slice(0, 8)
+      : '未初始化'
+
+  useEffect(() => {
+    void initializeAnonymousClient()
+  }, [initializeAnonymousClient])
 
   return (
     <main className="min-h-svh bg-background text-foreground">
@@ -28,6 +43,10 @@ function App() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm">
+              <UserRound className="size-4 text-muted-foreground" />
+              <span>匿名身份 {clientIdLabel}</span>
+            </div>
             <div className="inline-flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-sm">
               <Activity className="size-4 text-muted-foreground" />
               <span>{isCapturing ? '捕获中' : '未连接'}</span>
@@ -92,6 +111,12 @@ function App() {
               </p>
               <dl className="mt-4 grid gap-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
+                  <dt className="text-muted-foreground">匿名身份</dt>
+                  <dd>
+                    {anonymousClientStatus === 'error' ? '初始化失败' : clientIdLabel}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
                   <dt className="text-muted-foreground">捕获模式</dt>
                   <dd>
                     {captureMode === 'tab_audio' ? '标签页音频' : '系统音频'}
@@ -101,7 +126,26 @@ function App() {
                   <dt className="text-muted-foreground">今日剩余额度</dt>
                   <dd>{quotaMinutes} 分钟</dd>
                 </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-muted-foreground">服务端同步</dt>
+                  <dd>
+                    {serverSyncStatus === 'synced'
+                      ? '已同步'
+                      : serverSyncStatus === 'syncing'
+                        ? '同步中'
+                        : serverSyncStatus === 'error'
+                          ? '稍后重试'
+                          : '待同步'}
+                  </dd>
+                </div>
               </dl>
+              {anonymousClientError || serverSyncError ? (
+                <p className="mt-4 text-sm text-muted-foreground">
+                  {anonymousClientError
+                    ? '请启用浏览器本地存储后继续使用。'
+                    : '本地匿名身份已生成，服务端同步稍后重试。'}
+                </p>
+              ) : null}
             </section>
           </aside>
         </section>
