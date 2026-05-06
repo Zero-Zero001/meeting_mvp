@@ -2,13 +2,13 @@
 
 ## 文档目标
 
-本文面向 AI 开发者，基于 `memory-bank/2026-04-24-meeting-mvp-design.md`、`memory-bank/tech-stack.md` 和 `memory-bank/meeting-prd.md` 拆解第一版开发工作。每一步都要求小而具体，先验证再继续，严禁在本文中写业务源码或代码片段。
+本文面向 AI 开发者，基于 `memory-bank/2026-04-24-meeting-mvp-design.md`、`memory-bank/tech-stack.md` 和 `meeting-prd.md` 拆解第一版开发工作。每一步都要求小而具体，先验证再继续，严禁在本文中写业务源码或代码片段。
 
 ## 依据文档
 
 - `memory-bank/2026-04-24-meeting-mvp-design.md`：产品范围、架构、Provider、数据模型、里程碑和验收标准。
 - `memory-bank/tech-stack.md`：Vite + React + TypeScript、FastAPI、PostgreSQL、Redis、Tencent COS、Docker Compose、Caddy 等技术栈。
-- `memory-bank/meeting-prd.md`：用户画像、WebSocket 消息、字段说明、F01 到 F18 功能清单、测试用例、埋点、成功指标和风险边界。
+- `meeting-prd.md`：用户画像、WebSocket 消息、字段说明、F01 到 F18 功能清单、测试用例、埋点、成功指标和风险边界。
 
 ## 执行规则
 
@@ -58,9 +58,9 @@
 
 目标：确保实施者基于最新 PRD 和技术栈开始开发。
 
-具体指令：读取 `memory-bank/` 中的三份依据文档，确认当前分支、未提交变更、远端地址和根目录位置；记录 `memory-bank/meeting-prd.md` 中 F01 到 F18 的功能清单作为后续验收索引。
+具体指令：读取两份 `memory-bank/` 依据文档和根目录 `meeting-prd.md`，确认当前分支、未提交变更、远端地址和根目录位置；记录 `meeting-prd.md` 中 F01 到 F18 的功能清单作为后续验收索引。
 
-验证测试：运行 `git status --short --branch`、`git remote -v`，并搜索 `memory-bank/meeting-prd.md` 中 `F01` 到 `F18`。
+验证测试：运行 `git status --short --branch`、`git remote -v`，并搜索 `meeting-prd.md` 中 `F01` 到 `F18`。
 
 预期结果：当前工作目录为项目根目录，远端指向 `Zero-Zero001/meeting_mvp`，F01 到 F18 均能在 PRD 中找到。
 
@@ -118,7 +118,7 @@
 
 目标：落地 PRD 字段说明中的核心表。
 
-具体指令：使用 Alembic 管理 `anonymous_client`、`meeting_session`、`transcript_segment`、`usage_event`、`export_file`，字段语义与 `memory-bank/meeting-prd.md` 保持一致。`meeting_session` 必须支持 `pending_audio` 状态、`archive_token_hash` 和 `retention_expires_at`。
+具体指令：使用 Alembic 管理 `anonymous_client`、`meeting_session`、`transcript_segment`、`usage_event`、`export_file`，字段语义与 `meeting-prd.md` 保持一致。`meeting_session` 必须支持 `pending_audio` 状态、`archive_token_hash` 和 `retention_expires_at`。
 
 验证测试：本地运行不依赖真实数据库的模型和 schema 单元测试；通过 SSH 在 Lighthouse 的 Docker Compose 环境运行 `uv run alembic upgrade head` 和数据库集成测试，确认五张表存在且关键字段可写入和读取。
 
@@ -378,7 +378,7 @@
 
 目标：确认 MVP 可以给 10 到 50 名测试用户试用。
 
-具体指令：按 `memory-bank/meeting-prd.md` 的 TC-001 到 TC-026 执行验收，重点检查 M1-A 闭环、腾讯会议降级、额度、异常、基础归档、导出、埋点和预算保险丝。
+具体指令：按 `meeting-prd.md` 的 TC-001 到 TC-026 执行验收，重点检查 M1-A 闭环、腾讯会议降级、额度、异常、基础归档、导出、埋点和预算保险丝。
 
 验证测试：逐项记录 TC-001 到 TC-026 的通过或失败结果，并补充浏览器、平台、Provider、错误码和截图证据。
 

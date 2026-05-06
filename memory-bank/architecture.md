@@ -7,7 +7,8 @@
 - 仓库根目录为 `D:\meeting_mvp`。
 - Git 远端为 `https://github.com/Zero-Zero001/meeting_mvp.git`。
 - 当前应用工程目录边界已建立；根目录下已有 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`；前端工程骨架已初始化，后端工程骨架尚未初始化。
-- 当前有效产品、技术、部署和实施依据集中在 `memory-bank/`。
+- 当前有效产品、技术、部署和实施依据集中在根目录 `meeting-prd.md` 与 `memory-bank/`。
+- PRD 和验收索引已重新定位到项目根目录 `meeting-prd.md`，便于作为顶层产品依据引用。
 - Step 01 完成基线确认和文档记录；Step 02 已建立工程目录边界；Step 03 已初始化前端工程骨架，未进入 Step 04。
 
 ### 目标架构概览
@@ -43,7 +44,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 | `memory-bank/` | 当前项目事实、设计和执行依据的核心目录。 |
 | `memory-bank/2026-04-24-meeting-mvp-design.md` | 正式设计文档，定义产品定位、范围、核心链路、Provider、WebSocket、数据模型、部署和验收标准。 |
 | `memory-bank/tech-stack.md` | 技术栈推荐，明确前端、音频、后端、Provider、存储、部署、工具链和 V1 不推荐方案。 |
-| `memory-bank/meeting-prd.md` | PRD 和验收索引，包含用户画像、功能清单 F01-F18、字段说明、测试用例 TC-001 到 TC-026、埋点和风险。 |
+| `meeting-prd.md` | PRD 和验收索引，包含用户画像、功能清单 F01-F18、字段说明、测试用例 TC-001 到 TC-026、埋点和风险。 |
 | `memory-bank/implementation-plan.md` | 分步实施计划，规定从 Step 01 到 Step 33 的执行顺序、验证命令和预期结果。 |
 | `memory-bank/set-up-env.md` | 开发与部署环境准备手册，定义 Windows 本地、Lighthouse 云端、Provider 凭证、COS、环境变量和验证边界。 |
 | `memory-bank/progress.md` | 开发进度记录；从 Step 01 起记录已完成工作、验证结果和后续注意事项。 |
@@ -323,3 +324,49 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Lighthouse 临时 PostgreSQL 环境下 Alembic migration 与 `tests/integration/test_anonymous_clients_integration.py` 已通过，验证真实数据库 upsert 和 hash 边界。
 - 远端 Step 08 临时 `.env.step08`、临时数据目录和临时 PostgreSQL 容器已清理。
 - Step 09 尚未开始。
+
+## 2026-05-06 Step 09 F02 额度与预算校验
+
+### 当前架构状态
+
+- F02 已落地为后端内部额度服务，不对外暴露新的 REST API，不定义新的 WebSocket 消息 schema；Step 10 尚未开始。
+- 额度判定分为纯策略层和 Redis 状态层：纯策略可本地单测，Redis 层只保存短期额度、活跃会话和预算保险丝状态。
+- PostgreSQL 仍是正式会议档案来源；Redis 不保存 final 文本、归档 token、导出文件或任何正式会议记录。
+- 额度服务以 `client_id` 为匿名用户边界，后续 `session_start` 可复用同一服务完成开始前校验、活跃会话登记、释放和会议消耗累计。
+- 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
+- Asia/Shanghai 自然日是每日额度 key 的日期边界；`used_seconds` key 的 TTL 到下一个上海自然日零点。
+- 预算保险丝读取 Redis 中的当月预估成本或显式开关；真实成本写入仍留给后续 usage/cost 步骤。
+
+### 额度模块文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/quota.py` | Step 09 核心额度模块；定义 `QuotaDecision`、`QuotaDenialReason`、`QuotaSettings`、`QuotaSnapshot`、`QuotaPolicy`、`RedisQuotaStore`、`QuotaService` 和 `create_quota_service_from_settings()`，并集中生成 Redis key 与 Asia/Shanghai TTL。 |
+| `backend/tests/test_quota.py` | 本地额度单元测试；覆盖额度充足、每日额度耗尽、同用户并发冲突、单场时长上限、预算保险丝优先级、成本阈值触发、消费秒数封顶和上海自然日 key/TTL。 |
+| `backend/tests/integration/test_quota_redis_integration.py` | Lighthouse/CI Redis 集成测试；连接真实 Redis，验证过期活跃会话清理、活跃会话并发限制、消费秒数写入和预算保险丝读取。 |
+
+### Redis key 与状态边界
+
+| Redis key | 数据结构 | 当前用途 |
+|---|---|---|
+| `meeting_mvp:quota:{client_id}:{yyyyMMdd}:used_seconds` | string integer | 保存匿名用户在 Asia/Shanghai 当日已消耗秒数，写入时封顶到 `DAILY_FREE_SECONDS`，TTL 到下一个上海自然日零点。 |
+| `meeting_mvp:active_sessions:{client_id}` | sorted set | 保存匿名用户活跃会话，member 是 `session_id`，score 是过期 epoch；每次校验前删除已过期 member。 |
+| `meeting_mvp:budget:{yyyyMM}:estimated_cost_cents` | string integer | 保存当月全站预估成本，单位分；达到 `BUDGET_FUSE_RMB * 100` 时拒绝新会话。 |
+| `meeting_mvp:budget:{yyyyMM}:fuse_triggered` | string flag | 显式预算保险丝，值为 `1` 时无条件拒绝新会话。 |
+
+### 服务方法边界
+
+- `check_start_allowed(client_id)`：读取 Redis 快照，返回是否允许开始、今日剩余秒数和拒绝原因。
+- `reserve_active_session(client_id, session_id)`：登记活跃会话，达到同用户并发上限时拒绝。
+- `release_active_session(client_id, session_id)`：从活跃会话 sorted set 删除会话。
+- `record_consumed_seconds(client_id, session_id, seconds)`：累计当日消耗秒数，最多写到 `DAILY_FREE_SECONDS`，不写正式归档。
+- `check_session_duration(elapsed_seconds)`：本地纯逻辑判定单场 30 分钟上限。
+
+### Step 09 验证结论
+
+- TDD RED 已确认缺少 `meeting_mvp_backend.quota` 时 `backend/tests/test_quota.py` 失败。
+- 后端 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest tests/test_quota.py`、`uv run pytest` 已通过；额度单测结果为 10 passed，默认 pytest 结果为 25 passed、3 integration deselected。
+- 前端 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
+- Lighthouse 使用独立 Compose project `meeting_mvp_step09` 构建 backend 镜像，只启动临时 Redis 和一次性 backend 测试容器；`tests/integration/test_quota_redis_integration.py` 已通过。
+- 远端 Step 09 临时 `.env.step09`、占位凭据、临时 Redis 容器、临时 backend 镜像和 `/opt/meeting_mvp/data/redis_step09` 已清理。
+- Step 10 尚未开始；额度服务尚未接入 WebSocket `session_start`。

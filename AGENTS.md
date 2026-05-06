@@ -15,16 +15,18 @@
 - Step 06 已建立部署骨架：`deploy/docker-compose.yml`、`deploy/Caddyfile`、`deploy/.env.example`、`backend/Dockerfile`、`frontend/Dockerfile` 和 `.dockerignore`。
 - Step 06 本地静态检查、前后端既有验证和 Lighthouse `docker compose config --quiet` 均已通过；远端验收使用用户提供的 SSH 私钥完成，没有输出生产 `.env.production` 内容。
 - Step 07 本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e、Lighthouse backend build、Alembic migration 和 PostgreSQL 集成测试均已通过。
-- Step 08 已实现 F01 匿名用户初始化：前端生成并持久化 `client_id`，后端提供 `POST /api/anonymous-clients` 并 upsert `anonymous_client`；本地前后端验证和 Lighthouse PostgreSQL 匿名接口集成测试均已通过；未进入 Step 09。
+- Step 08 已实现 F01 匿名用户初始化：前端生成并持久化 `client_id`，后端提供 `POST /api/anonymous-clients` 并 upsert `anonymous_client`；本地前后端验证和 Lighthouse PostgreSQL 匿名接口集成测试均已通过。
+- Step 09 已实现 F02 后端内部额度与预算校验：新增 `meeting_mvp_backend.quota`，用 Redis 保存每日已用秒数、活跃会话和预算保险丝状态；本地后端/前端验证和 Lighthouse Redis 集成测试均已通过；未进入 Step 10。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
-- 当前有效产品/技术文档集中在 `memory-bank/`：
+- 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
   - `memory-bank/tech-stack.md`
-  - `memory-bank/meeting-prd.md`
+  - `meeting-prd.md`
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 08 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 09 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务和执行进度，不再为空文件。
+- PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
@@ -167,6 +169,7 @@
 - Step 07 backend build 曾卡在 Lighthouse Docker build 的 `uv sync` 依赖下载阶段；`backend/Dockerfile` 已增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120`，后续 Compose backend build 已通过。
 - Step 07 发现远端 `.env.production` 当前未包含 Compose 所需的数据库、Redis 和站点变量名；后续正式部署前需要补齐这些变量，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
 - Step 08 远端匿名接口集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step08` 和临时 env 文件 `.env.step08` 完成；验收后已删除临时 PostgreSQL 容器、临时 env、临时数据目录和测试缓存。
+- Step 09 远端 Redis 集成测试使用独立 Compose project `meeting_mvp_step09`、临时数据目录 `/opt/meeting_mvp/data/redis_step09`、临时 env 文件 `.env.step09` 和非真实 Google 凭据占位文件完成；验收后已删除临时 Redis 容器、临时网络、临时 backend 镜像、临时 env、占位凭据、临时 Redis 数据目录和测试缓存。
 - 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
 
 ## 9. 密钥与安全
@@ -210,7 +213,21 @@ Step 08 匿名用户初始化已落地：
 - 后端 `backend/src/meeting_mvp_backend/anonymous_clients.py` 负责匿名 client upsert 和 IP/User-Agent hash。
 - 后端 `POST /api/anonymous-clients` 请求体为 `{"client_id": "<uuid>"}`，响应 `client_id`、`daily_free_seconds`、`remaining_seconds_today`、`is_new`。
 - 后端只保存请求 IP 与 User-Agent 的 SHA-256 hash，不保存明文 IP 或明文 User-Agent；未配置 `DATABASE_URL` 时匿名初始化接口返回 503。
-- 当前剩余额度仍是 Step 08 基础值；真实日额度扣减、Redis 活跃会话、并发限制和预算保险丝留到 Step 09。
+- 匿名初始化接口的 `remaining_seconds_today` 仍是 Step 08 基础值；Step 09 的 Redis 额度服务尚未接入公开接口或 WebSocket。
+
+Step 09 额度与预算校验已落地：
+
+- 后端 `backend/src/meeting_mvp_backend/quota.py` 负责内部额度服务，不新增公开 REST API，不新增 WebSocket 消息 schema。
+- `QuotaPolicy` 负责纯逻辑判定；`RedisQuotaStore` 负责 Redis 状态读写；`QuotaService` 给后续会话编排提供 `check_start_allowed()`、`reserve_active_session()`、`release_active_session()`、`record_consumed_seconds()` 和 `check_session_duration()`；`create_quota_service_from_settings()` 从后端 `Settings.REDIS_URL` 创建 Redis-backed 额度服务。
+- Redis key 边界：
+  - `meeting_mvp:quota:{client_id}:{yyyyMMdd}:used_seconds`：Asia/Shanghai 自然日已用秒数，TTL 到下一个上海自然日零点。
+  - `meeting_mvp:active_sessions:{client_id}`：sorted set，member 为 `session_id`，score 为过期 epoch；检查前清理过期会话。
+  - `meeting_mvp:budget:{yyyyMM}:estimated_cost_cents`：全站当月预估成本，单位分。
+  - `meeting_mvp:budget:{yyyyMM}:fuse_triggered`：预算保险丝显式开关，值为 `1` 时拒绝新会话。
+- 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
+- Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
+- `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
+- Step 10 WebSocket 会话编排必须等用户明确允许后再开始。
 
 核心 WebSocket 请求消息：
 
@@ -253,7 +270,7 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 
 - 前端：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
 - 后端：在 `backend/` 内执行 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；数据库步骤完成后再执行 `uv run alembic upgrade head`。
-- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`。
+- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py` 或 `tests/integration/test_quota_redis_integration.py`。
 - 云端部署：`docker compose config`、`docker compose up -d`、`docker compose ps`。
 - 本机若默认 npm cache 遇到 `EPERM` 权限错误，可临时设置 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'`；该目录已被根目录 `.gitignore` 忽略。
 
@@ -263,4 +280,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
+- Step 10 及后续 WebSocket 会话编排必须等待用户明确允许后再开始；Step 09 当前只提供内部额度服务。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

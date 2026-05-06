@@ -8,14 +8,14 @@
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
   - `memory-bank/architecture.md`
   - `memory-bank/implementation-plan.md`
-  - `memory-bank/meeting-prd.md`
+  - `meeting-prd.md`
   - `memory-bank/progress.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/tech-stack.md`
 - 已按 `memory-bank/implementation-plan.md` 的 Step 01 完成基线确认。
 - 已确认当前仓库根目录为 `D:\meeting_mvp`。
 - 已确认 Git 远端指向 `https://github.com/Zero-Zero001/meeting_mvp.git`。
-- 已确认 `memory-bank/meeting-prd.md` 中 F01 到 F18 功能编号均存在，可作为后续验收索引。
+- 已确认 `meeting-prd.md` 中 F01 到 F18 功能编号均存在，可作为后续验收索引。
 - 未创建 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`，未开始 Step 02。
 
 ### 验证命令与结果
@@ -25,7 +25,7 @@
 | 分支和工作区状态 | `git status --short --branch` | `## main...origin/main [ahead 1]` |
 | Git 远端 | `git remote -v` | fetch/push 均为 `https://github.com/Zero-Zero001/meeting_mvp.git` |
 | 当前目录 | `Get-Location` | `D:\meeting_mvp` |
-| PRD 功能编号 | 搜索 `memory-bank/meeting-prd.md` 中 `F01` 到 `F18` | F01-F18 全部找到 |
+| PRD 功能编号 | 搜索 `meeting-prd.md` 中 `F01` 到 `F18` | F01-F18 全部找到 |
 
 ### 后续注意事项
 
@@ -403,3 +403,77 @@
 - Step 09 应在当前 `client_id` 与 `anonymous_client` 基础上接入真实日额度、单场时长、Redis 活跃会话、并发限制和预算保险丝。
 - 当前 `remaining_seconds_today` 仍基于 PostgreSQL `daily_minutes_used` 的占位剩余额度计算；会议级消耗和 Redis 限流留到 Step 09。
 - 前端在服务端同步失败时仍保留本地匿名身份，后续 Step 09 需要在真正创建会议前做服务端额度校验。
+
+## 2026-05-06 文档重定位：PRD 移至根目录
+
+### 本次完成内容
+
+- 已将 `memory-bank/meeting-prd.md` 移动到项目根目录 `meeting-prd.md`。
+- 已更新 `AGENTS.md`、`memory-bank/architecture.md`、`memory-bank/implementation-plan.md` 和本文件中的 PRD 路径引用。
+- 后续引用 PRD 时使用根目录路径 `meeting-prd.md`，不再使用旧路径 `memory-bank/meeting-prd.md`。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 旧路径引用检查 | 搜索 `memory-bank/meeting-prd.md` 和 `memory-bank\meeting-prd.md` | 无残留引用 |
+| 文件位置检查 | 检查 `meeting-prd.md` 与 `memory-bank/meeting-prd.md` | 根目录文件存在，旧路径已移除 |
+
+## 2026-05-06 Step 09：实现 F02 额度与预算校验
+
+### 本次完成内容
+
+- 已按计划只推进 Step 09，未新增公开 REST API，未新增 WebSocket 消息 schema，未开始 Step 10。
+- 已按 TDD 先新增 `backend/tests/test_quota.py` 并运行 `uv run pytest tests/test_quota.py`，确认缺少 `meeting_mvp_backend.quota` 时按预期失败，再补实现使测试通过。
+- 后端已新增内部额度模块 `backend/src/meeting_mvp_backend/quota.py`：
+  - `QuotaDecision` 和 `QuotaDenialReason` 表达允许/拒绝结果与拒绝原因。
+  - `QuotaPolicy` 负责纯逻辑判定：每日 40 分钟、单场 30 分钟、同用户 1 个活跃会议和预算保险丝。
+  - `QuotaService` 提供后续会话编排可复用的方法：`check_start_allowed()`、`reserve_active_session()`、`release_active_session()`、`record_consumed_seconds()`、`check_session_duration()`。
+  - `RedisQuotaStore` 使用 `REDIS_URL` 指向的 Redis 保存短期额度、活跃会话和预算保险丝状态，不保存正式会议档案。
+  - `create_quota_service_from_settings()` 提供从后端 `Settings.REDIS_URL` 创建 Redis-backed 额度服务的入口。
+- Redis key 边界已按 Step 09 固定设计实现：
+  - `meeting_mvp:quota:{client_id}:{yyyyMMdd}:used_seconds`：Asia/Shanghai 自然日已用秒数，TTL 到下一个上海自然日零点。
+  - `meeting_mvp:active_sessions:{client_id}`：sorted set，member 为 `session_id`，score 为过期 epoch；检查前清理过期会话。
+  - `meeting_mvp:budget:{yyyyMM}:estimated_cost_cents`：全站当月预估成本，单位分。
+  - `meeting_mvp:budget:{yyyyMM}:fuse_triggered`：预算保险丝显式开关，值为 `1` 时拒绝新会话。
+- 拒绝优先级已固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
+- Step 09 没有修改数据库 schema，没有新增 migration；PostgreSQL 仍是正式归档来源。
+
+### 远端执行说明
+
+- Lighthouse 验证使用已记录的 SSH 私钥路径，只使用路径连接服务器，未读取、复制或输出 PEM 私钥内容。
+- 已同步 Step 09 必要后端文件到 `/opt/meeting_mvp/app`。
+- 远端验证使用独立 Compose project `meeting_mvp_step09`，避免触碰正式 `meeting_mvp` 容器名。
+- 远端临时资源：
+  - Redis 临时数据目录：`/opt/meeting_mvp/data/redis_step09`
+  - 临时环境文件：`/opt/meeting_mvp/app/.env.step09`
+  - 非真实 Google 凭据占位文件：`/opt/meeting_mvp/secrets/google-stt-sa-step09-placeholder.json`
+- 已构建 backend 镜像，只启动临时 `redis` 和一次性 `backend` 测试容器；未启动 Caddy、PostgreSQL 或常驻 backend 服务。
+- 验收完成后已删除临时 Redis 容器、临时网络、临时 backend 镜像、`.env.step09`、占位凭据文件和 `/opt/meeting_mvp/data/redis_step09`；Redis 数据目录内由容器写入的文件需要 `sudo rm -rf` 清理，清理后已验证无 Step 09 临时容器和临时路径残留。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 后端 TDD RED | `uv run pytest tests/test_quota.py` | 首次失败，`ModuleNotFoundError: No module named 'meeting_mvp_backend.quota'` |
+| 后端 Python 版本 | `uv run python --version` | `Python 3.12.11` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 19 source files` |
+| 后端额度单测 | `uv run pytest tests/test_quota.py` | 10 个测试通过 |
+| 后端本地 pytest | `uv run pytest` | 25 个测试通过，3 个 integration 测试被默认排除 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 5 个测试文件、13 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 e2e smoke test | `npm run test:e2e` | 1 个 Chromium 测试通过 |
+| Lighthouse backend build | `docker compose -p meeting_mvp_step09 --env-file .env.step09 -f deploy/docker-compose.yml build backend` | 通过，`Image meeting_mvp_step09-backend Built` |
+| Lighthouse Redis 启动 | `docker compose -p meeting_mvp_step09 --env-file .env.step09 -f deploy/docker-compose.yml up -d redis` | 通过，临时 Redis 进入 `healthy` |
+| Lighthouse Redis 集成测试 | `docker compose -p meeting_mvp_step09 --env-file .env.step09 -f deploy/docker-compose.yml run --rm --no-deps backend uv run --group dev pytest -o addopts= tests/integration/test_quota_redis_integration.py -q` | 通过，1 个真实 Redis 集成测试通过 |
+| Lighthouse 临时资源清理 | 检查 Step 09 临时容器、临时 backend 镜像、`.env.step09`、占位凭据和 `/opt/meeting_mvp/data/redis_step09` | 通过，临时资源已清理 |
+| Markdown 空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意事项
+
+- 下一步只能在用户明确允许后执行 Step 10；当前不得提前新增 Step 10 WebSocket 消息 schema。
+- Step 10/后续会话编排可以复用 `QuotaService`，在真正创建会议或处理 `session_start` 时接入额度检查和活跃会话登记。
+- `record_consumed_seconds()` 已具备累计能力，但“检测到有效音频前不正式消耗额度”的会话编排仍留给后续步骤。
+- Step 08 的匿名初始化 API 仍返回基础剩余额度；真正的会议级 Redis 额度扣减尚未接入公开接口或 WebSocket。
