@@ -14,7 +14,8 @@
 - Step 05 已建立环境变量边界：唯一清单为 `memory-bank/environment-variables.md`；后端示例为 `backend/.env.example`；前端公开示例为 `frontend/.env.example`。
 - Step 06 已建立部署骨架：`deploy/docker-compose.yml`、`deploy/Caddyfile`、`deploy/.env.example`、`backend/Dockerfile`、`frontend/Dockerfile` 和 `.dockerignore`。
 - Step 06 本地静态检查、前后端既有验证和 Lighthouse `docker compose config --quiet` 均已通过；远端验收使用用户提供的 SSH 私钥完成，没有输出生产 `.env.production` 内容。
-- Step 07 本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e、Lighthouse backend build、Alembic migration 和 PostgreSQL 集成测试均已通过；未进入 Step 08。
+- Step 07 本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e、Lighthouse backend build、Alembic migration 和 PostgreSQL 集成测试均已通过。
+- Step 08 已实现 F01 匿名用户初始化：前端生成并持久化 `client_id`，后端提供 `POST /api/anonymous-clients` 并 upsert `anonymous_client`；本地前后端验证和 Lighthouse PostgreSQL 匿名接口集成测试均已通过；未进入 Step 09。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -23,7 +24,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 07 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 08 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化和执行进度，不再为空文件。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
 ## 2. 产品定位
@@ -154,6 +155,7 @@
 - 服务器：腾讯云 Lighthouse Ubuntu 22.04 LTS 64 位 x86。
 - 域名：`meeting.youroristore.com`。
 - 服务器项目目录：`/opt/meeting_mvp`。
+- Lighthouse SSH 私钥本地路径：`D:\lighthouse secretKey\lz_secretKey.pem`；只记录路径，不读取、不复制、不输出私钥内容。
 - 已创建目录：`/opt/meeting_mvp/app`、`/opt/meeting_mvp/secrets`、`/opt/meeting_mvp/data/postgres`、`/opt/meeting_mvp/data/redis`、`/opt/meeting_mvp/backups`、`/opt/meeting_mvp/logs`。
 - Docker 和 Docker Compose 已在 Lighthouse 上安装并验证过。
 - 生产部署目标：Caddy 服务 Vite 静态前端，并通过 HTTPS/WSS 反向代理 `/api/*` 和 `/ws/*` 到 FastAPI。
@@ -164,6 +166,7 @@
 - Step 07 远端 migration 和 PostgreSQL 集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step07` 完成，验收后已清理临时容器、临时数据目录、远端临时脚本和测试缓存。
 - Step 07 backend build 曾卡在 Lighthouse Docker build 的 `uv sync` 依赖下载阶段；`backend/Dockerfile` 已增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120`，后续 Compose backend build 已通过。
 - Step 07 发现远端 `.env.production` 当前未包含 Compose 所需的数据库、Redis 和站点变量名；后续正式部署前需要补齐这些变量，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
+- Step 08 远端匿名接口集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step08` 和临时 env 文件 `.env.step08` 完成；验收后已删除临时 PostgreSQL 容器、临时 env、临时数据目录和测试缓存。
 - 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
 
 ## 9. 密钥与安全
@@ -199,6 +202,15 @@ Step 07 表边界：
 - `meeting_session` 支持 `pending_audio`、`archive_token_hash`、`retention_expires_at`；不保存明文 `archive_token`。
 - `usage_event.payload` 使用 PostgreSQL `JSONB`；不得保存密钥、原始音频或隐私明文。
 - `transcript_segment` 只保存英文 final、中文 final 和片段元数据；不保存 interim 或原始音频。
+
+Step 08 匿名用户初始化已落地：
+
+- 前端 `frontend/src/lib/anonymous-client.ts` 使用 `localStorage` 的 `meeting_mvp.client_id` 持久化匿名身份；为空时使用 `crypto.randomUUID()` 生成。
+- 前端 `frontend/src/stores/session-store.ts` 已记录 `clientId`、匿名初始化状态、服务端同步状态、同步错误和默认今日剩余额度。
+- 后端 `backend/src/meeting_mvp_backend/anonymous_clients.py` 负责匿名 client upsert 和 IP/User-Agent hash。
+- 后端 `POST /api/anonymous-clients` 请求体为 `{"client_id": "<uuid>"}`，响应 `client_id`、`daily_free_seconds`、`remaining_seconds_today`、`is_new`。
+- 后端只保存请求 IP 与 User-Agent 的 SHA-256 hash，不保存明文 IP 或明文 User-Agent；未配置 `DATABASE_URL` 时匿名初始化接口返回 503。
+- 当前剩余额度仍是 Step 08 基础值；真实日额度扣减、Redis 活跃会话、并发限制和预算保险丝留到 Step 09。
 
 核心 WebSocket 请求消息：
 

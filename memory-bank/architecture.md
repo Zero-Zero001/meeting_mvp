@@ -273,3 +273,53 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Lighthouse `docker compose --env-file .env.production -f deploy/docker-compose.yml build --progress plain backend` 已通过。
 - Lighthouse `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps backend uv run alembic upgrade head` 已通过。
 - Lighthouse `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps backend uv run --group dev pytest -o addopts= -m integration` 已通过，1 个真实 PostgreSQL 集成测试通过。
+
+## 2026-05-06 Step 08 F01 匿名用户初始化
+
+### 当前架构状态
+
+- F01 匿名用户初始化已形成前后端闭环：浏览器负责生成并持久化稳定 `client_id`，后端负责把该匿名身份 upsert 到 PostgreSQL `anonymous_client` 表。
+- 前端本地身份不依赖后端成功返回；如果服务端暂不可用，用户仍能获得本地 `client_id`，工作台显示“稍后重试”的服务端同步状态。
+- 后端匿名初始化接口固定为 `POST /api/anonymous-clients`，请求体只接收 UUID 格式的 `client_id`。
+- 后端只保存请求 IP 与 User-Agent 的 SHA-256 hash，不保存明文 IP 或明文 User-Agent；响应体也不包含这些请求身份信息。
+- `remaining_seconds_today` 当前由 PostgreSQL `anonymous_client.daily_minutes_used` 和 `DAILY_FREE_SECONDS` 计算，仍是 Step 08 的基础值；真实会议消耗、Redis 限流和预算保险丝留给 Step 09。
+- 未新增数据库 migration；Step 08 复用 Step 07 已创建的 `anonymous_client` 表。
+- FastAPI lifespan 会在配置了 `DATABASE_URL` 时创建 async engine 和 session factory；未配置数据库时匿名初始化接口返回 HTTP 503，`GET /health` 仍可用于本地轻量健康检查。
+- Lighthouse 验证继续采用临时 PostgreSQL 数据目录和一次性 backend 容器，未启动 Redis、Caddy 或常驻 backend 服务。
+
+### 后端新增与修改文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/anonymous_clients.py` | 匿名用户初始化业务服务；负责请求身份 hash、查询或创建 `AnonymousClient`、更新 `last_seen_at` 和 `user_agent_hash`，并返回初始化结果。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 应用入口；Step 08 增加数据库 session factory 初始化、匿名 client 请求/响应模型、匿名服务依赖和 `POST /api/anonymous-clients` 路由。 |
+| `backend/tests/test_anonymous_clients_api.py` | 本地 API 单元测试；通过依赖覆盖验证新 client 响应、非法 UUID 422、无 `DATABASE_URL` 返回 503、响应不暴露明文请求身份。 |
+| `backend/tests/integration/test_anonymous_clients_integration.py` | Lighthouse PostgreSQL 集成测试；在真实数据库上验证匿名接口首次创建、重复请求更新、hash 字段不保存明文 IP/User-Agent。 |
+
+### 前端新增与修改文件作用
+
+| 路径 | 当前作用 |
+|---|---|
+| `frontend/src/lib/anonymous-client.ts` | 浏览器匿名身份本地存储工具；从 `localStorage` 读取 `meeting_mvp.client_id`，为空时使用 `crypto.randomUUID()` 生成并写回。 |
+| `frontend/src/api/anonymous-clients.ts` | 匿名 client API 客户端；调用 `POST /api/anonymous-clients`，把后端 `client_id`、`daily_free_seconds`、`remaining_seconds_today`、`is_new` 映射为前端状态。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态；Step 08 增加匿名身份状态、服务端同步状态、错误信息和 `initializeAnonymousClient()` action。 |
+| `frontend/src/App.tsx` | 实时会议工作台首屏；加载时初始化匿名身份，并在状态区展示匿名身份短 ID、今日剩余额度和服务端同步状态。 |
+| `frontend/src/lib/anonymous-client.test.ts` | 本地匿名身份工具测试；覆盖首次生成、再次复用、清空存储后生成新 ID 和存储不可用错误。 |
+| `frontend/src/stores/anonymous-client-store.test.ts` | Zustand 匿名身份状态测试；覆盖初始化并同步额度、服务端同步失败保留本地 ID、存储不可用进入错误状态。 |
+
+### 接口与数据边界
+
+- 请求：`POST /api/anonymous-clients`，JSON body 为 `{"client_id": "<uuid>"}`。
+- 成功响应：`client_id`、`daily_free_seconds`、`remaining_seconds_today`、`is_new`。
+- 错误响应：非法 UUID 由 FastAPI/Pydantic 返回 422；未配置 `DATABASE_URL` 返回 503。
+- 数据库写入：新匿名用户写入 `client_id`、`first_seen_at`、`last_seen_at`、`created_ip_hash`、`user_agent_hash`；重复初始化只更新最近访问时间和最近 User-Agent hash。
+- 安全边界：不保存明文 IP，不保存明文 User-Agent，不读取或输出 Lighthouse SSH 私钥内容，不新增任何前端私有环境变量。
+
+### Step 08 验证结论
+
+- 本地 TDD RED 已覆盖后端匿名接口和前端匿名身份状态，缺少实现时均按预期失败。
+- 后端 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest` 已通过；pytest 结果为 15 passed、2 integration deselected。
+- 前端 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过；单元测试结果为 5 个测试文件、13 个测试通过。
+- Lighthouse 临时 PostgreSQL 环境下 Alembic migration 与 `tests/integration/test_anonymous_clients_integration.py` 已通过，验证真实数据库 upsert 和 hash 边界。
+- 远端 Step 08 临时 `.env.step08`、临时数据目录和临时 PostgreSQL 容器已清理。
+- Step 09 尚未开始。

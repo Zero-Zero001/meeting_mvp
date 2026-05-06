@@ -13,7 +13,7 @@
 | GitHub | `Zero-Zero001/meeting_mvp` 仓库访问权限 | 拉取代码、推送分支、创建 PR。 |
 | 域名 | 一个可解析到腾讯云 Lighthouse 的域名 | Caddy 自动签发 HTTPS，浏览器音频捕获需要安全上下文。 |
 | 腾讯云 Lighthouse | Ubuntu 22.04 LTS 64 位 x86 实例 | 部署 Docker、PostgreSQL、Redis、后端和 Caddy。 |
-| SSH 访问 | Lighthouse 公网 IP、SSH 用户、SSH key 路径 | 允许 Codex 指导或执行云端 Docker、数据库和部署验证。 |
+| SSH 访问 | Lighthouse 公网 IP、SSH 用户、SSH key 路径；当前已知本地私钥路径为 `D:\lighthouse secretKey\lz_secretKey.pem` | 允许 Codex 指导或执行云端 Docker、数据库和部署验证；只记录私钥路径，不读取、不复制、不输出私钥内容。 |
 | 腾讯 COS | Bucket、地域、SecretId、SecretKey | 保存 Markdown / JSON 导出文件。 |
 | Google Cloud | Speech-to-Text v2 可用项目和服务账号 | 英文 streaming STT 主链路。 |
 | 阿里云百炼 | Qwen API Key、endpoint、interim 模型和 final 模型 | 中文 interim 临时理解与中文 final 正式翻译。 |
@@ -431,6 +431,8 @@ docker inspect meeting_mvp-redis-1
 ### 5.4 配置 SSH 登录
 
 目标：安全登录云服务器。
+
+当前已知本机 SSH 私钥路径：`D:\lighthouse secretKey\lz_secretKey.pem`。该路径可用于后续连接 Lighthouse 做远端验证；文档只记录路径，不记录、复制或输出 PEM 私钥内容。
 
 本地生成密钥：
 
