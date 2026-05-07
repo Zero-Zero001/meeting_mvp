@@ -519,3 +519,66 @@
 
 - Step 11 WebSocket 会话编排必须等待用户明确允许后再开始。
 - Step 11 接入真实 `/ws` endpoint 时，应复用本步的后端 Pydantic schema 和前端 Zod schema；JSON 消息继续使用 snake_case 字段名与顶层 `type`，音频仍通过 16 kHz mono PCM16 binary frame 上传。
+
+## 2026-05-07 Step 11：实现 F05 WebSocket 会话编排
+
+### 本次完成
+
+- 只推进 Step 11 的后端 WebSocket 会话编排，未开始 Step 12，未修改前端实时会议工作台 UI，未接入真实 Provider、STT、Qwen、音频前处理或 `transcript_segment` 写入。
+- 后端新增 `backend/src/meeting_mvp_backend/ws_sessions.py`：
+  - `WebSocketSessionOrchestrator` 负责 `/ws` 连接内的会话生命周期。
+  - `SQLAlchemyMeetingSessionRepository` 负责读写 PostgreSQL `anonymous_client` 与 `meeting_session`。
+  - `session_start` 会先校验匿名 client 是否已初始化，再调用 `QuotaService.reserve_active_session()`，通过后写入 `meeting_session(status=pending_audio)` 并返回 `session_started`。
+  - `archive_token` 只在 `session_started` 中返回明文；数据库只保存 SHA-256 hash。
+  - 首个非空 binary frame 暂作为 Step 11 的“有效音频”判定，把会话转为 `active` 并发送 `audio_status(has_audio=true)`；真实音量和静音检测留给 Step 14。
+  - `session_stop` 按 active 后 wall-clock 秒数结算额度，更新 `ended_at`、`duration_seconds`、`quota_seconds_consumed`、`status=ended`，释放 Redis active session，并发送 `quota_update` 与 `session_closed(reason="user_stopped")`。
+  - 浏览器断开或 task 取消时通过 `finally` 清理，释放 Redis active session；断开会话记录为 `status=error`。
+- 后端修改 `backend/src/meeting_mvp_backend/main.py`：
+  - 注册 `@app.websocket("/ws")`。
+  - 增加 `get_websocket_session_orchestrator()`，从 app settings 创建数据库仓储和 Redis-backed quota service。
+  - 缺少 `DATABASE_URL` 或 `REDIS_URL` 时，WebSocket 会发送 `error(code="configuration_error")` 和 `session_closed(reason="configuration_error")` 后关闭。
+- 新增测试：
+  - `backend/tests/test_websocket_sessions.py` 覆盖本地 fake 仓储/额度服务下的正常开始、音频激活、heartbeat、停止结算、断开清理、重复会话拒绝、未初始化 client、非法消息和 session mismatch。
+  - `backend/tests/integration/test_websocket_session_redis_integration.py` 覆盖 Lighthouse 真实 PostgreSQL + Redis 下的正常开始/停止、重复会话拒绝和断开清理。
+- 未新增数据库 migration，复用 Step 07 的 `meeting_session` 字段；未保存 raw audio、interim 或正式 transcript segment。
+
+### TDD 与调试记录
+
+- 失败测试先行：首次运行 `uv run pytest tests/test_websocket_sessions.py` 失败，原因为 `main.py` 尚无 `get_websocket_session_orchestrator`，且 `meeting_mvp_backend.ws_sessions` 尚不存在。
+- 实现后本地目标测试通过：`uv run pytest tests/test_websocket_sessions.py` 为 7 passed。
+- Lighthouse 第一次 migration 失败是因为远端 `/opt/meeting_mvp/app` 缺少 Step 10 的 `ws_messages.py`；已补同步 `ws_messages.py` 和对应测试后重建 backend 镜像，migration 通过。
+- Lighthouse 集成测试曾暴露 Redis asyncio client 跨 TestClient event loop 复用问题；已取消把 `QuotaService` 缓存在 `app.state`，改为每个 WebSocket 连接创建 Redis-backed quota service。
+- Lighthouse 断开清理测试曾受 TestClient 关闭时序影响；最终改为直接向编排器注入 ASGI `websocket.disconnect` 事件，同时仍使用真实 PostgreSQL 仓储和 Redis 额度服务验证清理行为。
+
+### 验证命令与结果
+
+- 后端本地：
+  - `uv run python --version`：`Python 3.12.11`。
+  - `uv run ruff check .`：通过，`All checks passed!`。
+  - `uv run mypy .`：通过，`Success: no issues found in 24 source files`。
+  - `uv run pytest tests/test_websocket_sessions.py`：7 passed。
+  - `uv run pytest`：41 passed，5 integration deselected。
+- 前端既有验证：
+  - `npm run lint`：通过。
+  - `npm run test`：6 个测试文件、22 个测试通过。
+  - `npm run build`：通过；Vite 输出 `vite:css` plugin timing warning，不影响退出码。
+  - `npm run test:e2e`：1 个 Chromium smoke test 通过。
+- Lighthouse 真实 Redis/PostgreSQL 验证：
+  - 使用独立 Compose project `meeting_mvp_step11`。
+  - 临时数据目录：`/opt/meeting_mvp/data/postgres_step11`、`/opt/meeting_mvp/data/redis_step11`。
+  - 临时 env：`/opt/meeting_mvp/app/.env.step11`。
+  - 非真实 Google 凭据占位文件：`/opt/meeting_mvp/secrets/google-stt-sa-step11-placeholder.json`。
+  - `docker compose -p meeting_mvp_step11 --env-file .env.step11 -f deploy/docker-compose.yml build backend`：通过。
+  - `docker compose -p meeting_mvp_step11 --env-file .env.step11 -f deploy/docker-compose.yml up -d postgres redis`：PostgreSQL 和 Redis 均 healthy。
+  - `docker compose -p meeting_mvp_step11 --env-file .env.step11 -f deploy/docker-compose.yml run --rm --no-deps backend uv run alembic upgrade head`：通过。
+  - `docker compose -p meeting_mvp_step11 --env-file .env.step11 -f deploy/docker-compose.yml run --rm --no-deps backend sh -lc 'UV_HTTP_TIMEOUT=240 UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple uv run --group dev pytest -o addopts= tests/integration/test_websocket_session_redis_integration.py -q'`：2 passed。
+  - 验收后已清理临时容器、临时网络、临时 backend 镜像、`.env.step11`、占位凭据文件、临时 PostgreSQL/Redis 数据目录。
+- 仓库检查：
+  - `git diff --check`：通过，仅有 Windows LF/CRLF 工作区提示，无空白错误。
+  - `git status --short`：当前改动只包含 Step 11 后端代码、Step 11 测试和记忆文档。
+
+### 后续注意
+
+- Step 12 必须等待用户明确允许后再开始。
+- Step 12 只应构建前端实时会议工作台骨架；真实音频捕获、AudioWorklet、Provider、final 归档和四区实时数据流仍分别留给后续步骤。
+- Step 11 当前用“首个非空 binary frame”临时代表有效音频，后续 Step 14 接入真实音频电平与静音检测后，应复用 `audio_status` 但替换判定来源。

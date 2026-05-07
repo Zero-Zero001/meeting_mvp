@@ -17,7 +17,8 @@
 - Step 07 本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e、Lighthouse backend build、Alembic migration 和 PostgreSQL 集成测试均已通过。
 - Step 08 已实现 F01 匿名用户初始化：前端生成并持久化 `client_id`，后端提供 `POST /api/anonymous-clients` 并 upsert `anonymous_client`；本地前后端验证和 Lighthouse PostgreSQL 匿名接口集成测试均已通过。
 - Step 09 已实现 F02 后端内部额度与预算校验：新增 `meeting_mvp_backend.quota`，用 Redis 保存每日已用秒数、活跃会话和预算保险丝状态；本地后端/前端验证和 Lighthouse Redis 集成测试均已通过。
-- Step 10 已实现 WebSocket 消息 schema：后端新增 `meeting_mvp_backend.ws_messages`，前端新增 `frontend/src/protocol/websocket-messages.ts` 并引入 Zod；本地前后端协议解析测试与完整本地验证均已通过；未进入 Step 11。
+- Step 10 已实现 WebSocket 消息 schema：后端新增 `meeting_mvp_backend.ws_messages`，前端新增 `frontend/src/protocol/websocket-messages.ts` 并引入 Zod；本地前后端协议解析测试与完整本地验证均已通过。
+- Step 11 已实现 F05 WebSocket 会话编排：后端新增 `meeting_mvp_backend.ws_sessions` 并注册 `/ws` endpoint，接入 PostgreSQL `meeting_session` 和 Redis `QuotaService` 完成 pending/active/stop/disconnect 生命周期；本地验证和 Lighthouse PostgreSQL+Redis WebSocket 集成测试均已通过；未进入 Step 12。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -26,7 +27,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 10 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema 和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 11 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -228,7 +229,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 11 WebSocket 会话编排必须等用户明确允许后再开始。
+- Step 12 前端实时会议工作台骨架必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -236,6 +237,16 @@ Step 10 WebSocket 消息 schema 已落地：
 - 前端 `frontend/src/protocol/websocket-messages.ts` 使用 Zod 镜像同一套 wire schema，并导出 `parseClientMessage()`、`parseServerMessage()`、`isAudioChunkFrame()` 和推导类型。
 - `session_start.audio_format` 固定为 16 kHz、1 channel、`pcm16`；Step 10 不新增 `/ws` endpoint，不接入 Redis、PostgreSQL、Provider 或 `QuotaService`。
 - `backend/tests/test_ws_messages.py` 和 `frontend/src/protocol/websocket-messages.test.ts` 覆盖合法消息、缺失字段、未知消息类型、非固定音频格式和 binary frame 识别。
+
+Step 11 WebSocket 会话编排已落地：
+
+- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 定义 `WebSocketSessionOrchestrator` 和 `SQLAlchemyMeetingSessionRepository`，负责 `session_start`、binary frame 临时激活、`heartbeat`、`session_stop`、断开清理、错误关闭和归档 token hash。
+- 后端 `backend/src/meeting_mvp_backend/main.py` 已注册 `/ws` endpoint，并在 WebSocket 依赖中创建数据库仓储和 Redis-backed `QuotaService`；缺少 `DATABASE_URL` 或 `REDIS_URL` 时返回 `configuration_error`。
+- `session_start` 成功后先写入 `meeting_session(status=pending_audio)`，首个非空 binary frame 后转为 `active`；Step 11 只用非空 binary frame 临时代表有效音频，真实音频电平和静音检测留给 Step 14。
+- `session_stop` 会按 active 后 wall-clock 秒数结算额度、更新 `duration_seconds`/`quota_seconds_consumed`、释放 Redis active session，并发送 `quota_update` 与 `session_closed(reason="user_stopped")`。
+- 浏览器断开或 WebSocket task 取消会走清理路径并释放 Redis active session；断开会话当前记录为 `meeting_session.status=error`。
+- Step 11 不新增数据库 migration，不保存 raw audio，不保存 interim，不写 `transcript_segment`，不接入真实 Provider/STT/Qwen。
+- `backend/tests/test_websocket_sessions.py` 覆盖本地 fake 仓储/额度服务下的会话生命周期；`backend/tests/integration/test_websocket_session_redis_integration.py` 覆盖 Lighthouse/CI 真实 PostgreSQL+Redis WebSocket 集成。
 
 核心 WebSocket 请求消息：
 
@@ -288,5 +299,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 11 及后续 WebSocket 会话编排必须等待用户明确允许后再开始；Step 10 当前只提供消息 schema。
+- Step 12 前端实时会议工作台骨架必须等待用户明确允许后再开始；Step 11 当前只提供后端 WebSocket 会话编排，不包含前端 UI、真实音频捕获、Provider、final 归档或四区实时数据流。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

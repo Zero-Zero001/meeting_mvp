@@ -413,3 +413,44 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 后端本地协议测试、Ruff、mypy 和完整 pytest 已通过；默认 pytest 结果为 34 passed、3 integration deselected。
 - 前端 lint、Vitest、build 和 Playwright e2e 已通过；Vitest 结果为 6 个测试文件、22 个测试通过，Playwright 结果为 1 个 Chromium smoke test 通过。
 - `git diff --check` 已通过，仅有 Windows LF/CRLF 工作区提示；当前工作区只包含 Step 10 代码、依赖锁文件和记忆文档改动。
+
+## 2026-05-07 Step 11 WebSocket 会话编排
+
+### 架构状态
+
+- F05 已落地为后端 `/ws` WebSocket endpoint 和会话编排层；前端 UI、真实音频捕获、Provider/STT/Qwen、final 归档写入仍未开始。
+- 会话创建顺序固定为：解析 `session_start` -> 校验匿名 client 已存在 -> Redis 额度/并发/预算校验并登记 active session -> PostgreSQL 写入 `meeting_session(status=pending_audio)` -> 返回 `session_started`。
+- `session_started` 返回明文 `archive_token` 和 `archive_url`；PostgreSQL 只保存 `archive_token_hash`，继续不保存明文 token。
+- Step 11 的有效音频判定是临时最小实现：首个非空 WebSocket binary frame 将会话从 `pending_audio` 转为 `active`，设置 `started_at` 并发送 `audio_status(has_audio=true)`；真实音量、静音检测和 binary frame 节奏仍属于 Step 14。
+- `session_stop` 按 active 后 wall-clock 秒数结算额度，写回 `duration_seconds` 和 `quota_seconds_consumed`，释放 Redis active session，并向前端发送 `quota_update` 和 `session_closed`。
+- 浏览器断开、WebSocket task 取消、非法消息和 session mismatch 都会触发清理路径，避免 Redis active session 永久占用并发。
+- Step 11 不新增数据库 migration，不保存 raw audio，不保存 interim，不写 `transcript_segment`，不启动或关闭真实 Provider session。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | Step 11 核心会话编排模块。定义 `WebSocketSessionOrchestrator`、`SQLAlchemyMeetingSessionRepository`、`hash_archive_token()` 和 `build_archive_url()`；负责 session_start、binary audio frame 临时激活、heartbeat、session_stop、断开清理、错误关闭和 Redis 额度释放。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口。Step 11 新增 `/ws` endpoint 和 `get_websocket_session_orchestrator()`，把 app settings、数据库 session factory、SQLAlchemy 仓储和 Redis-backed `QuotaService` 接入 WebSocket 编排。 |
+| `backend/tests/test_websocket_sessions.py` | 本地 WebSocket 会话编排单元测试。使用 fake 仓储和 fake quota service 覆盖 pending 会话创建、音频激活、heartbeat、停止结算、浏览器断开、重复会话拒绝、未初始化 client、非法消息和 session mismatch。 |
+| `backend/tests/integration/test_websocket_session_redis_integration.py` | Lighthouse/CI 真实 PostgreSQL + Redis 集成测试。执行 migration 后验证 `/ws` 正常开始/停止、重复 active session 拒绝，以及直接注入 ASGI disconnect 时 Redis active session 可释放。 |
+| `backend/src/meeting_mvp_backend/ws_messages.py` | Step 10 协议 schema 被 Step 11 编排层复用；本步未修改该文件，但 `/ws` endpoint 通过它解析 client JSON 消息并生成 server JSON 消息。 |
+| `backend/src/meeting_mvp_backend/quota.py` | Step 09 额度服务被 Step 11 接入 `session_start` 和 `session_stop`；本步未修改该文件。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | Step 07 数据模型被 Step 11 复用，尤其是 `MeetingSession`、`MeetingSessionStatus`、`CaptureMode` 和 `SourcePlatform`；本步未新增 migration。 |
+
+### 协议与状态边界
+
+- `session_start` 成功后会话先处于 `pending_audio`；此时 Redis active session 已登记，但不消耗每日额度。
+- 首个非空 binary frame 后会话进入 `active`；只有 active 后的时长会在 `session_stop` 或断开清理时写入 quota。
+- `heartbeat` 只校验 session_id 并保持连接；Step 11 不新增 heartbeat 响应消息。
+- `session_stop` 正常关闭 reason 固定为 `user_stopped`。
+- 额度、预算、并发拒绝使用 `QuotaDenialReason.value` 作为 `error.code` 和 `session_closed.reason`。
+- 未初始化匿名 client 的错误码为 `client_not_initialized`；非法消息为 `invalid_message`；session 不匹配为 `session_mismatch`；配置缺失为 `configuration_error`。
+- `archive_url` 生成规则：优先使用后端 `PUBLIC_BASE_URL` 拼接 `/archive/{session_id}?token={archive_token}`；未配置时返回相对路径。
+
+### 验证结论
+
+- 本地后端 `uv run python --version`、Ruff、mypy、默认 pytest 已通过；默认 pytest 结果为 41 passed、5 integration deselected。
+- 前端 lint、Vitest、build 和 Playwright e2e 已通过；Vitest 结果为 6 个测试文件、22 个测试通过，Playwright 结果为 1 个 Chromium smoke test 通过。
+- Lighthouse 使用独立 `meeting_mvp_step11` Compose project 完成 backend build、PostgreSQL/Redis healthy、Alembic migration 和真实 WebSocket 集成测试；集成测试结果为 2 passed。
+- Step 11 临时远端资源已清理；Step 12 尚未开始。

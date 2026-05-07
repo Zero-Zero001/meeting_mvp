@@ -4,7 +4,7 @@ from typing import Annotated, cast
 from uuid import UUID
 
 import structlog
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, status
 from pydantic import BaseModel, ConfigDict
 
 from meeting_mvp_backend.anonymous_clients import (
@@ -13,6 +13,11 @@ from meeting_mvp_backend.anonymous_clients import (
 )
 from meeting_mvp_backend.config import Settings, load_settings, settings_status
 from meeting_mvp_backend.db.session import create_engine, create_session_factory
+from meeting_mvp_backend.quota import create_quota_service_from_settings
+from meeting_mvp_backend.ws_sessions import (
+    SQLAlchemyMeetingSessionRepository,
+    WebSocketSessionOrchestrator,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -83,6 +88,51 @@ def get_anonymous_client_service(
     )
 
 
+def get_websocket_settings(websocket: WebSocket) -> Settings:
+    if hasattr(websocket.app.state, "settings"):
+        return cast(Settings, websocket.app.state.settings)
+    settings = load_settings()
+    websocket.app.state.settings = settings
+    return settings
+
+
+def get_websocket_session_orchestrator(
+    websocket: WebSocket,
+) -> WebSocketSessionOrchestrator:
+    settings = get_websocket_settings(websocket)
+    missing_configuration: list[str] = []
+    if not settings.database_url:
+        missing_configuration.append("DATABASE_URL")
+    if not settings.redis_url:
+        missing_configuration.append("REDIS_URL")
+
+    if missing_configuration:
+        return WebSocketSessionOrchestrator(
+            repository=None,
+            quota_service=None,
+            settings=settings,
+            configuration_error=(
+                "Missing required configuration: "
+                + ", ".join(sorted(missing_configuration))
+            ),
+        )
+
+    database_url = settings.database_url
+    assert database_url is not None
+    if not hasattr(websocket.app.state, "db_session_factory"):
+        engine = create_engine(database_url)
+        websocket.app.state.db_engine = engine
+        websocket.app.state.db_session_factory = create_session_factory(engine)
+
+    return WebSocketSessionOrchestrator(
+        repository=SQLAlchemyMeetingSessionRepository(
+            websocket.app.state.db_session_factory,
+        ),
+        quota_service=create_quota_service_from_settings(settings),
+        settings=settings,
+    )
+
+
 @app.post("/api/anonymous-clients")
 async def initialize_anonymous_client(
     payload: AnonymousClientCreateRequest,
@@ -99,3 +149,14 @@ async def initialize_anonymous_client(
         user_agent=request.headers.get("user-agent"),
     )
     return AnonymousClientCreateResponse.model_validate(result)
+
+
+@app.websocket("/ws")
+async def websocket_session_endpoint(
+    websocket: WebSocket,
+    orchestrator: Annotated[
+        WebSocketSessionOrchestrator,
+        Depends(get_websocket_session_orchestrator),
+    ],
+) -> None:
+    await orchestrator.handle(websocket)
