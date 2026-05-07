@@ -492,3 +492,46 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 完整 Vitest 结果为 6 个测试文件、25 个测试通过；Playwright 结果为 2 个 Chromium 测试通过。
 - `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
 - 本步无需 Lighthouse、PostgreSQL、Redis、Docker 或 Provider 集成测试；Step 13 未开始。
+
+## 2026-05-07 Step 13 前端会议音频捕获
+
+### 架构状态
+
+- Step 13 将前端捕获入口从 UI 占位升级为浏览器 `getDisplayMedia` 调用；仍只处理会议标签页/系统音频授权和 `MediaStream` 生命周期。
+- 捕获模式仍沿用 `tab_audio` / `system_audio`；网页不能强制浏览器 picker 选中某个标签页或系统音频源，只能通过 UI 文案引导用户选择并勾选共享音频。
+- 捕获成功的最小判定是 `MediaStream.getAudioTracks().length > 0`；没有 audio track 时立即停止所有 tracks 并提示切换系统音频。
+- Zustand store 保存当前 `MediaStream` 引用，用于 Step 13 的结束会议清理；不会读取音频样本，不会保存原始音频，不会上传音频。
+- `lastCaptureAttempt` 是前端本地记录，包含 source platform、capture mode、browser name、authorization result、failure code 和 attemptedAt；正式 usage event 写入仍属于后续步骤。
+- Step 13 不修改后端 REST API、WebSocket wire schema、数据库 schema、环境变量清单、部署拓扑或 Provider 配置。
+- Step 13 不实现 AudioWorklet、16 kHz mono PCM16 转换、音量电平/静音检测、WebSocket client、binary 上传、Google STT、Qwen 或 Provider session；这些边界从 Step 14 或后续步骤开始。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/lib/audio-capture.ts` | Step 13 的浏览器音频捕获封装。负责调用 `getDisplayMedia({ audio: true, video: true })`、判断是否存在 audio track、归一化授权/不支持/无音轨/未知失败错误，并提供 `stopMediaStream()` 清理所有 tracks。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态。Step 13 新增 `SourcePlatform`、`captureStatus`、`captureErrorCode`、`captureErrorMessage`、`lastCaptureAttempt`、`mediaStream`、`setSourcePlatform()` 和 async `beginCapture()`；`endSession()` 负责停止并清空当前 `MediaStream`。 |
+| `frontend/src/App.tsx` | 前端会议工作台 UI。Step 13 新增会议平台选择、真实捕获授权入口、授权中/已捕获/拒绝/无音轨/不支持/失败状态展示、系统音频风险提示和无音轨降级提示；四区响应式布局继续沿用 Step 12。 |
+| `frontend/src/lib/audio-capture.test.ts` | 捕获封装单元测试。覆盖成功返回音频流、拒绝授权、不支持 API/非安全上下文、成功但无 audio track 时停止 tracks。 |
+| `frontend/src/stores/session-store.test.ts` | store 单元测试。覆盖 async 捕获成功、捕获模式切换、拒绝授权记录、`lastCaptureAttempt` 字段、`endSession()` 停止 tracks 和状态复位。 |
+| `frontend/src/App.test.tsx` | React Testing Library UI 契约测试。覆盖状态栏平台选择、捕获成功按钮状态、拒绝授权重试入口、无音轨系统音频降级提示，以及 Step 12 四区语义。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。通过 mock `navigator.mediaDevices.getDisplayMedia` 覆盖捕获成功、拒绝授权、无 audio track、桌面/移动视口四区可见和无水平溢出。 |
+
+### UI 与状态边界
+
+- `captureStatus` 可取 `idle`、`requesting`、`ready`、`denied`、`no_audio`、`unsupported`、`failed`。
+- `captureErrorCode` 可取 `permission_denied`、`no_audio_track`、`not_supported`、`capture_failed` 或 `null`。
+- `status='capturing'` 在 Step 13 表示浏览器已授权并返回带 audio track 的 `MediaStream`；仍不代表已经完成音频前处理、有效音量检测、后端建会或额度消耗。
+- `sourcePlatform` 是用户选择的平台标签：`google_meet`、`teams_web`、`zoom_web`、`tencent_meeting_web` 或 `unknown`；本步只在前端本地记录，不写数据库。
+- `beginCapture()` 支持测试注入 capture service；生产路径默认调用 `requestDisplayMediaCapture()`。
+- `endSession()` 只负责停止本地 tracks 和复位前端捕获状态；不发送 `session_stop`，不释放后端 Redis active session，因为 Step 13 尚未接入 WebSocket client。
+
+### 验证结论
+
+- Step 13 已先跑失败测试确认缺口，再实现捕获封装、store 和 UI 改动。
+- 前端目标单测通过：`npm run test -- src/lib/audio-capture.test.ts src/stores/session-store.test.ts src/App.test.tsx`，结果为 3 个测试文件、15 个测试通过。
+- 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
+- 完整 Vitest 结果为 7 个测试文件、33 个测试通过；Playwright 结果为 5 个 Chromium 测试通过。
+- `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
+- 静态边界扫描未发现 Step 13 新增 AudioWorklet、WebSocket client、MediaStream audio graph 或 PCM16 转换代码；命中的 `pcm16` 仅来自 Step 10 既有协议 schema/test。
+- 本步自动化测试使用 mock `getDisplayMedia`，真实 Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 兼容性矩阵仍需人工验收；Step 14 未开始。

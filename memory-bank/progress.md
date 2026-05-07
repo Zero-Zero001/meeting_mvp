@@ -624,3 +624,53 @@
 - Step 13 才能实现 `getDisplayMedia`、真实音频捕获、捕获授权和浏览器音频错误处理；当前 `开始捕获` 仍只是 UI 入口和 Zustand 状态占位。
 - Provider 状态在 Step 12 只是本地 UI 文案，不代表真实 ASR、Qwen 或 WebSocket 连接。
 - Playwright E2E 使用 Vite preview 的 `dist/`，修改应用代码后需要先执行 `npm run build` 再执行 `npm run test:e2e`，否则可能测到旧构建产物。
+
+## 2026-05-07 Step 13：前端会议音频捕获
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 13，未开始 Step 14。
+- 已按 TDD 更新并先确认失败：
+  - 新增 `frontend/src/lib/audio-capture.test.ts`，首次失败原因为 `frontend/src/lib/audio-capture.ts` 尚不存在。
+  - 扩展 `frontend/src/stores/session-store.test.ts`，首次失败原因为 store 尚无 `captureStatus`、`mediaStream`、`lastCaptureAttempt`、`setSourcePlatform()` 和 async `beginCapture()`。
+  - 扩展 `frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts`，首次失败原因为 UI 尚无会议平台选择、真实捕获状态、授权失败提示和无音频轨道降级提示。
+- 新增 `frontend/src/lib/audio-capture.ts`：
+  - `requestDisplayMediaCapture()` 调用 `getDisplayMedia({ audio: true, video: true })`。
+  - 成功条件仅为返回的 `MediaStream` 至少包含 1 条 audio track。
+  - 无 audio track 时停止所有 tracks 并返回 `no_audio_track`。
+  - `NotAllowedError` / `SecurityError` 归类为 `permission_denied`；缺少 API 或非安全上下文归类为 `not_supported`；其他异常归类为 `capture_failed`。
+  - 只保留浏览器返回的 `MediaStream` 引用，不读取、不保存、不上传原始音频。
+- 扩展 `frontend/src/stores/session-store.ts`：
+  - 新增 `SourcePlatform`、`captureStatus`、`captureErrorCode`、`captureErrorMessage`、`lastCaptureAttempt` 和 `mediaStream`。
+  - 新增 `setSourcePlatform(platform)`，支持记录 `google_meet`、`teams_web`、`zoom_web`、`tencent_meeting_web` 或 `unknown`。
+  - 将 `beginCapture(mode)` 改为 async action，支持测试注入 fake capture service。
+  - `lastCaptureAttempt` 记录平台、捕获模式、浏览器、授权结果、失败码和尝试时间；正式 `usage_event` 仍留到 Step 21。
+  - `endSession()` 会停止当前 `mediaStream.getTracks()` 并清空流引用。
+- 更新 `frontend/src/App.tsx`：
+  - 状态栏新增“会议平台”选择控件。
+  - “开始捕获”调用 async `beginCapture(captureMode)`；授权中禁用开始按钮，成功后显示“已捕获音频”。
+  - 拒绝授权时显示重试入口和授权失败提示。
+  - 无 audio track 时显示“请切换系统音频模式后重新捕获。”。
+  - 系统音频模式显示可能包含其他应用声音的风险提示，但不会自动切换或自动发起系统音频捕获。
+- 本步没有修改后端 REST API、WebSocket schema、数据库 schema、环境变量清单或部署配置。
+- 本步没有实现 `AudioWorklet`、16 kHz mono PCM16 转换、音量电平/静音检测、WebSocket client、binary 上传、Google STT、Qwen 或 Provider 链路。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 13 前端 TDD RED | `npm run test -- src/lib/audio-capture.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 首次失败，缺少捕获封装、store 状态和 UI 控件 |
+| Step 13 目标单测 | `npm run test -- src/lib/audio-capture.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 3 个测试文件、15 个测试通过 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 7 个测试文件、33 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 5 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+| Step 14 边界扫描 | `Select-String` 搜索 `AudioWorklet`、`new WebSocket`、`createMediaStreamSource`、`ScriptProcessor`、`PCM16` | 未命中新 Step 13 代码；仅命中 Step 10 既有 WebSocket 协议测试/schema 中的固定 `pcm16` 字段 |
+
+### 后续注意
+
+- Step 14 必须等待用户明确允许后再开始。
+- Step 14 才能实现 AudioWorklet、16 kHz mono PCM16 转换、音量电平/静音检测、WebSocket client 或 binary 上传。
+- Step 13 的“无音频”只表示没有 audio track；真实静音、音量过低和 30 秒无有效音频检测仍未实现。
+- 真实 Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 的兼容性矩阵仍需人工执行。本步自动化测试使用 mock `getDisplayMedia`，不能等同于真实会议平台验收。

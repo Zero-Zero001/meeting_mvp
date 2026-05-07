@@ -18,11 +18,31 @@ import { Button } from '@/components/ui/button'
 import {
   useSessionStore,
   type CaptureMode,
+  type CaptureStatus,
   type ServerSyncStatus,
+  type SourcePlatform,
 } from '@/stores/session-store'
+
+const SOURCE_PLATFORM_OPTIONS: Array<{
+  label: string
+  value: SourcePlatform
+}> = [
+  { label: '未知平台', value: 'unknown' },
+  { label: 'Google Meet', value: 'google_meet' },
+  { label: 'Teams Web', value: 'teams_web' },
+  { label: 'Zoom Web', value: 'zoom_web' },
+  { label: '腾讯会议 Web', value: 'tencent_meeting_web' },
+]
 
 function captureModeLabel(mode: CaptureMode): string {
   return mode === 'tab_audio' ? '标签页音频' : '系统音频'
+}
+
+function sourcePlatformLabel(platform: SourcePlatform): string {
+  return (
+    SOURCE_PLATFORM_OPTIONS.find((option) => option.value === platform)?.label ??
+    '未知平台'
+  )
 }
 
 function serverSyncLabel(status: ServerSyncStatus): string {
@@ -38,30 +58,74 @@ function serverSyncLabel(status: ServerSyncStatus): string {
   }
 }
 
+function audioStatusLabel(status: CaptureStatus): string {
+  switch (status) {
+    case 'idle':
+      return '未连接'
+    case 'requesting':
+      return '等待授权'
+    case 'ready':
+      return '已捕获音频'
+    case 'denied':
+      return '授权被拒绝'
+    case 'no_audio':
+      return '未检测到音频轨道'
+    case 'unsupported':
+      return '浏览器不支持'
+    case 'failed':
+      return '捕获失败'
+  }
+}
+
+function startButtonLabel(status: CaptureStatus): string {
+  switch (status) {
+    case 'requesting':
+      return '等待授权'
+    case 'ready':
+      return '已捕获'
+    case 'denied':
+    case 'no_audio':
+    case 'unsupported':
+    case 'failed':
+      return '重新授权'
+    case 'idle':
+      return '开始捕获'
+  }
+}
+
 function App() {
   const {
     anonymousClientError,
     anonymousClientStatus,
+    captureErrorMessage,
     captureMode,
+    captureStatus,
     clientId,
     initializeAnonymousClient,
     remainingSecondsToday,
     serverSyncError,
     serverSyncStatus,
-    status,
+    sourcePlatform,
     beginCapture,
     endSession,
     setCaptureMode,
+    setSourcePlatform,
   } = useSessionStore()
-  const isCapturing = status === 'capturing'
+  const isRequestingCapture = captureStatus === 'requesting'
+  const isCaptureReady = captureStatus === 'ready'
+  const canChangeCaptureInputs = !isRequestingCapture && !isCaptureReady
   const quotaMinutes = Math.floor(remainingSecondsToday / 60)
   const clientIdLabel =
     anonymousClientStatus === 'ready' && clientId
       ? clientId.slice(0, 8)
       : '未初始化'
-  const audioStatusLabel = isCapturing ? '捕获中' : '未连接'
-  const asrStatusLabel = isCapturing ? '等待音频' : '未连接'
-  const translationStatusLabel = isCapturing ? '等待英文 final' : '未连接'
+  const audioLabel = audioStatusLabel(captureStatus)
+  const asrStatusLabel = isCaptureReady ? '等待音频处理' : '未连接'
+  const translationStatusLabel = isCaptureReady ? '等待英文 final' : '未连接'
+  const captureGuide =
+    captureMode === 'system_audio'
+      ? '系统音频模式可能包含其他应用声音。'
+      : '共享会议标签页时请勾选共享音频。'
 
   useEffect(() => {
     void initializeAnonymousClient()
@@ -86,6 +150,25 @@ function App() {
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center lg:justify-end">
+              <label className="grid gap-1 text-xs font-medium text-muted-foreground sm:w-40">
+                <span>会议平台</span>
+                <select
+                  aria-label="会议平台"
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm font-medium text-zinc-950 outline-none transition-colors focus:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={!canChangeCaptureInputs}
+                  onChange={(event) =>
+                    setSourcePlatform(event.target.value as SourcePlatform)
+                  }
+                  value={sourcePlatform}
+                >
+                  {SOURCE_PLATFORM_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <div
                 aria-label="捕获模式"
                 role="group"
@@ -94,7 +177,7 @@ function App() {
                 <Button
                   aria-pressed={captureMode === 'tab_audio'}
                   className="flex-1 sm:flex-none"
-                  disabled={isCapturing}
+                  disabled={!canChangeCaptureInputs}
                   onClick={() => setCaptureMode('tab_audio')}
                   size="sm"
                   type="button"
@@ -106,7 +189,7 @@ function App() {
                 <Button
                   aria-pressed={captureMode === 'system_audio'}
                   className="flex-1 sm:flex-none"
-                  disabled={isCapturing}
+                  disabled={!canChangeCaptureInputs}
                   onClick={() => setCaptureMode('system_audio')}
                   size="sm"
                   type="button"
@@ -119,15 +202,15 @@ function App() {
 
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                 <Button
-                  disabled={isCapturing}
-                  onClick={() => beginCapture(captureMode)}
+                  disabled={isRequestingCapture || isCaptureReady}
+                  onClick={() => void beginCapture(captureMode)}
                   type="button"
                 >
                   <Play data-icon="inline-start" />
-                  开始捕获
+                  {startButtonLabel(captureStatus)}
                 </Button>
                 <Button
-                  disabled={!isCapturing}
+                  disabled={!isCaptureReady}
                   onClick={endSession}
                   type="button"
                   variant="outline"
@@ -169,7 +252,7 @@ function App() {
                 <Activity className="size-4 shrink-0" />
                 <span>音频状态</span>
               </div>
-              <p className="mt-1 font-medium">{audioStatusLabel}</p>
+              <p className="mt-1 font-medium">{audioLabel}</p>
             </div>
             <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
               <div className="flex items-center gap-2 text-muted-foreground">
@@ -185,6 +268,20 @@ function App() {
               </div>
               <p className="mt-1 font-medium">{translationStatusLabel}</p>
             </div>
+          </div>
+
+          <div className="rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
+            <p>{captureGuide}</p>
+            {captureErrorMessage ? (
+              <p className="mt-1 font-medium text-zinc-950" role="status">
+                {captureErrorMessage}
+              </p>
+            ) : null}
+            {captureStatus === 'no_audio' ? (
+              <p className="mt-1 font-medium text-zinc-950">
+                请切换系统音频模式后重新捕获。
+              </p>
+            ) : null}
           </div>
 
           {anonymousClientError || serverSyncError ? (
@@ -207,11 +304,11 @@ function App() {
                   英文原文区
                 </h2>
                 <span className="text-xs text-muted-foreground">
-                  {isCapturing ? '实时等待中' : '未开始'}
+                  {isCaptureReady ? '实时等待中' : '未开始'}
                 </span>
               </div>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-                等待英文转写。Step 12 仅保留工作台占位，开始捕获不会调用真实音频 API。
+                等待英文转写内容。
               </p>
             </section>
 
@@ -228,7 +325,7 @@ function App() {
                 </span>
               </div>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-                等待中文翻译。interim 与 final 数据流会在后续步骤接入。
+                等待中文翻译内容。
               </p>
             </section>
           </div>
@@ -245,7 +342,7 @@ function App() {
                 <RadioTower className="size-4 text-muted-foreground" />
               </div>
               <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                暂无重点句。后续实时链路会把当前最值得关注的英文句子和中文理解推送到这里。
+                暂无重点句。
               </p>
             </section>
 
@@ -261,12 +358,16 @@ function App() {
               </div>
               <dl className="mt-4 grid gap-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
+                  <dt className="text-muted-foreground">会议平台</dt>
+                  <dd className="font-medium">{sourcePlatformLabel(sourcePlatform)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
                   <dt className="text-muted-foreground">捕获模式</dt>
                   <dd className="font-medium">{captureModeLabel(captureMode)}</dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <dt className="text-muted-foreground">音频状态</dt>
-                  <dd className="font-medium">{audioStatusLabel}</dd>
+                  <dd className="font-medium">{audioLabel}</dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <dt className="text-muted-foreground">ASR</dt>
@@ -278,7 +379,7 @@ function App() {
                 </div>
               </dl>
               <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                暂无会议事件。会话创建、有效音频、final 片段和异常降级会在后续步骤进入时间线。
+                暂无会议事件。
               </p>
             </section>
           </aside>
