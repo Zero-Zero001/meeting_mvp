@@ -18,7 +18,8 @@
 - Step 08 已实现 F01 匿名用户初始化：前端生成并持久化 `client_id`，后端提供 `POST /api/anonymous-clients` 并 upsert `anonymous_client`；本地前后端验证和 Lighthouse PostgreSQL 匿名接口集成测试均已通过。
 - Step 09 已实现 F02 后端内部额度与预算校验：新增 `meeting_mvp_backend.quota`，用 Redis 保存每日已用秒数、活跃会话和预算保险丝状态；本地后端/前端验证和 Lighthouse Redis 集成测试均已通过。
 - Step 10 已实现 WebSocket 消息 schema：后端新增 `meeting_mvp_backend.ws_messages`，前端新增 `frontend/src/protocol/websocket-messages.ts` 并引入 Zod；本地前后端协议解析测试与完整本地验证均已通过。
-- Step 11 已实现 F05 WebSocket 会话编排：后端新增 `meeting_mvp_backend.ws_sessions` 并注册 `/ws` endpoint，接入 PostgreSQL `meeting_session` 和 Redis `QuotaService` 完成 pending/active/stop/disconnect 生命周期；本地验证和 Lighthouse PostgreSQL+Redis WebSocket 集成测试均已通过；未进入 Step 12。
+- Step 11 已实现 F05 WebSocket 会话编排：后端新增 `meeting_mvp_backend.ws_sessions` 并注册 `/ws` endpoint，接入 PostgreSQL `meeting_session` 和 Redis `QuotaService` 完成 pending/active/stop/disconnect 生命周期；本地验证和 Lighthouse PostgreSQL+Redis WebSocket 集成测试均已通过。
+- Step 12 已实现前端实时会议工作台骨架：首屏状态栏、捕获模式切换、匿名身份/额度/音频/ASR/翻译状态、四个可访问工作区和桌面/移动响应式布局均已落地；本地前端 lint/test/build/e2e 均已通过；未进入 Step 13。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -27,7 +28,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 11 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 12 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -229,7 +230,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 12 前端实时会议工作台骨架必须等用户明确允许后再开始。
+- Step 12 前端实时会议工作台骨架已完成；Step 13 会议音频捕获必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -247,6 +248,14 @@ Step 11 WebSocket 会话编排已落地：
 - 浏览器断开或 WebSocket task 取消会走清理路径并释放 Redis active session；断开会话当前记录为 `meeting_session.status=error`。
 - Step 11 不新增数据库 migration，不保存 raw audio，不保存 interim，不写 `transcript_segment`，不接入真实 Provider/STT/Qwen。
 - `backend/tests/test_websocket_sessions.py` 覆盖本地 fake 仓储/额度服务下的会话生命周期；`backend/tests/integration/test_websocket_session_redis_integration.py` 覆盖 Lighthouse/CI 真实 PostgreSQL+Redis WebSocket 集成。
+
+Step 12 前端实时会议工作台骨架已落地：
+
+- 前端 `frontend/src/App.tsx` 已重构为第一屏会议工作台：顶部 `会议状态栏` 包含捕获模式、开始捕获、结束会议、匿名身份、服务端同步、今日剩余额度、音频状态、ASR 和翻译状态。
+- 四个实时工作区以可访问区域名固定为 `英文原文区`、`中文翻译区`、`当前重点句区`、`会议时间线区`；桌面左右分栏，移动端纵向堆叠。
+- 前端 `frontend/src/stores/session-store.ts` 新增 `setCaptureMode(mode)`，用于在开始捕获前切换 `tab_audio` / `system_audio`；`beginCapture()` / `endSession()` 仍是本地 UI 占位行为。
+- Step 12 不实现 `getDisplayMedia`、真实音频捕获、AudioWorklet、WebSocket client、binary 上传、Google STT、Qwen 或 Provider 链路；这些必须等 Step 13 或后续步骤明确允许后再开始。
+- `frontend/src/App.test.tsx`、`frontend/src/stores/session-store.test.ts` 和 `frontend/e2e/app.spec.ts` 覆盖状态栏、四区、捕获模式、按钮状态、匿名身份/额度/同步展示，以及桌面/移动无水平溢出。
 
 核心 WebSocket 请求消息：
 
@@ -299,5 +308,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 12 前端实时会议工作台骨架必须等待用户明确允许后再开始；Step 11 当前只提供后端 WebSocket 会话编排，不包含前端 UI、真实音频捕获、Provider、final 归档或四区实时数据流。
+- Step 13 会议音频捕获必须等待用户明确允许后再开始；Step 12 当前只提供前端实时会议工作台 UI 骨架，不包含真实音频捕获、WebSocket client、Provider、final 归档或四区实时数据流。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

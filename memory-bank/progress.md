@@ -582,3 +582,45 @@
 - Step 12 必须等待用户明确允许后再开始。
 - Step 12 只应构建前端实时会议工作台骨架；真实音频捕获、AudioWorklet、Provider、final 归档和四区实时数据流仍分别留给后续步骤。
 - Step 11 当前用“首个非空 binary frame”临时代表有效音频，后续 Step 14 接入真实音频电平与静音检测后，应复用 `audio_status` 但替换判定来源。
+
+## 2026-05-07 Step 12：前端实时会议工作台骨架
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 12，未开始 Step 13。
+- 已按 TDD 更新前端测试并先确认失败：
+  - `frontend/src/stores/session-store.test.ts` 新增捕获模式切换测试，首次失败原因为 `setCaptureMode` 尚不存在。
+  - `frontend/src/App.test.tsx` 新增状态栏、四区语义、捕获模式、开始/结束按钮和匿名身份/额度展示测试，首次失败原因为 UI 仍是 Step 03/08 的旧骨架。
+  - `frontend/e2e/app.spec.ts` 新增桌面和移动视口 smoke test，首次失败原因为浏览器可访问性树中缺少新的 `会议状态栏` 和四区契约。
+- 前端已重构 `frontend/src/App.tsx`：
+  - 首屏保持会议工作台，不做营销页。
+  - 顶部状态栏显式暴露 `role="banner"` 和可访问名称 `会议状态栏`。
+  - 状态栏包含捕获模式切换、开始捕获、结束会议、匿名身份、服务端同步、今日剩余额度、音频状态、ASR 状态和翻译状态。
+  - 四区 UI 固定为可定位区域：`英文原文区`、`中文翻译区`、`当前重点句区`、`会议时间线区`。
+  - 桌面使用左右分栏网格，移动端纵向堆叠，并通过 Playwright 检查无水平溢出。
+- 前端已扩展 `frontend/src/stores/session-store.ts`：
+  - 新增 `setCaptureMode(mode: CaptureMode): void`，用于开始捕获前切换 `tab_audio` / `system_audio`。
+  - 保留 `beginCapture()` / `endSession()` 的占位行为；开始捕获只更新本地 UI 状态，不调用真实浏览器捕获。
+- 本步没有修改后端 REST API、WebSocket schema、数据库 schema、环境变量清单或部署配置。
+- 本步没有引入 `getDisplayMedia`、`AudioWorklet`、真实音频捕获、WebSocket client、binary 上传、Google STT、Qwen 或 Provider 链路。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 12 前端 TDD RED | `npm run test -- src/stores/session-store.test.ts src/App.test.tsx` | 首次失败，缺少 `setCaptureMode` 和新的状态栏/四区 UI |
+| Step 12 E2E RED | `npm run test:e2e -- e2e/app.spec.ts` | 首次失败，旧构建产物中缺少 `会议状态栏` 与新四区契约 |
+| 目标前端单测 | `npm run test -- src/stores/session-store.test.ts src/App.test.tsx` | 2 个测试文件、7 个测试通过 |
+| 目标 E2E | `npm run build` 后执行 `npm run test:e2e -- e2e/app.spec.ts` | 2 个 Chromium 测试通过 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 6 个测试文件、25 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 2 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 13 必须等待用户明确允许后再开始。
+- Step 13 才能实现 `getDisplayMedia`、真实音频捕获、捕获授权和浏览器音频错误处理；当前 `开始捕获` 仍只是 UI 入口和 Zustand 状态占位。
+- Provider 状态在 Step 12 只是本地 UI 文案，不代表真实 ASR、Qwen 或 WebSocket 连接。
+- Playwright E2E 使用 Vite preview 的 `dist/`，修改应用代码后需要先执行 `npm run build` 再执行 `npm run test:e2e`，否则可能测到旧构建产物。

@@ -16,6 +16,15 @@ describe('useSessionStore', () => {
     })
   })
 
+  it('changes capture mode without starting capture', () => {
+    useSessionStore.getState().setCaptureMode('system_audio')
+
+    expect(useSessionStore.getState()).toMatchObject({
+      captureMode: 'system_audio',
+      status: 'idle',
+    })
+  })
+
   it('ends the active session without changing remaining quota', () => {
     useSessionStore.getState().beginCapture('tab_audio')
     useSessionStore.getState().endSession()

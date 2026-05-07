@@ -454,3 +454,41 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 前端 lint、Vitest、build 和 Playwright e2e 已通过；Vitest 结果为 6 个测试文件、22 个测试通过，Playwright 结果为 1 个 Chromium smoke test 通过。
 - Lighthouse 使用独立 `meeting_mvp_step11` Compose project 完成 backend build、PostgreSQL/Redis healthy、Alembic migration 和真实 WebSocket 集成测试；集成测试结果为 2 passed。
 - Step 11 临时远端资源已清理；Step 12 尚未开始。
+
+## 2026-05-07 Step 12 前端实时会议工作台骨架
+
+### 架构状态
+
+- Step 12 将前端首屏从早期占位页升级为可继续接入实时链路的会议工作台骨架；第一屏仍是工具页，不做营销页。
+- UI 顶层结构固定为 `会议状态栏` + 四个可访问工作区：`英文原文区`、`中文翻译区`、`当前重点句区`、`会议时间线区`。
+- 状态栏集中承载会议前操作和关键运行态：捕获模式、开始捕获、结束会议、匿名身份、服务端同步、今日剩余额度、音频状态、ASR 状态和翻译状态。
+- 桌面端布局为主内容左侧双区 + 右侧辅助双区；移动端纵向堆叠，Playwright 覆盖桌面与移动视口并检查无水平溢出。
+- `开始捕获` 在本步仍只调用 Zustand `beginCapture()` 占位 action；不会请求浏览器捕获权限，不会调用 `getDisplayMedia`，不会创建 `AudioWorklet`，不会建立 WebSocket 或上传 binary 音频帧。
+- ASR、翻译和音频状态在本步均为本地 UI 状态文案，不代表真实 Google STT、Qwen、Provider session 或后端 `/ws` 连接。
+- 本步不修改后端 REST API、WebSocket wire schema、数据库 schema、环境变量清单、部署拓扑或 Provider 配置；Step 13 尚未开始。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/App.tsx` | Step 12 核心工作台页面。负责状态栏、捕获模式切换、开始/结束占位按钮、匿名身份/额度/同步展示，以及四个实时会议工作区的响应式布局和可访问名称。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态。Step 12 新增 `setCaptureMode(mode)`，允许开始捕获前在 `tab_audio` 与 `system_audio` 间切换；继续保留 `beginCapture()` / `endSession()` 的本地状态占位行为。 |
+| `frontend/src/App.test.tsx` | React Testing Library UI 契约测试。覆盖工作台标题、`会议状态栏` landmark、四区 region、捕获模式按钮、开始/结束按钮状态、匿名身份短 ID、今日剩余额度和服务端同步状态。 |
+| `frontend/src/stores/session-store.test.ts` | Zustand store 单元测试。新增覆盖 `setCaptureMode()` 在不启动捕获时切换模式，防止后续真实捕获接入前破坏 UI 预选模式。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器 smoke test。覆盖桌面和移动视口下状态栏、四个工作区、关键按钮和无水平溢出，验证生产构建产物的首屏可用性。 |
+
+### UI 状态边界
+
+- `captureMode` 仍沿用 Step 03/10 的 `tab_audio` / `system_audio` 枚举，当前只影响 UI 选中态和未来 `beginCapture(captureMode)` 的入参。
+- `status` 仍只有 `idle` / `capturing`，当前 `capturing` 表示用户点击了占位入口，不代表已经捕获到有效音频。
+- `anonymousClientStatus`、`serverSyncStatus`、`clientId` 和 `remainingSecondsToday` 继续复用 Step 08 的匿名身份初始化状态；Step 12 只改变展示密度和位置。
+- 当前重点句和会议时间线是结构占位；真实 `key_sentence_update`、`timeline_update`、`asr_interim`、`translation_interim`、`segment_final` 的消费和渲染仍属于后续步骤。
+
+### 验证结论
+
+- Step 12 已先跑失败测试确认缺口，再实现 UI/store 改动。
+- 前端目标单测通过：`npm run test -- src/stores/session-store.test.ts src/App.test.tsx`，结果为 2 个测试文件、7 个测试通过。
+- 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
+- 完整 Vitest 结果为 6 个测试文件、25 个测试通过；Playwright 结果为 2 个 Chromium 测试通过。
+- `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
+- 本步无需 Lighthouse、PostgreSQL、Redis、Docker 或 Provider 集成测试；Step 13 未开始。

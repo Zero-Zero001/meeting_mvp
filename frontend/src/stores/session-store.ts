@@ -34,6 +34,7 @@ type SessionState = {
   initializeAnonymousClient: (
     options?: InitializeAnonymousClientOptions,
   ) => Promise<void>
+  setCaptureMode: (mode: CaptureMode) => void
 }
 
 export const initialSessionState = {
@@ -61,6 +62,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   endSession: () =>
     set({
       status: 'idle',
+    }),
+  setCaptureMode: (mode) =>
+    set({
+      captureMode: mode,
     }),
   initializeAnonymousClient: async (options = {}) => {
     const currentState = get()
