@@ -100,6 +100,39 @@ describe('websocket message schema', () => {
     })
   })
 
+  it('parses asr_final response fields', () => {
+    const message = parseServerMessage({
+      type: 'asr_final',
+      sequence: 1,
+      start_ms: 0,
+      end_ms: 2400,
+      text: 'We need to align on the timeline.',
+      confidence: 0.92,
+    })
+
+    expect(message).toMatchObject({
+      type: 'asr_final',
+      sequence: 1,
+      start_ms: 0,
+      end_ms: 2400,
+      text: 'We need to align on the timeline.',
+      confidence: 0.92,
+    })
+  })
+
+  it('rejects invalid asr_final confidence', () => {
+    expect(() =>
+      parseServerMessage({
+        type: 'asr_final',
+        sequence: 1,
+        start_ms: 0,
+        end_ms: 2400,
+        text: 'We need to align on the timeline.',
+        confidence: 1.5,
+      }),
+    ).toThrow()
+  })
+
   it('parses nullable optional server fields emitted by Pydantic defaults', () => {
     const audioStatus = parseServerMessage({
       type: 'audio_status',

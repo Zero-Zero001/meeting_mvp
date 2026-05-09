@@ -22,7 +22,8 @@
 - Step 12 已实现前端实时会议工作台骨架：首屏状态栏、捕获模式切换、匿名身份/额度/音频/ASR/翻译状态、四个可访问工作区和桌面/移动响应式布局均已落地；本地前端 lint/test/build/e2e 均已通过。
 - Step 13 已实现前端会议音频捕获：新增 `frontend/src/lib/audio-capture.ts` 封装 `getDisplayMedia`，store 记录捕获状态、会议平台、授权尝试和 `MediaStream`，UI 处理授权成功/拒绝/无音轨/不支持/失败提示；本地前端 lint/test/build/e2e 均已通过。
 - Step 14 已实现前端音频前处理与 binary 上传：新增 `frontend/src/lib/audio-frames.ts`、`frontend/src/lib/audio-processing.ts`、`frontend/src/lib/meeting-websocket.ts` 和 `frontend/public/audio-worklet/pcm16-processor.js`，将捕获到的 `MediaStream` 转为 16 kHz mono PCM16 100ms frame，仅上传超过 RMS 阈值的非静音 binary frame，并通过前端 WebSocket client 发送 `session_start`/`session_stop`；本地前端 lint/test/build/e2e 均已通过。
-- Step 15 已实现本地 mock Provider 链路：后端新增 `meeting_mvp_backend.mock_providers` 固定脚本，并在首个有效 binary frame 激活会话后推送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`，同时写入 `transcript_segment`；前端 WebSocket client、Zustand store 和四区 UI 已消费实时文本；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 16。
+- Step 15 已实现本地 mock Provider 链路：后端新增 `meeting_mvp_backend.mock_providers` 固定脚本，并在首个有效 binary frame 激活会话后推送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`，同时写入 `transcript_segment`；前端 WebSocket client、Zustand store 和四区 UI 已消费实时文本；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 16 已实现 F06 Google STT 实时英文转写：后端新增 `meeting_mvp_backend.stt_providers` 接入 Google Speech-to-Text v2 streaming，非 local 环境 WebSocket 会话会把首帧和后续非空 PCM16 binary frame 持续转发给 STT provider，并发送 `asr_interim` 与新增 `asr_final`；local 环境继续保留 Step 15 mock Provider；前端 WebSocket client、Zustand store 和英文原文区已消费 `asr_final`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 17。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -31,7 +32,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 15 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 16 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Google STT 实时英文转写和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -112,6 +113,7 @@
 - Pydantic v2、pydantic-settings。
 - SQLAlchemy 2 async、Alembic、psycopg。
 - redis-py asyncio。
+- google-cloud-speech 用于 Google Speech-to-Text v2 streaming。
 - httpx、tenacity、structlog。
 - pytest、pytest-asyncio、Ruff、mypy。
 - 使用 `uv` 管理 Python 版本、虚拟环境和依赖锁定。
@@ -176,6 +178,7 @@
 - Step 07 发现远端 `.env.production` 当前未包含 Compose 所需的数据库、Redis 和站点变量名；后续正式部署前需要补齐这些变量，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
 - Step 08 远端匿名接口集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step08` 和临时 env 文件 `.env.step08` 完成；验收后已删除临时 PostgreSQL 容器、临时 env、临时数据目录和测试缓存。
 - Step 09 远端 Redis 集成测试使用独立 Compose project `meeting_mvp_step09`、临时数据目录 `/opt/meeting_mvp/data/redis_step09`、临时 env 文件 `.env.step09` 和非真实 Google 凭据占位文件完成；验收后已删除临时 Redis 容器、临时网络、临时 backend 镜像、临时 env、占位凭据、临时 Redis 数据目录和测试缓存。
+- Step 16 真实 Google STT smoke 曾在 Lighthouse 使用 Google 官方公开 `brooklyn_bridge.raw` 英文样本尝试执行：样本下载成功，Google 凭证文件和必需环境变量存在性检查通过，未输出任何密钥或生产 env 内容。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`，未返回 interim/final。临时容器、临时代码包和 `/tmp/meeting_mvp_step16_*` 均已清理；修通 Google Speech API gRPC/HTTP2 出口前，真实 Google STT smoke 仍无法完成。
 - 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
 
 ## 9. 密钥与安全
@@ -233,7 +236,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 15 本地 mock Provider 链路已完成；Step 16 英文实时转写 / Google STT streaming 必须等用户明确允许后再开始。
+- Step 16 Google STT 实时英文转写已完成；Step 17 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -290,7 +293,21 @@ Step 15 本地 mock Provider 链路已落地：
 - 前端 `frontend/src/stores/session-store.ts` 已新增 `englishInterimText`、`translationInterimText`、`finalSegments`、`keySentenceText` 和 `timelineItems`；interim 可替换，final 只追加，新会话开始时清空上一场实时文本。
 - 前端 `frontend/src/App.tsx` 四区已消费实时文本：英文区显示英文 interim/final，中文区显示中文 interim/final，当前重点句区显示最新重点句，会议时间线区显示 timeline items。
 - `backend/tests/test_websocket_sessions.py` 覆盖 mock Provider 消息、final 入库、停止/断开取消和 warning 不阻塞 final；`frontend/src/lib/meeting-websocket.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts` 覆盖前端 callbacks、store、UI 和浏览器 mock 实时文本流。
-- Step 15 只用于本地开发和自动化测试，不接入 Google STT 或真实 Qwen，不新增 Provider 密钥变量，不保存原始音频，不新增会后归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路；Step 16 仍未开始。
+- Step 15 只用于本地开发和自动化测试，不接入真实 Qwen，不新增 Provider 密钥变量，不保存原始音频，不新增会后归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
+
+Step 16 Google STT 实时英文转写已落地：
+
+- 后端 `backend/src/meeting_mvp_backend/stt_providers.py` 定义 `StreamingSttProvider` 协议、`SttInterimEvent`、`SttFinalEvent` 和 `GoogleStreamingSttProvider`，使用 `google-cloud-speech` 的 `SpeechAsyncClient.streaming_recognize()`。
+- Google STT 首个 request 携带 recognizer 与 streaming config，后续 request 只携带 audio；音频配置固定为 LINEAR16、16 kHz、1 channel、`language_codes=["en-US"]`、`interim_results=True`。
+- recognizer 规则固定为：`GOOGLE_STT_RECOGNIZER` 已是 `projects/.../recognizers/...` 时直接使用，否则由 `GOOGLE_CLOUD_PROJECT`、`GOOGLE_STT_LOCATION` 和 recognizer 名拼接。
+- WebSocket 服务端消息 schema 新增 `asr_final`，字段为 `sequence`、`start_ms`、`end_ms`、`text` 和 `confidence|null`；后端 Pydantic schema 与前端 Zod schema 已同步。
+- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 在首个非空 binary frame 激活会话后启动 STT provider，并把首帧和后续非空 PCM16 binary frame 持续转发给 provider；Google interim 转为 `asr_interim`，Google final 转为 `asr_final`。
+- Google STT 异常会发送 `error(code="google_stt_error")`，关闭 provider，释放 Redis active session，并发送 `session_closed`；`session_stop`、浏览器断开和 task 取消也会清理 provider。
+- `APP_ENV=local` 继续保留 Step 15 mock Provider 行为；非 local 环境由 `backend/src/meeting_mvp_backend/main.py` 注入 Google STT provider factory。
+- `asr_final` 不写数据库；正式 `transcript_segment` 仍只保存后续双语 final 链路产物，避免在中文 final 尚未生成时写入不完整片段。
+- 前端 `frontend/src/lib/meeting-websocket.ts` 新增 `onAsrFinal` callback，`frontend/src/stores/session-store.ts` 新增 `englishFinalSegments`，`frontend/src/App.tsx` 英文原文区渲染 `asr_interim` 与 `asr_final`；中文区不伪造中文。
+- 新增 `backend/tests/integration/test_google_stt_smoke.py` 作为真实 Google STT smoke hook，仅在真实 Google 环境变量和测试专用 `GOOGLE_STT_SMOKE_AUDIO_PATH` 同时存在时运行；不得打印服务账号 JSON、API key、完整环境变量值或生产 `.env` 内容。
+- Step 16 不调用 Qwen，不新增中文 interim/final 逻辑，不新增导出、COS、会后归档页/API 或完整 `usage_event` 链路；Step 17 仍未开始。
 
 核心 WebSocket 请求消息：
 
@@ -305,6 +322,7 @@ Step 15 本地 mock Provider 链路已落地：
 - `quota_update`
 - `audio_status`
 - `asr_interim`
+- `asr_final`
 - `translation_interim`
 - `segment_final`
 - `key_sentence_update`
@@ -333,7 +351,7 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 
 - 前端：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
 - 后端：在 `backend/` 内执行 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；数据库步骤完成后再执行 `uv run alembic upgrade head`。
-- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py` 或 `tests/integration/test_quota_redis_integration.py`。
+- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis/Google STT 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py`、`tests/integration/test_quota_redis_integration.py` 或 `tests/integration/test_google_stt_smoke.py`；Google STT smoke 还需要真实 Google 环境变量和测试专用 `GOOGLE_STT_SMOKE_AUDIO_PATH`。
 - 云端部署：`docker compose config`、`docker compose up -d`、`docker compose ps`。
 - 本机若默认 npm cache 遇到 `EPERM` 权限错误，可临时设置 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'`；该目录已被根目录 `.gitignore` 忽略。
 
@@ -343,5 +361,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 16 英文实时转写 / Google STT streaming 必须等待用户明确允许后再开始；Step 15 当前只提供本地 mock STT/Qwen 固定脚本、final 写入 `transcript_segment` 和四区实时文本数据流，不包含真实 Google STT、真实 Qwen、会后归档 API/页面、COS 导出或完整 `usage_event` 链路。
+- Step 17 必须等待用户明确允许后再开始；Step 16 当前只提供 Google STT 英文实时转写、`asr_interim`、`asr_final` 和英文原文区展示，不调用 Qwen，不生成中文 interim/final，不新增会后归档 API/页面、COS 导出或完整 `usage_event` 链路。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

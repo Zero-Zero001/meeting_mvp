@@ -39,6 +39,7 @@ export type ConnectMeetingWebSocketOptions = {
   captureMode: CaptureMode
   clientId: string
   onAudioStatus?: (message: Extract<ServerMessage, { type: 'audio_status' }>) => void
+  onAsrFinal?: (message: Extract<ServerMessage, { type: 'asr_final' }>) => void
   onAsrInterim?: (message: Extract<ServerMessage, { type: 'asr_interim' }>) => void
   onClosed?: (message: Extract<ServerMessage, { type: 'session_closed' }>) => void
   onError?: (error: Error) => void
@@ -92,6 +93,7 @@ export function connectMeetingWebSocket({
   captureMode,
   clientId,
   onAudioStatus,
+  onAsrFinal,
   onAsrInterim,
   onClosed,
   onError,
@@ -202,6 +204,9 @@ export function connectMeetingWebSocket({
           break
         case 'asr_interim':
           onAsrInterim?.(message)
+          break
+        case 'asr_final':
+          onAsrFinal?.(message)
           break
         case 'translation_interim':
           onTranslationInterim?.(message)

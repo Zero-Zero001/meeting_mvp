@@ -290,6 +290,16 @@ describe('App', () => {
     useSessionStore.setState({
       ...useSessionStore.getState(),
       englishInterimText: 'We need to align on the launch timeline.',
+      englishFinalSegments: [
+        {
+          confidence: 0.91,
+          end_ms: 2800,
+          sequence: 1,
+          start_ms: 0,
+          text: 'We need to align before Friday.',
+          type: 'asr_final',
+        },
+      ],
       finalSegments: [
         {
           chinese_text_final: '我们需要在周五前对齐上线时间线。',
@@ -324,6 +334,11 @@ describe('App', () => {
     expect(
       within(screen.getByRole('region', { name: '英文原文区' })).getByText(
         'We need to align on the launch timeline before Friday.',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '英文原文区' })).getByText(
+        'We need to align before Friday.',
       ),
     ).toBeInTheDocument()
     expect(

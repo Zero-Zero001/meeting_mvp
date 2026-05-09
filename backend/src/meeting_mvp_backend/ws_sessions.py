@@ -32,7 +32,13 @@ from meeting_mvp_backend.mock_providers import (
     MockProviderScript,
 )
 from meeting_mvp_backend.quota import QuotaDecision
+from meeting_mvp_backend.stt_providers import (
+    StreamingSttProvider,
+    SttFinalEvent,
+    SttInterimEvent,
+)
 from meeting_mvp_backend.ws_messages import (
+    AsrFinalMessage,
     AsrInterimMessage,
     AudioStatusMessage,
     ErrorMessage,
@@ -55,6 +61,7 @@ from meeting_mvp_backend.ws_messages import (
 logger = structlog.get_logger(__name__)
 
 Clock = Callable[[], datetime]
+SttProviderFactory = Callable[[], StreamingSttProvider]
 USER_STOPPED_REASON = "user_stopped"
 BROWSER_DISCONNECTED_REASON = "browser_disconnected"
 INVALID_MESSAGE_REASON = "invalid_message"
@@ -62,6 +69,7 @@ SESSION_MISMATCH_REASON = "session_mismatch"
 CLIENT_NOT_INITIALIZED_REASON = "client_not_initialized"
 CONFIGURATION_ERROR_REASON = "configuration_error"
 INTERNAL_ERROR_REASON = "internal_error"
+GOOGLE_STT_ERROR_REASON = "google_stt_error"
 MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
 
 
@@ -135,6 +143,8 @@ class WebSocketSessionState:
     has_audio: bool = False
     closed: bool = False
     mock_provider_task: asyncio.Task[None] | None = None
+    stt_provider: StreamingSttProvider | None = None
+    stt_provider_task: asyncio.Task[None] | None = None
 
 
 class SQLAlchemyMeetingSessionRepository:
@@ -255,12 +265,14 @@ class WebSocketSessionOrchestrator:
         settings: Settings,
         clock: Clock | None = None,
         configuration_error: str | None = None,
+        stt_provider_factory: SttProviderFactory | None = None,
     ) -> None:
         self._repository = repository
         self._quota_service = quota_service
         self._settings = settings
         self._clock = clock or _now_utc
         self._configuration_error = configuration_error
+        self._stt_provider_factory = stt_provider_factory
 
     async def handle(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -470,9 +482,23 @@ class WebSocketSessionOrchestrator:
             )
             return
 
-        if payload == b"" or state.has_audio:
+        if payload == b"":
             return
 
+        if state.has_audio:
+            if state.stt_provider is not None:
+                await state.stt_provider.send_audio(payload)
+            return
+
+        await self._activate_session_for_audio(websocket, state)
+        if state.stt_provider is not None:
+            await state.stt_provider.send_audio(payload)
+
+    async def _activate_session_for_audio(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+    ) -> None:
         repository = _require_repository(self._repository)
         active_at = self._clock()
         await repository.mark_session_active(
@@ -485,9 +511,57 @@ class WebSocketSessionOrchestrator:
             websocket,
             AudioStatusMessage(type="audio_status", has_audio=True, level=None),
         )
-        state.mock_provider_task = asyncio.create_task(
-            self._run_mock_provider_pipeline(websocket, state),
+        if self._stt_provider_factory is None:
+            state.mock_provider_task = asyncio.create_task(
+                self._run_mock_provider_pipeline(websocket, state),
+            )
+            return
+
+        state.stt_provider = self._stt_provider_factory()
+        state.stt_provider_task = asyncio.create_task(
+            self._run_stt_provider_pipeline(websocket, state),
         )
+
+    async def _run_stt_provider_pipeline(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+    ) -> None:
+        provider = state.stt_provider
+        if provider is None:
+            return
+        try:
+            async for event in provider.events():
+                if isinstance(event, SttInterimEvent):
+                    await _send_server_message(
+                        websocket,
+                        AsrInterimMessage(type="asr_interim", text=event.text),
+                    )
+                elif isinstance(event, SttFinalEvent):
+                    await _send_server_message(
+                        websocket,
+                        AsrFinalMessage(
+                            type="asr_final",
+                            sequence=event.sequence,
+                            start_ms=event.start_ms,
+                            end_ms=event.end_ms,
+                            text=event.text,
+                            confidence=event.confidence,
+                        ),
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "google_stt_stream_failed",
+                error_type=exc.__class__.__name__,
+            )
+            await self._close_with_error(
+                websocket=websocket,
+                state=state,
+                reason=GOOGLE_STT_ERROR_REASON,
+                message=exc.__class__.__name__,
+            )
 
     async def _run_mock_provider_pipeline(
         self,
@@ -579,6 +653,8 @@ class WebSocketSessionOrchestrator:
             return
 
         await _cancel_mock_provider_task(state)
+        await _cancel_stt_provider_task(state)
+        await _close_stt_provider(state)
         repository = _require_repository(self._repository)
         quota_service = _require_quota_service(self._quota_service)
         ended_at = self._clock()
@@ -726,6 +802,24 @@ async def _cancel_mock_provider_task(state: WebSocketSessionState) -> None:
         await task
     except asyncio.CancelledError:
         return
+
+
+async def _cancel_stt_provider_task(state: WebSocketSessionState) -> None:
+    task = state.stt_provider_task
+    if task is None or task.done() or task is asyncio.current_task():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
+
+
+async def _close_stt_provider(state: WebSocketSessionState) -> None:
+    provider = state.stt_provider
+    if provider is None:
+        return
+    await provider.close()
 
 
 async def _safe_close(websocket: WebSocket) -> None:

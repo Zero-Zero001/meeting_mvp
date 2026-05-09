@@ -157,6 +157,7 @@ function App() {
     captureStatus,
     clientId,
     endSession,
+    englishFinalSegments,
     englishInterimText,
     finalSegments,
     hasEffectiveAudio,
@@ -212,8 +213,8 @@ function App() {
   const effectiveAudioLabel = hasEffectiveAudio ? '已检测到' : '等待有效音频'
   const audioLevelLabel = `${Math.round(Math.min(audioLevel, 1) * 100)}%`
   const asrStatusLabel =
-    finalSegments.length > 0
-      ? `${finalSegments.length} 条 final`
+    englishFinalSegments.length > 0 || finalSegments.length > 0
+      ? `${englishFinalSegments.length + finalSegments.length} 条 final`
       : englishInterimText
         ? '收到 interim'
         : webSocketStatus === 'started'
@@ -458,6 +459,16 @@ function App() {
                     {englishInterimText}
                   </p>
                 ) : null}
+                {englishFinalSegments.map((segment) => (
+                  <article
+                    className="max-w-3xl border-l-2 border-zinc-300 pl-3"
+                    key={`${segment.sequence}-${segment.end_ms}-${segment.text}`}
+                  >
+                    <p className="text-sm leading-6 text-zinc-950">
+                      {segment.text}
+                    </p>
+                  </article>
+                ))}
                 {finalSegments.map((segment) => (
                   <article
                     className="max-w-3xl border-l-2 border-zinc-300 pl-3"
@@ -468,7 +479,9 @@ function App() {
                     </p>
                   </article>
                 ))}
-                {!englishInterimText && finalSegments.length === 0 ? (
+                {!englishInterimText &&
+                englishFinalSegments.length === 0 &&
+                finalSegments.length === 0 ? (
                   <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
                     等待英文转写内容。
                   </p>

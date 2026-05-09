@@ -139,6 +139,7 @@ describe('meeting websocket client', () => {
   it('forwards realtime transcript, translation, timeline, and warning messages', async () => {
     FakeWebSocket.instances = []
     const onAsrInterim = vi.fn()
+    const onAsrFinal = vi.fn()
     const onKeySentenceUpdate = vi.fn()
     const onSegmentFinal = vi.fn()
     const onTimelineUpdate = vi.fn()
@@ -149,6 +150,7 @@ describe('meeting websocket client', () => {
       captureMode: 'tab_audio',
       clientId: '11111111-1111-4111-8111-111111111111',
       onAsrInterim,
+      onAsrFinal,
       onKeySentenceUpdate,
       onSegmentFinal,
       onTimelineUpdate,
@@ -174,6 +176,16 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         text: 'We need to align on the launch timeline.',
         type: 'asr_interim',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        confidence: 0.91,
+        end_ms: 3200,
+        sequence: 1,
+        start_ms: 0,
+        text: 'We need to align on the launch timeline before Friday.',
+        type: 'asr_final',
       }),
     )
     socket.message(
@@ -224,6 +236,14 @@ describe('meeting websocket client', () => {
     expect(onAsrInterim).toHaveBeenCalledWith({
       text: 'We need to align on the launch timeline.',
       type: 'asr_interim',
+    })
+    expect(onAsrFinal).toHaveBeenCalledWith({
+      confidence: 0.91,
+      end_ms: 3200,
+      sequence: 1,
+      start_ms: 0,
+      text: 'We need to align on the launch timeline before Friday.',
+      type: 'asr_final',
     })
     expect(onWarning).toHaveBeenCalledWith({
       code: 'mock_qwen_interim_retry',

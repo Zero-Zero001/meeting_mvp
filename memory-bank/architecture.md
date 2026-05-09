@@ -620,3 +620,55 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`；结果为 lint 通过、Vitest 10 个测试文件 58 个测试通过、build 通过、Playwright 6 个 Chromium 测试通过。
 - `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
 - Step 16 尚未开始；真实 Google STT、真实 Qwen、真实 Provider smoke test 和会后归档页面/API 仍等待后续明确步骤。
+
+## 2026-05-09 Step 16 Google STT 实时英文转写
+
+### 架构状态
+- Step 16 将 Step 14 的 PCM16 binary audio 与 Step 11/15 的 WebSocket 会话生命周期接到 Google Speech-to-Text v2 streaming，形成真实英文实时转写主路径。
+- WebSocket 服务端协议新增 `asr_final`，用于传递英文最终转写：`sequence`、`start_ms`、`end_ms`、`text` 和可空 `confidence`。`asr_final` 不写入 `transcript_segment`，避免在中文 final 尚未生成时写入不完整双语片段。
+- `asr_interim` 继续表示英文临时转写，可被覆盖；`asr_final` 表示英文 final 追加展示；`segment_final` 仍保留给后续双语 final 链路。
+- 后端 WebSocket 编排支持两条 provider 路径：`APP_ENV=local` 保留 Step 15 mock Provider；非 local 通过 provider factory 创建 Google STT streaming provider。
+- Google STT provider 的输入固定为 headerless PCM16：LINEAR16、16 kHz、mono、英文 `en-US`，并启用 interim results。
+- 后端在首个非空 binary frame 激活会话后启动 STT provider；首帧和后续非空 binary frame 都会继续转发给 provider，不再只处理首帧。
+- Google STT 异常会转为 `error(code="google_stt_error")`，随后关闭 provider、释放 Redis active session、结算/标记会话并发送 `session_closed`。
+- Step 16 不新增数据库 migration，不保存原始音频，不保存 interim，不把 Google `asr_final` 写入数据库，不新增后端密钥变量，也不新增前端 `VITE_*`。
+- Step 17 未开始：本步没有调用 Qwen，没有新增中文 interim/final 逻辑，没有新增导出、COS、会后归档页或完整 `usage_event` 链路。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/stt_providers.py` | STT provider 抽象与 Google STT v2 streaming 实现。负责构造 recognizer、生成首包 streaming config、发送后续 audio request、解析 Google interim/final result，并输出 `SttInterimEvent` 与 `SttFinalEvent`。 |
+| `backend/src/meeting_mvp_backend/ws_messages.py` | 后端 WebSocket wire schema。Step 16 新增 `AsrFinalMessage`，并把 `asr_final` 纳入 `ServerMessage` union；同时用约束字段限制 `confidence` 在 0 到 1 之间或为空。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 16 新增 STT provider 生命周期管理、binary frame 持续转发、`asr_final` 发送、Google STT 错误关闭和 stop/disconnect provider 清理；local/mock 路径继续保留 Step 15 行为。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口与依赖组装。Step 16 在 WebSocket orchestrator 创建时根据 `APP_ENV` 注入 Google STT provider factory 或保留 local mock 路径。 |
+| `backend/pyproject.toml` | 后端项目依赖清单。Step 16 新增 `google-cloud-speech` 运行依赖。 |
+| `backend/uv.lock` | 后端 uv 锁文件。锁定 `google-cloud-speech` 及其传递依赖解析结果，保证后续环境可重复安装。 |
+| `backend/tests/test_google_stt_provider.py` | Google STT provider 单元测试。使用 fake async Google client 验证 request 顺序、PCM16 streaming config、recognizer 拼接、interim/final 事件解析、异常传播和关闭清理。 |
+| `backend/tests/test_ws_messages.py` | 后端 WebSocket schema 测试。Step 16 覆盖 `asr_final` 解析和非法 `confidence` 字段拒绝。 |
+| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 会话行为测试。Step 16 覆盖 binary frame 转发给 STT provider、`asr_interim`/`asr_final` 推送、Google STT 错误关闭、stop/disconnect 时 provider 清理，以及 Google 路径不写 `transcript_segment`。 |
+| `backend/tests/integration/test_google_stt_smoke.py` | 真实 Google STT 集成 smoke hook。仅在 Lighthouse/CI 提供真实 Google STT 环境变量和测试专用 16 kHz LINEAR16 英文音频路径时运行，验证限定时间内收到 interim 与 final。 |
+| `frontend/src/protocol/websocket-messages.ts` | 前端 Zod WebSocket wire schema。Step 16 镜像新增 `asr_final` 服务端消息，用于类型推导和运行时解析。 |
+| `frontend/src/lib/meeting-websocket.ts` | 前端 WebSocket client。Step 16 新增 `onAsrFinal` callback，把 `asr_final` 分发给 store。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。Step 16 新增 `englishFinalSegments`，收到 `asr_final` 后追加；开始新会话时清空英文 final 展示状态。 |
+| `frontend/src/App.tsx` | 会议工作台 UI。Step 16 英文原文区同时渲染 `englishInterimText` 与 `englishFinalSegments`；中文区仍只渲染中文 interim 和 `segment_final` 中文内容。 |
+| `frontend/src/protocol/websocket-messages.test.ts` | 前端协议测试。覆盖 `asr_final` 合法解析与非法 `confidence` 拒绝。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | 前端 WebSocket client 测试。覆盖 `asr_final` 消息分发到 `onAsrFinal` callback。 |
+| `frontend/src/stores/session-store.test.ts` | store 集成式单元测试。覆盖 `asr_final` 追加到 `englishFinalSegments`，以及新会话清空旧英文 final 状态。 |
+| `frontend/src/App.test.tsx` | React UI 测试。覆盖英文原文区渲染 Google `asr_final`，并确认中文区仍只由翻译消息驱动。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。FakeWebSocket 推送 `asr_final`，验证真实页面英文区展示英文 final 且既有捕获/上传 smoke 仍通过。 |
+
+### 状态与边界
+- `StreamingSttProvider.send_audio(frame)` 是 WebSocket binary frame 到 STT provider 的唯一入口；本步只传递前端已过滤的非空 PCM16 frame。
+- `SttFinalEvent.sequence` 从 1 开始递增；时间轴以 Google `result_end_offset` 为准，缺失时回退到上一结束时间，避免生成负数或倒退区间。
+- `confidence` 只在 Google 返回 0 到 1 的有效置信度时传递，否则按 `null` 处理。
+- Google STT provider 的 `close()` 会通知 request generator 停止并等待后台读取任务结束；WebSocket stop/disconnect/error 路径都会调用清理。
+- `APP_ENV=local` 不创建 Google STT provider，因此本地无真实 Google 凭证时仍使用 Step 15 mock Provider 测试链路。
+- 真实 Google STT smoke 不应在 Windows 本地默认运行；需要 Lighthouse/CI 提供真实凭证和测试音频，并且测试日志不得输出密钥或完整生产配置。
+
+### 验证结论
+- Step 16 已先跑 RED 测试确认缺口，再实现 Google STT provider、`asr_final` 协议、WebSocket 编排和前端消费到 GREEN。
+- 后端完整验证通过：`uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；结果为 Python 3.12.11、Ruff 通过、mypy 28 个源文件无问题、pytest 51 passed 且 6 integration deselected。
+- 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`；结果为 lint 通过、Vitest 10 个测试文件 60 个测试通过、build 通过、Playwright 6 个 Chromium 测试通过。
+- 2026-05-09 已在 Lighthouse 用 Google 官方公开 `brooklyn_bridge.raw` 样本尝试真实 Google STT smoke；样本下载成功，Google 凭证文件和必需环境变量存在性检查通过。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`。因此真实 Google STT smoke 当前仍未完成，阻塞点是 Google Speech API 的 gRPC/HTTP2 流量出口，而不是公开样本、凭证文件存在性或 Step 16 代码路径。
+- Step 17 尚未开始；Qwen interim/final、中文 final 入库、会后归档页/API、导出和 COS 仍等待后续明确步骤。

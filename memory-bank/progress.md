@@ -796,3 +796,61 @@
 - Step 15 mock Provider 只用于本地开发和自动化测试；不读取、不保存、不上传原始音频，不暴露任何 Provider 密钥。
 - 当前“归档生成”仅指后端写入 `transcript_segment`；会后归档查询 API/页面、搜索、复制、Markdown/JSON 导出、COS 和完整 `usage_event` 链路仍属于后续步骤。
 - Qwen interim warning 在本步是可恢复 mock warning，不阻塞英文 final、中文 final 或 `transcript_segment` 写入。
+
+## 2026-05-09 Step 16：Google STT 实时英文转写
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 16，未开始 Step 17；本步不调用 Qwen、不新增中文 interim/final 逻辑、不新增会后归档页、搜索、复制、导出、COS 或完整 `usage_event` 链路。
+- 后端新增 `backend/src/meeting_mvp_backend/stt_providers.py`：
+  - 定义 `StreamingSttProvider` 协议、`SttInterimEvent`、`SttFinalEvent` 和 Google STT provider。
+  - 使用 `google-cloud-speech` 的 `SpeechAsyncClient.streaming_recognize()`；首包发送 recognizer 与 streaming config，后续包只发送 audio。
+  - 音频配置固定为 LINEAR16、16 kHz、1 channel、`language_codes=["en-US"]`、`interim_results=True`。
+  - `GOOGLE_STT_RECOGNIZER` 已是 `projects/.../recognizers/...` 时直接使用，否则由 `GOOGLE_CLOUD_PROJECT`、`GOOGLE_STT_LOCATION` 和 recognizer 名拼接。
+  - Google interim 转为 `SttInterimEvent`，Google final 转为 `SttFinalEvent`；`start_ms` 使用上一条 final 的 `end_ms`，`end_ms` 来自 `result_end_offset`，缺失时回退到上一结束时间。
+- WebSocket 公开协议新增服务端消息 `asr_final`：
+  - 后端 `backend/src/meeting_mvp_backend/ws_messages.py` 和前端 `frontend/src/protocol/websocket-messages.ts` 均已镜像新增字段 `type`、`sequence`、`start_ms`、`end_ms`、`text`、`confidence|null`。
+  - `asr_final` 只表示英文最终转写，不写入 `transcript_segment`，避免用空中文污染正式双语片段；正式双语 final 入库仍留给后续步骤。
+- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 已接入 STT provider factory：
+  - 首个非空 binary frame 仍负责激活 `meeting_session` 和 Redis active session。
+  - Google 路径下，首帧和后续非空 binary frame 都会转发给 STT provider。
+  - STT interim 会发送 `asr_interim`，STT final 会发送 `asr_final`。
+  - Google STT 异常会发送 `error(code="google_stt_error")` 并关闭会话，释放 Redis active session，关闭 provider，再发送 `session_closed`。
+  - `session_stop`、浏览器断开或 WebSocket task 取消会取消 STT task 并关闭 provider。
+  - `APP_ENV=local` 继续保留 Step 15 mock Provider 行为，确保没有真实 Google 凭证时本地开发和自动化测试仍可跑通。
+- 后端 `backend/src/meeting_mvp_backend/main.py` 在 WebSocket orchestrator 依赖中按环境注入 provider：local 使用 mock 路径，非 local 使用 Google STT provider。
+- 后端依赖已通过 `uv add google-cloud-speech` 写入 `backend/pyproject.toml` 并锁定到 `backend/uv.lock`。
+- 前端消费已更新：
+  - `frontend/src/lib/meeting-websocket.ts` 新增 `onAsrFinal` callback。
+  - `frontend/src/stores/session-store.ts` 新增 `englishFinalSegments`，新会话开始时清空。
+  - `frontend/src/App.tsx` 英文原文区渲染 `asr_interim` 和 `asr_final`；中文区仍只消费 `translation_interim` 与 `segment_final`，不伪造中文。
+- 新增 `backend/tests/integration/test_google_stt_smoke.py` 作为真实 Google STT smoke hook；只有在真实 Google STT 环境变量和 `GOOGLE_STT_SMOKE_AUDIO_PATH` 指向的 16 kHz LINEAR16 英文样本同时存在时才运行。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 16 后端 TDD RED | `uv run pytest tests/test_google_stt_provider.py tests/test_ws_messages.py tests/test_websocket_sessions.py -q` | 首次失败，缺少 `stt_providers`、`AsrFinalMessage` 和 STT 会话编排行为 |
+| Step 16 后端目标 GREEN | `uv run pytest tests/test_google_stt_provider.py tests/test_ws_messages.py tests/test_websocket_sessions.py -q` | 26 passed |
+| Step 16 前端目标 GREEN | `npm run test -- --run src/protocol/websocket-messages.test.ts src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 4 个测试文件、34 个测试通过 |
+| 后端 Python | `uv run python --version` | Python 3.12.11 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 28 source files` |
+| 后端 pytest | `uv run pytest` | 51 passed，6 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、60 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| 本地 Google STT smoke hook | `pytest.main(['-o', 'addopts=', '-m', 'integration', 'tests/integration/test_google_stt_smoke.py', '-q'])` | 1 skipped，因本地未提供真实 Google STT 环境变量和测试音频 |
+| Lighthouse 公开样本下载 | 下载 Google 官方公开 `brooklyn_bridge.raw`，并拼接为临时 loop 样本 | 原始样本 57,958 bytes；loop 样本 231,832 bytes；未使用真实会议音频 |
+| Lighthouse Google STT smoke | 临时 Docker 容器挂载当前后端代码、Google 凭证只读路径和公开样本后运行 `test_google_stt_smoke.py` | 未通过；Google STT gRPC 返回 `ServiceUnavailable: 503 failed to connect to all addresses` |
+| Lighthouse Google API 连通性 | 远端 host/container 分别检查 `storage.googleapis.com` 和 `speech.googleapis.com:443` | `storage.googleapis.com` 可访问；`speech.googleapis.com:443` host curl 超时，容器 socket 连接超时 |
+| 2026-05-09 用户第二次调整网络后复测 | Lighthouse 容器内 TLS 探针与真实 Google STT streaming smoke | 容器内简单 TLS 探针到 `speech.googleapis.com:443` 成功；真实 Google STT gRPC streaming 仍失败，返回 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown` |
+
+### 后续注意
+
+- Step 17 必须等待用户明确允许后再开始。
+- Step 16 只接入英文 Google STT 与 `asr_final`，没有新增 Qwen 调用、中文 interim 节流、中文 final 生成、会后归档查询 API/页面、COS 或导出逻辑。
+- 本地默认测试不会访问真实 Google STT；真实 smoke 需要在 Lighthouse/CI 后端环境中提供现有 Google 变量和测试专用 `GOOGLE_STT_SMOKE_AUDIO_PATH`，且不得打印服务账号 JSON、API key、完整环境变量或生产 `.env` 内容。
+- `asr_final` 是英文最终转写展示消息，不写数据库；后续双语 final 步骤需要继续决定何时把英文 final 与中文 final 组合写入 `transcript_segment`。
+- 2026-05-09 已尝试在 Lighthouse 使用互联网公开样本完成真实 Google STT smoke；当前阻塞不是代码、样本或凭证文件存在性，而是 Google STT gRPC streaming 连接仍被网络层中断。第二次网络调整后容器内 TCP/TLS 探针可达 `speech.googleapis.com:443`，但真实 gRPC 仍返回 `tcp handshaker shutdown`，因此仍需继续修通对 Google Speech API gRPC/HTTP2 流量的出口或换用可稳定访问该 API 的运行环境。

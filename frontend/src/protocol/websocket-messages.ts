@@ -80,6 +80,17 @@ export const asrInterimMessageSchema = z
   })
   .strict()
 
+export const asrFinalMessageSchema = z
+  .object({
+    type: z.literal('asr_final'),
+    sequence: nonNegativeInteger,
+    start_ms: nonNegativeInteger,
+    end_ms: nonNegativeInteger,
+    text: z.string(),
+    confidence: z.number().min(0).max(1).nullable().optional(),
+  })
+  .strict()
+
 export const translationInterimMessageSchema = z
   .object({
     type: z.literal('translation_interim'),
@@ -151,6 +162,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   quotaUpdateMessageSchema,
   audioStatusMessageSchema,
   asrInterimMessageSchema,
+  asrFinalMessageSchema,
   translationInterimMessageSchema,
   segmentFinalMessageSchema,
   keySentenceUpdateMessageSchema,

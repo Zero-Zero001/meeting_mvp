@@ -103,6 +103,18 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
             this.onmessage?.(
               new MessageEvent('message', {
                 data: JSON.stringify({
+                  confidence: 0.91,
+                  end_ms: 2800,
+                  sequence: 1,
+                  start_ms: 0,
+                  text: 'We need to align before Friday.',
+                  type: 'asr_final',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
                   text: '我们需要对齐上线时间线。',
                   type: 'translation_interim',
                 }),
@@ -294,6 +306,11 @@ test('uploads only effective PCM16 audio frames after session_started', async ({
   await expect
     .poll(() => page.evaluate(() => window.__sentBinaryFrames[0]))
     .toBe(3200)
+  await expect(
+    page.getByRole('region', { name: '英文原文区' }).getByText(
+      'We need to align before Friday.',
+    ),
+  ).toBeVisible()
   await expect(
     page.getByRole('region', { name: '英文原文区' }).getByText(
       'We need to align on the launch timeline before Friday.',

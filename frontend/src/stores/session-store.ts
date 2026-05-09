@@ -70,6 +70,7 @@ export type CaptureAuthorizationResult =
   | 'unsupported'
   | 'failed'
 export type FinalSegment = Extract<ServerMessage, { type: 'segment_final' }>
+export type AsrFinalSegment = Extract<ServerMessage, { type: 'asr_final' }>
 export type TimelineItem = Extract<
   ServerMessage,
   { type: 'timeline_update' }
@@ -124,6 +125,7 @@ type SessionState = {
   captureStatus: CaptureStatus
   clientId: string | null
   englishInterimText: string | null
+  englishFinalSegments: AsrFinalSegment[]
   finalSegments: FinalSegment[]
   hasEffectiveAudio: boolean
   keySentenceText: string | null
@@ -163,6 +165,7 @@ export const initialSessionState = {
   captureStatus: 'idle' as CaptureStatus,
   clientId: null,
   englishInterimText: null as string | null,
+  englishFinalSegments: [] as AsrFinalSegment[],
   finalSegments: [] as FinalSegment[],
   hasEffectiveAudio: false,
   keySentenceText: null as string | null,
@@ -285,6 +288,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       captureMode: mode,
       captureStatus: 'requesting',
       englishInterimText: null,
+      englishFinalSegments: [],
       finalSegments: [],
       hasEffectiveAudio: false,
       keySentenceText: null,
@@ -370,6 +374,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           set({
             englishInterimText: message.text,
           })
+        },
+        onAsrFinal: (message) => {
+          set((state) => ({
+            englishFinalSegments: [...state.englishFinalSegments, message],
+          }))
         },
         onClosed: () => {
           set({

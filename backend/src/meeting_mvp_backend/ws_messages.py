@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 type NonNegativeInt = Annotated[int, Field(ge=0)]
 type AudioLevel = Annotated[float, Field(ge=0.0, le=1.0)]
+type Confidence = Annotated[float, Field(ge=0.0, le=1.0)]
 type AudioChunkFrame = bytes | bytearray | memoryview
 
 
@@ -65,6 +66,15 @@ class AudioStatusMessage(WireMessage):
 class AsrInterimMessage(WireMessage):
     type: Literal["asr_interim"]
     text: str
+
+
+class AsrFinalMessage(WireMessage):
+    type: Literal["asr_final"]
+    sequence: NonNegativeInt
+    start_ms: NonNegativeInt
+    end_ms: NonNegativeInt
+    text: str
+    confidence: Confidence | None = None
 
 
 class TranslationInterimMessage(WireMessage):
@@ -127,6 +137,7 @@ type ServerMessage = Annotated[
     | QuotaUpdateMessage
     | AudioStatusMessage
     | AsrInterimMessage
+    | AsrFinalMessage
     | TranslationInterimMessage
     | SegmentFinalMessage
     | KeySentenceUpdateMessage

@@ -232,6 +232,14 @@ describe('useSessionStore', () => {
           text: 'We need to align on the launch timeline.',
           type: 'asr_interim',
         })
+        options.onAsrFinal?.({
+          confidence: 0.91,
+          end_ms: 3200,
+          sequence: 1,
+          start_ms: 0,
+          text: 'We need to align on the launch timeline before Friday.',
+          type: 'asr_final',
+        })
         options.onTranslationInterim?.({
           text: '我们需要对齐上线时间线。',
           type: 'translation_interim',
@@ -271,6 +279,12 @@ describe('useSessionStore', () => {
       keySentenceText: '我们需要在周五前对齐上线时间线。',
       translationInterimText: '我们需要对齐上线时间线。',
     })
+    expect(useSessionStore.getState().englishFinalSegments).toEqual([
+      expect.objectContaining({
+        text: 'We need to align on the launch timeline before Friday.',
+        type: 'asr_final',
+      }),
+    ])
     expect(useSessionStore.getState().finalSegments).toHaveLength(1)
     expect(useSessionStore.getState().finalSegments[0]).toMatchObject({
       chinese_text_final: '我们需要在周五前对齐上线时间线。',

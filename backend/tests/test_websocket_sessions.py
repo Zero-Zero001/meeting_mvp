@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from meeting_mvp_backend.db.models import (
 )
 from meeting_mvp_backend.main import app, get_websocket_session_orchestrator
 from meeting_mvp_backend.quota import QuotaDecision, QuotaDenialReason
+from meeting_mvp_backend.stt_providers import SttEvent, SttFinalEvent, SttInterimEvent
 from meeting_mvp_backend.ws_sessions import (
     WebSocketSessionOrchestrator,
     hash_archive_token,
@@ -190,6 +192,34 @@ class FakeQuotaService:
         )
 
 
+class FakeSttProvider:
+    def __init__(
+        self,
+        *,
+        events: list[SttEvent] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.closed = False
+        self.error = error
+        self.events_to_yield = events or []
+        self.sent_audio: list[bytes] = []
+
+    async def send_audio(self, payload: bytes) -> None:
+        self.sent_audio.append(payload)
+
+    async def events(self) -> AsyncIterator[SttEvent]:
+        await asyncio.sleep(0.001)
+        if self.error is not None:
+            raise self.error
+        for event in self.events_to_yield:
+            yield event
+        while not self.closed:
+            await asyncio.sleep(0.001)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class SequenceClock:
     def __init__(self, *values: datetime) -> None:
         self._values = list(values)
@@ -219,6 +249,7 @@ def make_client(
     repository: FakeSessionRepository,
     quota_service: FakeQuotaService,
     clock: Callable[[], datetime] | None = None,
+    stt_provider: FakeSttProvider | None = None,
 ) -> TestClient:
     settings = Settings()
     settings.public_base_url = "https://meeting.example.test"
@@ -230,6 +261,7 @@ def make_client(
             quota_service=quota_service,
             settings=settings,
             clock=clock or (lambda: FIXED_NOW),
+            stt_provider_factory=(lambda: stt_provider) if stt_provider else None,
         )
 
     app.dependency_overrides[get_websocket_session_orchestrator] = (
@@ -394,6 +426,111 @@ def test_valid_audio_frame_runs_mock_provider_and_archives_final_segment() -> No
         == "We need to align on the launch timeline before Friday."
     )
     assert stored_segment.chinese_text_final == "我们需要在周五前对齐上线时间线。"
+
+
+def test_binary_frames_stream_to_stt_provider_and_emit_english_results() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align on the launch timeline."),
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=3200,
+                text="We need to align on the launch timeline before Friday.",
+                confidence=0.91,
+            ),
+        ],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            audio_status = websocket.receive_json()
+            websocket.send_bytes(b"\x02\x03")
+            asr_interim = websocket.receive_json()
+            asr_final = websocket.receive_json()
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert audio_status == {"type": "audio_status", "has_audio": True, "level": None}
+    assert stt_provider.sent_audio == [b"\x00\x01", b"\x02\x03"]
+    assert asr_interim == {
+        "type": "asr_interim",
+        "text": "We need to align on the launch timeline.",
+    }
+    assert asr_final == {
+        "type": "asr_final",
+        "sequence": 1,
+        "start_ms": 0,
+        "end_ms": 3200,
+        "text": "We need to align on the launch timeline before Friday.",
+        "confidence": 0.91,
+    }
+    assert repository.transcript_segments == []
+    assert stt_provider.closed is True
+
+
+def test_google_stt_error_closes_session_and_releases_quota() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(error=RuntimeError("google unavailable"))
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+            websocket.send_bytes(b"\x00\x01")
+            websocket.receive_json()
+            error = websocket.receive_json()
+            closed = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["code"] == "google_stt_error"
+    assert closed == {"type": "session_closed", "reason": "google_stt_error"}
+    assert repository.sessions[session_id].status is MeetingSessionStatus.ERROR
+    assert quota_service.released_session_ids == [session_id]
+    assert stt_provider.closed is True
+
+
+def test_stopping_stt_session_closes_provider() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider()
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            websocket.send_bytes(b"\x00\x01")
+            websocket.receive_json()
+            websocket.send_json(
+                {"type": "session_stop", "session_id": started["session_id"]},
+            )
+            receive_until_message_type(websocket, "session_closed")
+
+    assert stt_provider.closed is True
 
 
 def test_stopping_session_cancels_mock_provider_after_preserving_segments() -> None:

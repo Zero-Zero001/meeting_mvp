@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from meeting_mvp_backend.ws_messages import (
+    AsrFinalMessage,
     AudioStatusMessage,
     SegmentFinalMessage,
     SessionStartedMessage,
@@ -112,6 +113,40 @@ def test_parses_segment_final_response() -> None:
     assert isinstance(message, SegmentFinalMessage)
     assert message.sequence == 1
     assert message.english_text_final == "We need to align on the timeline."
+
+
+def test_parses_asr_final_response() -> None:
+    message = parse_server_message(
+        {
+            "type": "asr_final",
+            "sequence": 1,
+            "start_ms": 0,
+            "end_ms": 2400,
+            "text": "We need to align on the timeline.",
+            "confidence": 0.92,
+        },
+    )
+
+    assert isinstance(message, AsrFinalMessage)
+    assert message.sequence == 1
+    assert message.start_ms == 0
+    assert message.end_ms == 2400
+    assert message.text == "We need to align on the timeline."
+    assert message.confidence == 0.92
+
+
+def test_rejects_invalid_asr_final_confidence() -> None:
+    with pytest.raises(ValidationError):
+        parse_server_message(
+            {
+                "type": "asr_final",
+                "sequence": 1,
+                "start_ms": 0,
+                "end_ms": 2400,
+                "text": "We need to align on the timeline.",
+                "confidence": 1.5,
+            },
+        )
 
 
 def test_parses_nullable_optional_response_fields() -> None:
