@@ -91,6 +91,62 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
       send(data) {
         if (data instanceof ArrayBuffer) {
           window.__sentBinaryFrames.push(data.byteLength)
+          queueMicrotask(() => {
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  text: 'We need to align on the launch timeline.',
+                  type: 'asr_interim',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  text: '我们需要对齐上线时间线。',
+                  type: 'translation_interim',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  chinese_text_final: '我们需要在周五前对齐上线时间线。',
+                  end_ms: 3200,
+                  english_text_final:
+                    'We need to align on the launch timeline before Friday.',
+                  segment_id: 'segment-1',
+                  sequence: 1,
+                  start_ms: 0,
+                  type: 'segment_final',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  text: '我们需要在周五前对齐上线时间线。',
+                  type: 'key_sentence_update',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  items: [
+                    {
+                      id: 'timeline-1',
+                      item_type: 'segment_final',
+                      segment_id: 'segment-1',
+                      text: '我们需要在周五前对齐上线时间线。',
+                      timestamp_ms: 3200,
+                    },
+                  ],
+                  type: 'timeline_update',
+                }),
+              }),
+            )
+          })
           return
         }
 
@@ -238,6 +294,26 @@ test('uploads only effective PCM16 audio frames after session_started', async ({
   await expect
     .poll(() => page.evaluate(() => window.__sentBinaryFrames[0]))
     .toBe(3200)
+  await expect(
+    page.getByRole('region', { name: '英文原文区' }).getByText(
+      'We need to align on the launch timeline before Friday.',
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: '中文翻译区' }).getByText(
+      '我们需要在周五前对齐上线时间线。',
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: '当前重点句区' }).getByText(
+      '我们需要在周五前对齐上线时间线。',
+    ),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('region', { name: '会议时间线区' }).getByText(
+      '我们需要在周五前对齐上线时间线。',
+    ),
+  ).toBeVisible()
 })
 
 test('does not upload silent audio frames', async ({ page }) => {

@@ -21,7 +21,8 @@
 - Step 11 已实现 F05 WebSocket 会话编排：后端新增 `meeting_mvp_backend.ws_sessions` 并注册 `/ws` endpoint，接入 PostgreSQL `meeting_session` 和 Redis `QuotaService` 完成 pending/active/stop/disconnect 生命周期；本地验证和 Lighthouse PostgreSQL+Redis WebSocket 集成测试均已通过。
 - Step 12 已实现前端实时会议工作台骨架：首屏状态栏、捕获模式切换、匿名身份/额度/音频/ASR/翻译状态、四个可访问工作区和桌面/移动响应式布局均已落地；本地前端 lint/test/build/e2e 均已通过。
 - Step 13 已实现前端会议音频捕获：新增 `frontend/src/lib/audio-capture.ts` 封装 `getDisplayMedia`，store 记录捕获状态、会议平台、授权尝试和 `MediaStream`，UI 处理授权成功/拒绝/无音轨/不支持/失败提示；本地前端 lint/test/build/e2e 均已通过。
-- Step 14 已实现前端音频前处理与 binary 上传：新增 `frontend/src/lib/audio-frames.ts`、`frontend/src/lib/audio-processing.ts`、`frontend/src/lib/meeting-websocket.ts` 和 `frontend/public/audio-worklet/pcm16-processor.js`，将捕获到的 `MediaStream` 转为 16 kHz mono PCM16 100ms frame，仅上传超过 RMS 阈值的非静音 binary frame，并通过前端 WebSocket client 发送 `session_start`/`session_stop`；本地前端 lint/test/build/e2e 均已通过；未进入 Step 15。
+- Step 14 已实现前端音频前处理与 binary 上传：新增 `frontend/src/lib/audio-frames.ts`、`frontend/src/lib/audio-processing.ts`、`frontend/src/lib/meeting-websocket.ts` 和 `frontend/public/audio-worklet/pcm16-processor.js`，将捕获到的 `MediaStream` 转为 16 kHz mono PCM16 100ms frame，仅上传超过 RMS 阈值的非静音 binary frame，并通过前端 WebSocket client 发送 `session_start`/`session_stop`；本地前端 lint/test/build/e2e 均已通过。
+- Step 15 已实现本地 mock Provider 链路：后端新增 `meeting_mvp_backend.mock_providers` 固定脚本，并在首个有效 binary frame 激活会话后推送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`，同时写入 `transcript_segment`；前端 WebSocket client、Zustand store 和四区 UI 已消费实时文本；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 16。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -30,7 +31,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 14 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 15 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -232,7 +233,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 14 前端音频前处理与 binary 上传已完成；Step 15 mock Provider/STT/Qwen 链路必须等用户明确允许后再开始。
+- Step 15 本地 mock Provider 链路已完成；Step 16 英文实时转写 / Google STT streaming 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -278,6 +279,18 @@ Step 14 前端音频前处理与 binary 上传已落地：
 - 前端 `frontend/src/App.tsx` 在状态栏显示 WebSocket、音频处理、音量电平、有效音频、会话编号、归档入口和 30 秒无有效音频提示；四区工作台布局继续沿用 Step 12。
 - `frontend/src/lib/audio-frames.test.ts`、`frontend/src/lib/audio-processing.test.ts`、`frontend/src/lib/meeting-websocket.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts` 覆盖 PCM16 帧、AudioWorklet 管线、WebSocket client、store/UI 状态和浏览器 mock 上传路径。
 - Step 14 不实现 mock STT/Qwen Provider，不生成 interim/final 文本，不写归档，不接入 Google STT 或 Qwen；真实会议平台兼容性矩阵和真实无声 30 秒场景仍需人工验收。
+
+Step 15 本地 mock Provider 链路已落地：
+
+- 后端 `backend/src/meeting_mvp_backend/mock_providers.py` 定义固定 mock Provider 脚本，包含英文 interim、中文 interim、双语 final、可恢复 provider warning、重点句和时间线元数据；输出稳定，不引入随机文本。
+- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 在首个有效 binary frame 激活会话后启动可取消 mock task，按固定短节奏发送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`。
+- `MeetingSessionRepository` 协议已新增 `create_transcript_segment(...)`；`SQLAlchemyMeetingSessionRepository` 复用既有 `TranscriptSegment` 模型写入 final 双语片段，不新增 migration；interim、warning 和原始音频不入库。
+- `session_stop`、浏览器断开或 WebSocket task 取消会取消 mock task，保留已写入片段，并继续沿用 Step 11 的 Redis active session 释放和额度结算逻辑。
+- 前端 `frontend/src/lib/meeting-websocket.ts` 已新增 `onAsrInterim`、`onTranslationInterim`、`onSegmentFinal`、`onKeySentenceUpdate`、`onTimelineUpdate` 和 `onWarning` callbacks；不修改 Step 10 wire schema。
+- 前端 `frontend/src/stores/session-store.ts` 已新增 `englishInterimText`、`translationInterimText`、`finalSegments`、`keySentenceText` 和 `timelineItems`；interim 可替换，final 只追加，新会话开始时清空上一场实时文本。
+- 前端 `frontend/src/App.tsx` 四区已消费实时文本：英文区显示英文 interim/final，中文区显示中文 interim/final，当前重点句区显示最新重点句，会议时间线区显示 timeline items。
+- `backend/tests/test_websocket_sessions.py` 覆盖 mock Provider 消息、final 入库、停止/断开取消和 warning 不阻塞 final；`frontend/src/lib/meeting-websocket.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts` 覆盖前端 callbacks、store、UI 和浏览器 mock 实时文本流。
+- Step 15 只用于本地开发和自动化测试，不接入 Google STT 或真实 Qwen，不新增 Provider 密钥变量，不保存原始音频，不新增会后归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路；Step 16 仍未开始。
 
 核心 WebSocket 请求消息：
 
@@ -330,5 +343,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 15 mock Provider/STT/Qwen 链路必须等待用户明确允许后再开始；Step 14 当前只提供前端 AudioWorklet、16 kHz mono PCM16 转换、静音过滤、WebSocket client 和 binary 上传，不包含 mock STT/Qwen Provider、interim/final 文本生成、final 归档、Google STT、Qwen 或四区实时文本数据流。
+- Step 16 英文实时转写 / Google STT streaming 必须等待用户明确允许后再开始；Step 15 当前只提供本地 mock STT/Qwen 固定脚本、final 写入 `transcript_segment` 和四区实时文本数据流，不包含真实 Google STT、真实 Qwen、会后归档 API/页面、COS 导出或完整 `usage_event` 链路。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

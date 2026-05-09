@@ -736,3 +736,63 @@
 - 当前 Step 14 只保证前端把捕获到的 `MediaStream` 转换为 16 kHz mono PCM16，并仅上传超过阈值的 100ms binary frame。
 - 静音帧不会发送，因此 Step 11 后端不会因静音帧把会话从 `pending_audio` 转为 `active`，也不会因此开始额度消耗。
 - 自动化测试使用 fake clock 和 mock 浏览器 API 覆盖静音 30 秒、有效音频上传和静音不上传；真实会议无声 30 秒、Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 兼容性矩阵仍需人工验收，不能把 mock 自动化等同于真实平台验收。
+
+## 2026-05-09 Step 15：本地 mock Provider 链路
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 15，未开始 Step 16，未接入真实 Google STT、真实 Qwen、COS、会后归档 API/页面、搜索、复制、导出或 `usage_event` 全链路。
+- 已按 TDD 先补测试并确认 RED：
+  - 扩展 `backend/tests/test_websocket_sessions.py`，首次目标测试等待 mock Provider 实时消息失败，确认当时 `/ws` 激活后尚不会产生 mock STT/Qwen 输出，也不会写入 `transcript_segment`。
+  - 扩展 `frontend/src/lib/meeting-websocket.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts`，首次失败原因为 WebSocket callbacks、store 实时文本状态和四区渲染尚不存在。
+- 新增 `backend/src/meeting_mvp_backend/mock_providers.py`：
+  - 定义固定、可重复的本地 mock Provider 脚本。
+  - 脚本包含英文 interim、可恢复 Qwen interim warning、中文 interim、英文 final、中文 final、重点句和时间线所需元数据。
+  - 输出固定文本，不引入随机内容，保证测试稳定。
+- 扩展 `backend/src/meeting_mvp_backend/ws_sessions.py`：
+  - `MeetingSessionRepository` 新增 `create_transcript_segment(...)` 协议方法。
+  - `SQLAlchemyMeetingSessionRepository` 复用既有 `TranscriptSegment` 模型写入 final 片段，不新增数据库 migration。
+  - 首个有效 binary frame 将会话激活后，启动可取消的 mock Provider task。
+  - mock task 依次发送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`。
+  - `segment_final` 发送前会写入 `transcript_segment`，sequence 从 1 开始；interim 和 warning 不入库。
+  - `session_stop`、浏览器断开或 task 取消时取消 mock task，保留已写入片段，并沿用既有 Redis active session 释放和额度结算逻辑。
+- 扩展 `frontend/src/lib/meeting-websocket.ts`：
+  - 新增 `onAsrInterim`、`onTranslationInterim`、`onSegmentFinal`、`onKeySentenceUpdate`、`onTimelineUpdate` 和 `onWarning` callbacks。
+  - 不修改 WebSocket wire schema，只消费 Step 10 已定义的服务端消息。
+- 扩展 `frontend/src/stores/session-store.ts`：
+  - 新增 `englishInterimText`、`translationInterimText`、`finalSegments`、`keySentenceText` 和 `timelineItems`。
+  - WebSocket callbacks 会替换当前 interim、追加 final segments、更新重点句和时间线。
+  - 开始新会话时清空上一场实时文本状态；`endSession()` 继续清理 processor、WebSocket 和 `MediaStream`。
+- 更新 `frontend/src/App.tsx`：
+  - 英文原文区显示英文 interim 与 final 英文片段。
+  - 中文翻译区显示中文 interim 与 final 中文片段。
+  - 当前重点句区显示最新 `key_sentence_update`。
+  - 会议时间线区显示既有状态信息和 `timeline_update.items`。
+- 更新 `frontend/e2e/app.spec.ts`：
+  - FakeWebSocket 在收到有效 binary frame 后推送 mock 实时消息。
+  - 覆盖页面四区更新，并继续验证桌面/移动无水平溢出。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 15 后端 TDD RED | `uv run pytest tests/test_websocket_sessions.py -q` | 首次目标测试超时/失败，缺少 mock Provider 消息和 final 入库行为 |
+| Step 15 后端目标 GREEN | `uv run pytest tests/test_websocket_sessions.py -q` | 9 passed |
+| Step 15 前端 TDD RED | `npm run test -- --run src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 3 个新增目标测试失败，缺少 callbacks、store 状态和四区渲染 |
+| Step 15 前端目标 GREEN | `npm run test -- --run src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 3 个测试文件、23 个测试通过 |
+| 后端 Python | `uv run python --version` | Python 3.12.11 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 25 source files` |
+| 后端 pytest | `uv run pytest` | 43 passed，5 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、58 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过；Vite 输出 `vite:css` plugin timing warning，不影响退出码 |
+| 前端 E2E | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 16 必须等待用户明确允许后再开始。
+- Step 15 mock Provider 只用于本地开发和自动化测试；不读取、不保存、不上传原始音频，不暴露任何 Provider 密钥。
+- 当前“归档生成”仅指后端写入 `transcript_segment`；会后归档查询 API/页面、搜索、复制、Markdown/JSON 导出、COS 和完整 `usage_event` 链路仍属于后续步骤。
+- Qwen interim warning 在本步是可恢复 mock warning，不阻塞英文 final、中文 final 或 `transcript_segment` 写入。

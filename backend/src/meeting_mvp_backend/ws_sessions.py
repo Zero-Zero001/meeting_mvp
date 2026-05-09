@@ -24,17 +24,31 @@ from meeting_mvp_backend.db.models import (
     MeetingSession,
     MeetingSessionStatus,
     SourcePlatform,
+    TranscriptSegment,
+    TranslationStatus,
+)
+from meeting_mvp_backend.mock_providers import (
+    DEFAULT_MOCK_PROVIDER_SCRIPT,
+    MockProviderScript,
 )
 from meeting_mvp_backend.quota import QuotaDecision
 from meeting_mvp_backend.ws_messages import (
+    AsrInterimMessage,
     AudioStatusMessage,
     ErrorMessage,
     HeartbeatMessage,
+    KeySentenceUpdateMessage,
     QuotaUpdateMessage,
+    SegmentFinalMessage,
+    ServerMessage,
     SessionClosedMessage,
     SessionStartedMessage,
     SessionStartMessage,
     SessionStopMessage,
+    TimelineItem,
+    TimelineUpdateMessage,
+    TranslationInterimMessage,
+    WarningMessage,
     parse_client_message,
 )
 
@@ -48,6 +62,7 @@ SESSION_MISMATCH_REASON = "session_mismatch"
 CLIENT_NOT_INITIALIZED_REASON = "client_not_initialized"
 CONFIGURATION_ERROR_REASON = "configuration_error"
 INTERNAL_ERROR_REASON = "internal_error"
+MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
 
 
 class MeetingSessionRepository(Protocol):
@@ -81,6 +96,18 @@ class MeetingSessionRepository(Protocol):
         status: MeetingSessionStatus,
     ) -> None: ...
 
+    async def create_transcript_segment(
+        self,
+        *,
+        session_id: uuid.UUID,
+        sequence: int,
+        start_ms: int,
+        end_ms: int,
+        english_text_final: str,
+        chinese_text_final: str,
+        is_key_sentence: bool,
+    ) -> uuid.UUID: ...
+
 
 class SessionQuotaService(Protocol):
     async def reserve_active_session(
@@ -107,6 +134,7 @@ class WebSocketSessionState:
     active_started_at: datetime | None = None
     has_audio: bool = False
     closed: bool = False
+    mock_provider_task: asyncio.Task[None] | None = None
 
 
 class SQLAlchemyMeetingSessionRepository:
@@ -187,6 +215,35 @@ class SQLAlchemyMeetingSessionRepository:
                 ),
             )
             await session.commit()
+
+    async def create_transcript_segment(
+        self,
+        *,
+        session_id: uuid.UUID,
+        sequence: int,
+        start_ms: int,
+        end_ms: int,
+        english_text_final: str,
+        chinese_text_final: str,
+        is_key_sentence: bool,
+    ) -> uuid.UUID:
+        segment_id = uuid.uuid4()
+        async with self._session_factory() as session:
+            session.add(
+                TranscriptSegment(
+                    id=segment_id,
+                    session_id=session_id,
+                    sequence=sequence,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    english_text_final=english_text_final,
+                    chinese_text_final=chinese_text_final,
+                    is_key_sentence=is_key_sentence,
+                    translation_status=TranslationStatus.COMPLETED,
+                ),
+            )
+            await session.commit()
+        return segment_id
 
 
 class WebSocketSessionOrchestrator:
@@ -428,6 +485,87 @@ class WebSocketSessionOrchestrator:
             websocket,
             AudioStatusMessage(type="audio_status", has_audio=True, level=None),
         )
+        state.mock_provider_task = asyncio.create_task(
+            self._run_mock_provider_pipeline(websocket, state),
+        )
+
+    async def _run_mock_provider_pipeline(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+        script: MockProviderScript = DEFAULT_MOCK_PROVIDER_SCRIPT,
+    ) -> None:
+        await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await _send_server_message(
+            websocket,
+            AsrInterimMessage(type="asr_interim", text=script.english_interim),
+        )
+        await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await _send_server_message(
+            websocket,
+            WarningMessage(
+                type="warning",
+                code=script.warning_code,
+                message=script.warning_message,
+            ),
+        )
+        await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await _send_server_message(
+            websocket,
+            TranslationInterimMessage(
+                type="translation_interim",
+                text=script.chinese_interim,
+            ),
+        )
+        await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+
+        repository = _require_repository(self._repository)
+        final_segment = script.final_segment
+        segment_id = await repository.create_transcript_segment(
+            session_id=state.session_id,
+            sequence=final_segment.sequence,
+            start_ms=final_segment.start_ms,
+            end_ms=final_segment.end_ms,
+            english_text_final=final_segment.english_text_final,
+            chinese_text_final=final_segment.chinese_text_final,
+            is_key_sentence=final_segment.is_key_sentence,
+        )
+        await _send_server_message(
+            websocket,
+            SegmentFinalMessage(
+                type="segment_final",
+                segment_id=str(segment_id),
+                sequence=final_segment.sequence,
+                start_ms=final_segment.start_ms,
+                end_ms=final_segment.end_ms,
+                english_text_final=final_segment.english_text_final,
+                chinese_text_final=final_segment.chinese_text_final,
+            ),
+        )
+        await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await _send_server_message(
+            websocket,
+            KeySentenceUpdateMessage(
+                type="key_sentence_update",
+                text=final_segment.chinese_text_final,
+            ),
+        )
+        await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await _send_server_message(
+            websocket,
+            TimelineUpdateMessage(
+                type="timeline_update",
+                items=[
+                    TimelineItem(
+                        id=f"segment-{segment_id}",
+                        item_type="segment_final",
+                        timestamp_ms=final_segment.end_ms,
+                        text=final_segment.chinese_text_final,
+                        segment_id=str(segment_id),
+                    ),
+                ],
+            ),
+        )
 
     async def _finalize_session(
         self,
@@ -440,6 +578,7 @@ class WebSocketSessionOrchestrator:
         if state is None or state.closed:
             return
 
+        await _cancel_mock_provider_task(state)
         repository = _require_repository(self._repository)
         quota_service = _require_quota_service(self._quota_service)
         ended_at = self._clock()
@@ -571,17 +710,22 @@ def _require_quota_service(
 
 async def _send_server_message(
     websocket: WebSocket | None,
-    message: (
-        SessionStartedMessage
-        | QuotaUpdateMessage
-        | AudioStatusMessage
-        | ErrorMessage
-        | SessionClosedMessage
-    ),
+    message: ServerMessage,
 ) -> None:
     if websocket is None:
         return
     await websocket.send_json(message.model_dump(mode="json"))
+
+
+async def _cancel_mock_provider_task(state: WebSocketSessionState) -> None:
+    task = state.mock_provider_task
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
 
 
 async def _safe_close(websocket: WebSocket) -> None:

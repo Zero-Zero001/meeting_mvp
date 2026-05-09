@@ -136,6 +136,127 @@ describe('meeting websocket client', () => {
     expect(socket.sent.at(-1)).toBe(frame)
   })
 
+  it('forwards realtime transcript, translation, timeline, and warning messages', async () => {
+    FakeWebSocket.instances = []
+    const onAsrInterim = vi.fn()
+    const onKeySentenceUpdate = vi.fn()
+    const onSegmentFinal = vi.fn()
+    const onTimelineUpdate = vi.fn()
+    const onTranslationInterim = vi.fn()
+    const onWarning = vi.fn()
+    const connection = connectMeetingWebSocket({
+      WebSocketCtor,
+      captureMode: 'tab_audio',
+      clientId: '11111111-1111-4111-8111-111111111111',
+      onAsrInterim,
+      onKeySentenceUpdate,
+      onSegmentFinal,
+      onTimelineUpdate,
+      onTranslationInterim,
+      onWarning,
+      sourcePlatform: 'unknown',
+      url: 'ws://localhost/ws',
+    })
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+    socket.message(
+      JSON.stringify({
+        archive_token: 'archive-token',
+        archive_url: '/archive/session-1?token=archive-token',
+        remaining_seconds_today: 2400,
+        session_id: 'session-1',
+        type: 'session_started',
+      }),
+    )
+    await connection
+
+    socket.message(
+      JSON.stringify({
+        text: 'We need to align on the launch timeline.',
+        type: 'asr_interim',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        code: 'mock_qwen_interim_retry',
+        message: 'Mock interim provider recovered after a simulated retry.',
+        type: 'warning',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        text: '我们需要对齐上线时间线。',
+        type: 'translation_interim',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        chinese_text_final: '我们需要在周五前对齐上线时间线。',
+        end_ms: 3200,
+        english_text_final: 'We need to align on the launch timeline before Friday.',
+        segment_id: 'segment-1',
+        sequence: 1,
+        start_ms: 0,
+        type: 'segment_final',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        text: '我们需要在周五前对齐上线时间线。',
+        type: 'key_sentence_update',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        items: [
+          {
+            id: 'timeline-1',
+            item_type: 'segment_final',
+            segment_id: 'segment-1',
+            text: '我们需要在周五前对齐上线时间线。',
+            timestamp_ms: 3200,
+          },
+        ],
+        type: 'timeline_update',
+      }),
+    )
+
+    expect(onAsrInterim).toHaveBeenCalledWith({
+      text: 'We need to align on the launch timeline.',
+      type: 'asr_interim',
+    })
+    expect(onWarning).toHaveBeenCalledWith({
+      code: 'mock_qwen_interim_retry',
+      message: 'Mock interim provider recovered after a simulated retry.',
+      type: 'warning',
+    })
+    expect(onTranslationInterim).toHaveBeenCalledWith({
+      text: '我们需要对齐上线时间线。',
+      type: 'translation_interim',
+    })
+    expect(onSegmentFinal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chinese_text_final: '我们需要在周五前对齐上线时间线。',
+        english_text_final: 'We need to align on the launch timeline before Friday.',
+        segment_id: 'segment-1',
+      }),
+    )
+    expect(onKeySentenceUpdate).toHaveBeenCalledWith({
+      text: '我们需要在周五前对齐上线时间线。',
+      type: 'key_sentence_update',
+    })
+    expect(onTimelineUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            segment_id: 'segment-1',
+            text: '我们需要在周五前对齐上线时间线。',
+          }),
+        ],
+      }),
+    )
+  })
+
   it('sends session_stop and closes on stop', async () => {
     FakeWebSocket.instances = []
     const connection = connectMeetingWebSocket({

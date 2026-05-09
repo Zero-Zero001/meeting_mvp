@@ -27,6 +27,7 @@ import {
   type MeetingWebSocketClient,
   type WebSocketStatus,
 } from '@/lib/meeting-websocket'
+import type { ServerMessage } from '@/protocol/websocket-messages'
 
 export type { WebSocketStatus } from '@/lib/meeting-websocket'
 
@@ -68,6 +69,11 @@ export type CaptureAuthorizationResult =
   | 'no_audio'
   | 'unsupported'
   | 'failed'
+export type FinalSegment = Extract<ServerMessage, { type: 'segment_final' }>
+export type TimelineItem = Extract<
+  ServerMessage,
+  { type: 'timeline_update' }
+>['items'][number]
 
 export type CaptureAttempt = {
   attemptedAt: string
@@ -117,7 +123,10 @@ type SessionState = {
   captureMode: CaptureMode
   captureStatus: CaptureStatus
   clientId: string | null
+  englishInterimText: string | null
+  finalSegments: FinalSegment[]
   hasEffectiveAudio: boolean
+  keySentenceText: string | null
   lastCaptureAttempt: CaptureAttempt | null
   mediaStream: MediaStream | null
   meetingWebSocket: MeetingWebSocketClient | null
@@ -128,6 +137,8 @@ type SessionState = {
   silenceWarning: boolean
   sourcePlatform: SourcePlatform
   status: SessionStatus
+  timelineItems: TimelineItem[]
+  translationInterimText: string | null
   webSocketStatus: WebSocketStatus
   beginCapture: (mode: CaptureMode, options?: BeginCaptureOptions) => Promise<void>
   endSession: () => Promise<void>
@@ -151,7 +162,10 @@ export const initialSessionState = {
   captureMode: 'tab_audio' as CaptureMode,
   captureStatus: 'idle' as CaptureStatus,
   clientId: null,
+  englishInterimText: null as string | null,
+  finalSegments: [] as FinalSegment[],
   hasEffectiveAudio: false,
+  keySentenceText: null as string | null,
   lastCaptureAttempt: null as CaptureAttempt | null,
   mediaStream: null as MediaStream | null,
   meetingWebSocket: null as MeetingWebSocketClient | null,
@@ -162,6 +176,8 @@ export const initialSessionState = {
   silenceWarning: false,
   sourcePlatform: 'unknown' as SourcePlatform,
   status: 'idle' as SessionStatus,
+  timelineItems: [] as TimelineItem[],
+  translationInterimText: null as string | null,
   webSocketStatus: 'idle' as WebSocketStatus,
 }
 
@@ -268,12 +284,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       captureErrorMessage: null,
       captureMode: mode,
       captureStatus: 'requesting',
+      englishInterimText: null,
+      finalSegments: [],
       hasEffectiveAudio: false,
+      keySentenceText: null,
       mediaStream: null,
       meetingWebSocket: null,
       sessionId: null,
       silenceWarning: false,
       status: 'idle',
+      timelineItems: [],
+      translationInterimText: null,
       webSocketStatus: 'idle',
     })
 
@@ -345,6 +366,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             hasEffectiveAudio: message.has_audio,
           })
         },
+        onAsrInterim: (message) => {
+          set({
+            englishInterimText: message.text,
+          })
+        },
         onClosed: () => {
           set({
             webSocketStatus: 'closed',
@@ -356,10 +382,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             webSocketStatus: 'error',
           })
         },
+        onKeySentenceUpdate: (message) => {
+          set({
+            keySentenceText: message.text,
+          })
+        },
         onQuotaUpdate: (message) => {
           set({
             remainingSecondsToday: message.remaining_seconds_today,
           })
+        },
+        onSegmentFinal: (message) => {
+          set((state) => ({
+            finalSegments: [...state.finalSegments, message],
+          }))
         },
         onSessionStarted: (message) => {
           set({
@@ -371,6 +407,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         onStatusChange: (webSocketStatus) => {
           set({
             webSocketStatus,
+          })
+        },
+        onTimelineUpdate: (message) => {
+          set({
+            timelineItems: message.items,
+          })
+        },
+        onTranslationInterim: (message) => {
+          set({
+            translationInterimText: message.text,
           })
         },
         sourcePlatform,

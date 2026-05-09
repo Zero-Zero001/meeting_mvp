@@ -217,6 +217,74 @@ describe('useSessionStore', () => {
     })
   })
 
+  it('stores realtime mock provider messages from the websocket callbacks', async () => {
+    setReadyIdentity()
+    const { stream } = createStream()
+    const meetingSocket = createStartedWebSocket()
+
+    await useSessionStore.getState().beginCapture('tab_audio', {
+      captureService: async () => ({
+        ok: true,
+        stream,
+      }),
+      connectMeetingWebSocket: async (options) => {
+        options.onAsrInterim?.({
+          text: 'We need to align on the launch timeline.',
+          type: 'asr_interim',
+        })
+        options.onTranslationInterim?.({
+          text: '我们需要对齐上线时间线。',
+          type: 'translation_interim',
+        })
+        options.onSegmentFinal?.({
+          chinese_text_final: '我们需要在周五前对齐上线时间线。',
+          end_ms: 3200,
+          english_text_final: 'We need to align on the launch timeline before Friday.',
+          segment_id: 'segment-1',
+          sequence: 1,
+          start_ms: 0,
+          type: 'segment_final',
+        })
+        options.onKeySentenceUpdate?.({
+          text: '我们需要在周五前对齐上线时间线。',
+          type: 'key_sentence_update',
+        })
+        options.onTimelineUpdate?.({
+          items: [
+            {
+              id: 'timeline-1',
+              item_type: 'segment_final',
+              segment_id: 'segment-1',
+              text: '我们需要在周五前对齐上线时间线。',
+              timestamp_ms: 3200,
+            },
+          ],
+          type: 'timeline_update',
+        })
+        return meetingSocket
+      },
+      startAudioProcessing: async () => createAudioProcessor(),
+    })
+
+    expect(useSessionStore.getState()).toMatchObject({
+      englishInterimText: 'We need to align on the launch timeline.',
+      keySentenceText: '我们需要在周五前对齐上线时间线。',
+      translationInterimText: '我们需要对齐上线时间线。',
+    })
+    expect(useSessionStore.getState().finalSegments).toHaveLength(1)
+    expect(useSessionStore.getState().finalSegments[0]).toMatchObject({
+      chinese_text_final: '我们需要在周五前对齐上线时间线。',
+      english_text_final: 'We need to align on the launch timeline before Friday.',
+      segment_id: 'segment-1',
+    })
+    expect(useSessionStore.getState().timelineItems).toEqual([
+      expect.objectContaining({
+        segment_id: 'segment-1',
+        text: '我们需要在周五前对齐上线时间线。',
+      }),
+    ])
+  })
+
   it('stops audio processing, websocket, and media tracks when ending the session', async () => {
     setReadyIdentity()
     const { stream, track } = createStream()

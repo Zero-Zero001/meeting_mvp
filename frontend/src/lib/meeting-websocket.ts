@@ -39,13 +39,27 @@ export type ConnectMeetingWebSocketOptions = {
   captureMode: CaptureMode
   clientId: string
   onAudioStatus?: (message: Extract<ServerMessage, { type: 'audio_status' }>) => void
+  onAsrInterim?: (message: Extract<ServerMessage, { type: 'asr_interim' }>) => void
   onClosed?: (message: Extract<ServerMessage, { type: 'session_closed' }>) => void
   onError?: (error: Error) => void
+  onKeySentenceUpdate?: (
+    message: Extract<ServerMessage, { type: 'key_sentence_update' }>,
+  ) => void
   onQuotaUpdate?: (message: Extract<ServerMessage, { type: 'quota_update' }>) => void
+  onSegmentFinal?: (
+    message: Extract<ServerMessage, { type: 'segment_final' }>,
+  ) => void
   onSessionStarted?: (
     message: Extract<ServerMessage, { type: 'session_started' }>,
   ) => void
   onStatusChange?: (status: WebSocketStatus) => void
+  onTimelineUpdate?: (
+    message: Extract<ServerMessage, { type: 'timeline_update' }>,
+  ) => void
+  onTranslationInterim?: (
+    message: Extract<ServerMessage, { type: 'translation_interim' }>,
+  ) => void
+  onWarning?: (message: Extract<ServerMessage, { type: 'warning' }>) => void
   sourcePlatform: SourcePlatform
   url?: string
 }
@@ -78,11 +92,17 @@ export function connectMeetingWebSocket({
   captureMode,
   clientId,
   onAudioStatus,
+  onAsrInterim,
   onClosed,
   onError,
+  onKeySentenceUpdate,
   onQuotaUpdate,
+  onSegmentFinal,
   onSessionStarted,
   onStatusChange,
+  onTimelineUpdate,
+  onTranslationInterim,
+  onWarning,
   sourcePlatform,
   url = resolveWebSocketUrl(),
 }: ConnectMeetingWebSocketOptions): Promise<MeetingWebSocketClient> {
@@ -180,19 +200,30 @@ export function connectMeetingWebSocket({
         case 'audio_status':
           onAudioStatus?.(message)
           break
+        case 'asr_interim':
+          onAsrInterim?.(message)
+          break
+        case 'translation_interim':
+          onTranslationInterim?.(message)
+          break
+        case 'segment_final':
+          onSegmentFinal?.(message)
+          break
+        case 'key_sentence_update':
+          onKeySentenceUpdate?.(message)
+          break
+        case 'timeline_update':
+          onTimelineUpdate?.(message)
+          break
+        case 'warning':
+          onWarning?.(message)
+          break
         case 'error':
           fail(websocketFailure(message.message ?? message.code))
           break
         case 'session_closed':
           onClosed?.(message)
           onStatusChange?.('closed')
-          break
-        case 'asr_interim':
-        case 'translation_interim':
-        case 'segment_final':
-        case 'key_sentence_update':
-        case 'timeline_update':
-        case 'warning':
           break
       }
     }

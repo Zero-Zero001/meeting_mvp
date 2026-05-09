@@ -286,6 +286,68 @@ describe('App', () => {
     ).toBeInTheDocument()
   })
 
+  it('renders realtime mock provider transcript, translation, key sentence, and timeline content', () => {
+    useSessionStore.setState({
+      ...useSessionStore.getState(),
+      englishInterimText: 'We need to align on the launch timeline.',
+      finalSegments: [
+        {
+          chinese_text_final: '我们需要在周五前对齐上线时间线。',
+          end_ms: 3200,
+          english_text_final: 'We need to align on the launch timeline before Friday.',
+          segment_id: 'segment-1',
+          sequence: 1,
+          start_ms: 0,
+          type: 'segment_final',
+        },
+      ],
+      keySentenceText: '我们需要在周五前对齐上线时间线。',
+      timelineItems: [
+        {
+          id: 'timeline-1',
+          item_type: 'segment_final',
+          segment_id: 'segment-1',
+          text: '我们需要在周五前对齐上线时间线。',
+          timestamp_ms: 3200,
+        },
+      ],
+      translationInterimText: '我们需要对齐上线时间线。',
+    })
+
+    render(<App />)
+
+    expect(
+      within(screen.getByRole('region', { name: '英文原文区' })).getByText(
+        'We need to align on the launch timeline.',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '英文原文区' })).getByText(
+        'We need to align on the launch timeline before Friday.',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '中文翻译区' })).getByText(
+        '我们需要对齐上线时间线。',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '中文翻译区' })).getByText(
+        '我们需要在周五前对齐上线时间线。',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '当前重点句区' })).getByText(
+        '我们需要在周五前对齐上线时间线。',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '会议时间线区' })).getByText(
+        '我们需要在周五前对齐上线时间线。',
+      ),
+    ).toBeInTheDocument()
+  })
+
   it('shows a retry entry when capture permission is denied', async () => {
     const user = userEvent.setup()
     mockDisplayMediaWithError(

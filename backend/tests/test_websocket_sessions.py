@@ -4,6 +4,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,10 +45,23 @@ class StoredSession:
     quota_seconds_consumed: int = 0
 
 
+@dataclass
+class StoredTranscriptSegment:
+    segment_id: str
+    session_id: str
+    sequence: int
+    start_ms: int
+    end_ms: int
+    english_text_final: str
+    chinese_text_final: str
+    is_key_sentence: bool
+
+
 class FakeSessionRepository:
     def __init__(self, initialized_client_ids: set[str] | None = None) -> None:
         self.initialized_client_ids = initialized_client_ids or set()
         self.sessions: dict[str, StoredSession] = {}
+        self.transcript_segments: list[StoredTranscriptSegment] = []
 
     async def client_exists(self, client_id: str) -> bool:
         return client_id in self.initialized_client_ids
@@ -95,6 +109,32 @@ class FakeSessionRepository:
         stored_session.ended_at = ended_at
         stored_session.duration_seconds = duration_seconds
         stored_session.quota_seconds_consumed = quota_seconds_consumed
+
+    async def create_transcript_segment(
+        self,
+        *,
+        session_id: uuid.UUID,
+        sequence: int,
+        start_ms: int,
+        end_ms: int,
+        english_text_final: str,
+        chinese_text_final: str,
+        is_key_sentence: bool,
+    ) -> uuid.UUID:
+        segment_id = uuid.uuid4()
+        self.transcript_segments.append(
+            StoredTranscriptSegment(
+                segment_id=str(segment_id),
+                session_id=str(session_id),
+                sequence=sequence,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                english_text_final=english_text_final,
+                chinese_text_final=chinese_text_final,
+                is_key_sentence=is_key_sentence,
+            ),
+        )
+        return segment_id
 
 
 class FakeQuotaService:
@@ -161,6 +201,10 @@ class SequenceClock:
         return self._last
 
 
+class JsonWebSocket(Protocol):
+    def receive_json(self) -> dict[str, object]: ...
+
+
 @pytest.fixture(autouse=True)
 async def reset_app_overrides() -> AsyncIterator[None]:
     app.dependency_overrides.clear()
@@ -202,6 +246,16 @@ def session_start_payload(client_id: str) -> dict[str, object]:
         "source_platform": "google_meet",
         "audio_format": VALID_AUDIO_FORMAT,
     }
+
+
+def receive_until_message_type(
+    websocket: JsonWebSocket,
+    message_type: str,
+) -> dict[str, object]:
+    while True:
+        message = websocket.receive_json()
+        if message["type"] == message_type:
+            return message
 
 
 def test_session_start_returns_session_started_and_writes_pending_session() -> None:
@@ -254,8 +308,8 @@ def test_non_empty_binary_frame_activates_session_then_stop_settles_quota() -> N
             audio_status = websocket.receive_json()
             websocket.send_json({"type": "heartbeat", "session_id": session_id})
             websocket.send_json({"type": "session_stop", "session_id": session_id})
-            quota_update = websocket.receive_json()
-            closed = websocket.receive_json()
+            quota_update = receive_until_message_type(websocket, "quota_update")
+            closed = receive_until_message_type(websocket, "session_closed")
 
     stored_session = repository.sessions[session_id]
 
@@ -272,6 +326,103 @@ def test_non_empty_binary_frame_activates_session_then_stop_settles_quota() -> N
     assert stored_session.quota_seconds_consumed == 7
     assert quota_service.consumed_seconds == [7]
     assert quota_service.released_session_ids == [session_id]
+
+
+def test_valid_audio_frame_runs_mock_provider_and_archives_final_segment() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+
+    with make_client(repository=repository, quota_service=quota_service) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            audio_status = websocket.receive_json()
+            asr_interim = websocket.receive_json()
+            warning = websocket.receive_json()
+            translation_interim = websocket.receive_json()
+            segment_final = websocket.receive_json()
+            key_sentence = websocket.receive_json()
+            timeline_update = websocket.receive_json()
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            websocket.receive_json()
+            websocket.receive_json()
+
+    assert audio_status == {"type": "audio_status", "has_audio": True, "level": None}
+    assert asr_interim == {
+        "type": "asr_interim",
+        "text": "We need to align on the launch timeline.",
+    }
+    assert warning == {
+        "type": "warning",
+        "code": "mock_qwen_interim_retry",
+        "message": "Mock interim provider recovered after a simulated retry.",
+    }
+    assert translation_interim == {
+        "type": "translation_interim",
+        "text": "我们需要对齐上线时间线。",
+    }
+    assert segment_final["type"] == "segment_final"
+    assert segment_final["sequence"] == 1
+    assert segment_final["start_ms"] == 0
+    assert segment_final["end_ms"] == 3200
+    assert (
+        segment_final["english_text_final"]
+        == "We need to align on the launch timeline before Friday."
+    )
+    assert (
+        segment_final["chinese_text_final"]
+        == "我们需要在周五前对齐上线时间线。"
+    )
+    assert key_sentence == {
+        "type": "key_sentence_update",
+        "text": "我们需要在周五前对齐上线时间线。",
+    }
+    assert timeline_update["type"] == "timeline_update"
+    assert timeline_update["items"][0]["segment_id"] == segment_final["segment_id"]
+
+    assert len(repository.transcript_segments) == 1
+    stored_segment = repository.transcript_segments[0]
+    assert stored_segment.session_id == session_id
+    assert stored_segment.sequence == 1
+    assert stored_segment.segment_id == segment_final["segment_id"]
+    assert (
+        stored_segment.english_text_final
+        == "We need to align on the launch timeline before Friday."
+    )
+    assert stored_segment.chinese_text_final == "我们需要在周五前对齐上线时间线。"
+
+
+def test_stopping_session_cancels_mock_provider_after_preserving_segments() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+
+    with make_client(repository=repository, quota_service=quota_service) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            websocket.receive_json()
+            websocket.receive_json()
+            websocket.receive_json()
+            websocket.receive_json()
+            segment_final = websocket.receive_json()
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            while True:
+                message = websocket.receive_json()
+                if message["type"] == "session_closed":
+                    break
+
+    assert segment_final["type"] == "segment_final"
+    assert len(repository.transcript_segments) == 1
+    assert repository.transcript_segments[0].segment_id == segment_final["segment_id"]
+    assert repository.sessions[session_id].status is MeetingSessionStatus.ENDED
 
 
 def test_browser_disconnect_releases_active_session() -> None:

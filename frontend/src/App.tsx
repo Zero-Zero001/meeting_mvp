@@ -157,14 +157,19 @@ function App() {
     captureStatus,
     clientId,
     endSession,
+    englishInterimText,
+    finalSegments,
     hasEffectiveAudio,
     initializeAnonymousClient,
+    keySentenceText,
     remainingSecondsToday,
     serverSyncError,
     serverSyncStatus,
     sessionId,
     silenceWarning,
     sourcePlatform,
+    timelineItems,
+    translationInterimText,
     webSocketStatus,
     beginCapture,
     setCaptureMode,
@@ -207,9 +212,21 @@ function App() {
   const effectiveAudioLabel = hasEffectiveAudio ? '已检测到' : '等待有效音频'
   const audioLevelLabel = `${Math.round(Math.min(audioLevel, 1) * 100)}%`
   const asrStatusLabel =
-    webSocketStatus === 'started' ? '等待后端 ASR' : '未连接'
+    finalSegments.length > 0
+      ? `${finalSegments.length} 条 final`
+      : englishInterimText
+        ? '收到 interim'
+        : webSocketStatus === 'started'
+          ? '等待后端 ASR'
+          : '未连接'
   const translationStatusLabel =
-    webSocketStatus === 'started' ? '等待英文 final' : '未连接'
+    finalSegments.length > 0
+      ? `${finalSegments.length} 条 final`
+      : translationInterimText
+        ? '临时理解'
+        : webSocketStatus === 'started'
+          ? '等待英文 final'
+          : '未连接'
   const captureGuide =
     captureMode === 'system_audio'
       ? '系统音频模式可能包含其他应用声音。'
@@ -435,9 +452,28 @@ function App() {
                   {webSocketStatus === 'started' ? '等待后端事件' : '未开始'}
                 </span>
               </div>
-              <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-                等待英文转写内容。
-              </p>
+              <div className="mt-4 space-y-3">
+                {englishInterimText ? (
+                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                    {englishInterimText}
+                  </p>
+                ) : null}
+                {finalSegments.map((segment) => (
+                  <article
+                    className="max-w-3xl border-l-2 border-zinc-300 pl-3"
+                    key={segment.segment_id}
+                  >
+                    <p className="text-sm leading-6 text-zinc-950">
+                      {segment.english_text_final}
+                    </p>
+                  </article>
+                ))}
+                {!englishInterimText && finalSegments.length === 0 ? (
+                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                    等待英文转写内容。
+                  </p>
+                ) : null}
+              </div>
             </section>
 
             <section
@@ -452,9 +488,28 @@ function App() {
                   {translationStatusLabel}
                 </span>
               </div>
-              <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
-                等待中文翻译内容。
-              </p>
+              <div className="mt-4 space-y-3">
+                {translationInterimText ? (
+                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                    {translationInterimText}
+                  </p>
+                ) : null}
+                {finalSegments.map((segment) => (
+                  <article
+                    className="max-w-3xl border-l-2 border-zinc-300 pl-3"
+                    key={segment.segment_id}
+                  >
+                    <p className="text-sm leading-6 text-zinc-950">
+                      {segment.chinese_text_final}
+                    </p>
+                  </article>
+                ))}
+                {!translationInterimText && finalSegments.length === 0 ? (
+                  <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                    等待中文翻译内容。
+                  </p>
+                ) : null}
+              </div>
             </section>
           </div>
 
@@ -469,8 +524,8 @@ function App() {
                 </h2>
                 <RadioTower className="size-4 text-muted-foreground" />
               </div>
-              <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                暂无重点句。
+              <p className="mt-4 text-sm leading-6 text-zinc-950">
+                {keySentenceText ?? '暂无重点句。'}
               </p>
             </section>
 
@@ -493,15 +548,38 @@ function App() {
                 <TimelineItem label="ASR" value={asrStatusLabel} />
                 <TimelineItem label="翻译" value={translationStatusLabel} />
               </dl>
-              <p className="mt-4 text-sm leading-6 text-muted-foreground">
-                暂无会议事件。
-              </p>
+              {timelineItems.length > 0 ? (
+                <ol className="mt-4 grid gap-3 text-sm">
+                  {timelineItems.map((item) => (
+                    <li
+                      className="border-l-2 border-zinc-300 pl-3 leading-6"
+                      key={item.id}
+                    >
+                      <p className="font-medium text-zinc-950">{item.text}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatTimestamp(item.timestamp_ms)}
+                      </p>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="mt-4 text-sm leading-6 text-muted-foreground">
+                  暂无会议事件。
+                </p>
+              )}
             </section>
           </aside>
         </section>
       </section>
     </main>
   )
+}
+
+function formatTimestamp(timestampMs: number): string {
+  const totalSeconds = Math.floor(timestampMs / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
 function StatusItem({

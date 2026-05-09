@@ -579,3 +579,44 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 完整 Vitest 结果为 10 个测试文件、55 个测试通过；Playwright 结果为 6 个 Chromium 测试通过。
 - `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
 - 真实 Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 音频兼容性和真实无声 30 秒场景仍需人工验收；Step 15 未开始。
+
+## 2026-05-09 Step 15 本地 mock Provider 链路
+
+### 架构状态
+- Step 15 把 Step 14 的有效 PCM16 binary 上传接到本地后端 mock 文本链路：首个有效 binary frame 仍负责把 `meeting_session` 从 `pending_audio` 激活为 `active`，随后启动 mock Provider task。
+- mock Provider task 使用固定脚本，依次推送英文 interim、可恢复 provider warning、中文 interim、final 双语片段、重点句和时间线更新。
+- 后端不修改 WebSocket wire schema；继续使用 Step 10 已定义的 `asr_interim`、`translation_interim`、`segment_final`、`key_sentence_update`、`timeline_update`、`warning` 等服务端消息。
+- final 片段通过 `MeetingSessionRepository.create_transcript_segment(...)` 写入既有 `transcript_segment` 表，不新增 migration；sequence 从 1 递增，interim、warning 和原始音频不入库。
+- mock task 绑定在 `WebSocketSessionState` 上，`session_stop`、浏览器断开和 task 取消都会取消 mock task；已写入的 final 片段保留，Redis active session 释放和额度结算仍沿用 Step 11 逻辑。
+- 前端 WebSocket client 只新增 callbacks，不新增公开环境变量；`VITE_*` 边界保持不变。
+- Zustand store 新增实时文本状态，四区 UI 从占位状态升级为消费 mock 实时数据：英文区、中文区、重点句区和时间线区都会随服务端消息更新。
+- 本步不是 Step 16：没有接入 Google STT streaming，没有调用真实 Qwen，没有新增 Provider 密钥变量，没有新增会后归档查询 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/mock_providers.py` | Step 15 的本地 mock Provider 脚本模块。定义固定英文 interim、中文 interim、双语 final、可恢复 warning、重点句和时间线元数据，供 WebSocket 编排层按稳定顺序推送。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 15 扩展 repository 协议与 SQLAlchemy 实现，新增 `transcript_segment` 写入；会话激活后启动可取消 mock task，并发送实时文本、重点句、时间线和 warning 消息。 |
+| `backend/tests/test_websocket_sessions.py` | 后端本地 WebSocket 行为测试。Fake repository 新增 `transcript_segments` 存储，覆盖有效 binary frame 后收到 mock 实时消息、final 双语片段入库、停止/断开取消 mock task 且保留已写片段，以及 warning 不阻塞 final。 |
+| `frontend/src/lib/meeting-websocket.ts` | 前端 WebSocket client。Step 15 新增 `onAsrInterim`、`onTranslationInterim`、`onSegmentFinal`、`onKeySentenceUpdate`、`onTimelineUpdate`、`onWarning` callbacks，把既有服务端消息暴露给 store。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。Step 15 新增 `englishInterimText`、`translationInterimText`、`finalSegments`、`keySentenceText` 和 `timelineItems`；负责替换 interim、追加 final、更新重点句和时间线，并在新会话开始时清空旧实时文本。 |
+| `frontend/src/App.tsx` | 会议工作台 UI。Step 15 将四区内容从占位文案升级为实时渲染：英文区显示英文 interim/final，中文区显示中文 interim/final，重点句区显示最新重点句，时间线区显示服务端 timeline items。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | WebSocket client 单元测试。覆盖新增服务端消息到 callbacks 的分发，包括 ASR interim、翻译 interim、final segment、重点句、时间线和 warning。 |
+| `frontend/src/stores/session-store.test.ts` | store 集成式单元测试。通过 fake WebSocket client 验证 interim 替换、final 追加、重点句更新和时间线更新。 |
+| `frontend/src/App.test.tsx` | React UI 测试。直接设置 store 实时文本状态，验证英文原文区、中文翻译区、当前重点句区和会议时间线区渲染 mock Provider 内容。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。FakeWebSocket 在收到 binary frame 后推送 mock 服务端消息，验证真实页面四区更新且桌面/移动视口仍无水平溢出。 |
+
+### 状态与边界
+- `englishInterimText` 和 `translationInterimText` 表示当前临时理解文本，可被后续 interim 替换；本步保留它们用于实时提示，不写数据库。
+- `finalSegments` 只追加 `segment_final` 消息，作为当前会话前端展示的正式双语片段列表；正式持久化来源仍是后端 `transcript_segment`。
+- `keySentenceText` 保存最新重点句；`timelineItems` 使用服务端 `timeline_update.items` 替换当前时间线列表。
+- `onWarning` callback 已在 WebSocket client 层暴露；当前 store 不持久化 warning 文本，provider warning 主要由测试验证其不会阻塞 final 链路。
+- mock Provider 输出是固定脚本，只用于本地开发和自动化测试；不读取真实音频内容，不保存原始音频，不依赖 Google/Qwen/COS 密钥。
+
+### 验证结论
+- Step 15 已先跑 RED 测试确认缺口，再实现后端 mock Provider、final 入库和前端实时文本消费到 GREEN。
+- 后端完整验证通过：`uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；结果为 Python 3.12.11、Ruff 通过、mypy 25 个源文件无问题、pytest 43 passed 且 5 integration deselected。
+- 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`；结果为 lint 通过、Vitest 10 个测试文件 58 个测试通过、build 通过、Playwright 6 个 Chromium 测试通过。
+- `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
+- Step 16 尚未开始；真实 Google STT、真实 Qwen、真实 Provider smoke test 和会后归档页面/API 仍等待后续明确步骤。
