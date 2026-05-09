@@ -674,3 +674,65 @@
 - Step 14 才能实现 AudioWorklet、16 kHz mono PCM16 转换、音量电平/静音检测、WebSocket client 或 binary 上传。
 - Step 13 的“无音频”只表示没有 audio track；真实静音、音量过低和 30 秒无有效音频检测仍未实现。
 - 真实 Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 的兼容性矩阵仍需人工执行。本步自动化测试使用 mock `getDisplayMedia`，不能等同于真实会议平台验收。
+
+## 2026-05-09 Step 14：前端音频前处理与 binary 上传
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 14，未进入 Step 15。
+- 已按 TDD 先补测试并确认 RED：
+  - 新增 `frontend/src/lib/audio-frames.test.ts`，首次失败原因为 `frontend/src/lib/audio-frames.ts` 尚不存在。
+  - 新增 `frontend/src/lib/audio-processing.test.ts`，首次失败原因为 `frontend/src/lib/audio-processing.ts` 尚不存在。
+  - 新增 `frontend/src/lib/meeting-websocket.test.ts`，首次失败原因为 `frontend/src/lib/meeting-websocket.ts` 尚不存在。
+  - 扩展 `frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts`，首次失败原因为 store/UI 尚未具备 WebSocket、AudioWorklet、音量电平、静音 30 秒提示和 binary 上传状态。
+- 新增 `frontend/src/lib/audio-frames.ts`：
+  - 固定前端上传音频格式为 `{ sample_rate_hz: 16000, channels: 1, encoding: 'pcm16' }`。
+  - 提供 mono 混合、线性重采样到 16 kHz、RMS 音量计算、有效音频阈值判断、little-endian PCM16 编码和 100ms 帧切分。
+  - 固定帧长为 1600 samples / 3200 bytes，默认有效音频阈值为 RMS `0.015`。
+- 新增 `frontend/public/audio-worklet/pcm16-processor.js`：
+  - 作为浏览器 AudioWorklet processor，接收实时输入音频并把每个 render quantum 的通道样本通过 `postMessage` 交给主线程。
+  - 不保存、不上传、不持久化原始音频；转换和静音过滤在主线程前端处理层完成。
+- 新增 `frontend/src/lib/audio-processing.ts`：
+  - 使用 `AudioContext`、`MediaStreamAudioSourceNode` 和 `AudioWorkletNode` 启动实时音频处理。
+  - 将 worklet 样本推入 16 kHz mono PCM16 100ms 帧处理器，仅对超过 RMS 阈值的有效音频调用 binary frame callback。
+  - 静音帧不发送；30 秒无有效音频触发 `silenceWarning` 和 `audio_silent_timeout`。
+  - `stop()` 清理静音计时器、断开 source/worklet node，并关闭 `AudioContext`。
+- 新增 `frontend/src/lib/meeting-websocket.ts`：
+  - 默认使用 `VITE_WS_BASE_URL`，为空时从当前页面推导 `/ws`，`https:` 对应 `wss:`，`http:` 对应 `ws:`。
+  - WebSocket open 后发送 `session_start` JSON，包含 `client_id`、`capture_mode`、`source_platform` 和固定 `audio_format`。
+  - 收到 `session_started` 后暴露 `sessionId`、`archiveUrl` 和 `sendAudioFrame()`；`stop()` 发送 `session_stop` 并关闭连接。
+  - 本步只处理 `session_started`、`quota_update`、`audio_status`、`error`、`session_closed` 等既有 schema，不修改 wire schema。
+- 扩展 `frontend/src/stores/session-store.ts`：
+  - 新增 `audioProcessingStatus`、`audioLevel`、`hasEffectiveAudio`、`silenceWarning`、`webSocketStatus`、`sessionId`、`archiveUrl`、`audioPipelineErrorCode`。
+  - `beginCapture()` 在 Step 13 捕获成功后继续建立 WebSocket session，再启动 AudioWorklet 音频处理；测试可注入 fake WebSocket client 和 fake audio processor。
+  - 匿名身份未同步时不开始捕获，返回 `identity_not_ready`。
+  - `endSession()` 完整清理 audio processor、WebSocket client 和 `MediaStream` tracks。
+- 更新 `frontend/src/App.tsx`：
+  - 状态栏新增 WebSocket 状态、音频处理状态、音量电平、有效音频、会话编号和归档入口展示。
+  - 开始按钮在匿名身份未同步、授权中、连接中、处理中或管线运行中禁用；结束按钮负责完整清理本地音频和 WebSocket session。
+  - 显示 30 秒无有效音频提示；四区布局保持 Step 12 的桌面/移动响应式结构。
+- 更新 `frontend/e2e/app.spec.ts`：
+  - mock `getDisplayMedia`、`fetch` 匿名同步、`WebSocket`、`AudioContext` 和 `AudioWorkletNode`。
+  - 覆盖有效音频上传 3200 bytes binary frame、静音不上传、授权拒绝、无 audio track 降级提示、桌面/移动无水平溢出。
+- 本步未修改后端 REST API、WebSocket schema、数据库 schema、环境变量清单或部署配置。
+- 本步未实现 mock STT/Qwen Provider、interim/final 文本生成、归档写入、Google STT、Qwen 或四区实时文本流。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 14 TDD RED | `npm run test -- --run src/lib/audio-frames.test.ts src/lib/audio-processing.test.ts src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 首次失败，缺少 Step 14 模块和 store/UI 状态 |
+| Step 14 目标单测 GREEN | `npm run test -- --run src/lib/audio-frames.test.ts src/lib/audio-processing.test.ts src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 5 个测试文件、33 个测试通过 |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、55 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 15 必须等待用户明确允许后再开始。
+- Step 15 才能实现 mock STT/Qwen Provider、interim/final 文本、Provider 状态流或四区实时文本更新。
+- 当前 Step 14 只保证前端把捕获到的 `MediaStream` 转换为 16 kHz mono PCM16，并仅上传超过阈值的 100ms binary frame。
+- 静音帧不会发送，因此 Step 11 后端不会因静音帧把会话从 `pending_audio` 转为 `active`，也不会因此开始额度消耗。
+- 自动化测试使用 fake clock 和 mock 浏览器 API 覆盖静音 30 秒、有效音频上传和静音不上传；真实会议无声 30 秒、Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 兼容性矩阵仍需人工验收，不能把 mock 自动化等同于真实平台验收。

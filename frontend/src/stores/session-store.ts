@@ -14,6 +14,21 @@ import {
   type CaptureFailureCode,
   type DisplayMediaCaptureResult,
 } from '@/lib/audio-capture'
+import {
+  AudioProcessingUnsupportedError,
+  startAudioProcessing,
+  type AudioLevelState,
+  type AudioProcessingController,
+  type StartAudioProcessingOptions,
+} from '@/lib/audio-processing'
+import {
+  connectMeetingWebSocket,
+  type ConnectMeetingWebSocketOptions,
+  type MeetingWebSocketClient,
+  type WebSocketStatus,
+} from '@/lib/meeting-websocket'
+
+export type { WebSocketStatus } from '@/lib/meeting-websocket'
 
 export type CaptureMode = 'tab_audio' | 'system_audio'
 export type SourcePlatform =
@@ -33,6 +48,19 @@ export type CaptureStatus =
   | 'no_audio'
   | 'unsupported'
   | 'failed'
+export type AudioProcessingStatus =
+  | 'idle'
+  | 'starting'
+  | 'running'
+  | 'silent'
+  | 'unsupported'
+  | 'failed'
+export type AudioPipelineErrorCode =
+  | 'identity_not_ready'
+  | 'websocket_failed'
+  | 'audio_processing_unsupported'
+  | 'audio_processing_failed'
+  | 'audio_silent_timeout'
 export type BrowserName = 'chrome' | 'edge' | 'other'
 export type CaptureAuthorizationResult =
   | 'granted'
@@ -60,29 +88,49 @@ type CaptureService = (options: {
   mode: CaptureMode
 }) => Promise<DisplayMediaCaptureResult>
 
+type MeetingWebSocketConnector = (
+  options: ConnectMeetingWebSocketOptions,
+) => Promise<MeetingWebSocketClient>
+
+type AudioProcessorStarter = (
+  options: StartAudioProcessingOptions,
+) => Promise<AudioProcessingController>
+
 type BeginCaptureOptions = {
   captureService?: CaptureService
+  connectMeetingWebSocket?: MeetingWebSocketConnector
   now?: () => Date
+  startAudioProcessing?: AudioProcessorStarter
   userAgent?: string
 }
 
 type SessionState = {
   anonymousClientError: string | null
   anonymousClientStatus: AnonymousClientStatus
+  archiveUrl: string | null
+  audioLevel: number
+  audioPipelineErrorCode: AudioPipelineErrorCode | null
+  audioProcessingStatus: AudioProcessingStatus
+  audioProcessor: AudioProcessingController | null
   captureErrorCode: CaptureFailureCode | null
   captureErrorMessage: string | null
   captureMode: CaptureMode
   captureStatus: CaptureStatus
   clientId: string | null
+  hasEffectiveAudio: boolean
   lastCaptureAttempt: CaptureAttempt | null
   mediaStream: MediaStream | null
+  meetingWebSocket: MeetingWebSocketClient | null
   remainingSecondsToday: number
   serverSyncError: string | null
   serverSyncStatus: ServerSyncStatus
+  sessionId: string | null
+  silenceWarning: boolean
   sourcePlatform: SourcePlatform
   status: SessionStatus
+  webSocketStatus: WebSocketStatus
   beginCapture: (mode: CaptureMode, options?: BeginCaptureOptions) => Promise<void>
-  endSession: () => void
+  endSession: () => Promise<void>
   initializeAnonymousClient: (
     options?: InitializeAnonymousClientOptions,
   ) => Promise<void>
@@ -93,18 +141,28 @@ type SessionState = {
 export const initialSessionState = {
   anonymousClientError: null,
   anonymousClientStatus: 'idle' as AnonymousClientStatus,
+  archiveUrl: null as string | null,
+  audioLevel: 0,
+  audioPipelineErrorCode: null as AudioPipelineErrorCode | null,
+  audioProcessingStatus: 'idle' as AudioProcessingStatus,
+  audioProcessor: null as AudioProcessingController | null,
   captureErrorCode: null as CaptureFailureCode | null,
   captureErrorMessage: null as string | null,
   captureMode: 'tab_audio' as CaptureMode,
   captureStatus: 'idle' as CaptureStatus,
   clientId: null,
+  hasEffectiveAudio: false,
   lastCaptureAttempt: null as CaptureAttempt | null,
   mediaStream: null as MediaStream | null,
+  meetingWebSocket: null as MeetingWebSocketClient | null,
   remainingSecondsToday: 40 * 60,
   serverSyncError: null,
   serverSyncStatus: 'idle' as ServerSyncStatus,
+  sessionId: null as string | null,
+  silenceWarning: false,
   sourcePlatform: 'unknown' as SourcePlatform,
   status: 'idle' as SessionStatus,
+  webSocketStatus: 'idle' as WebSocketStatus,
 }
 
 function errorMessage(error: unknown): string {
@@ -151,18 +209,72 @@ function authorizationResultFromErrorCode(
   }
 }
 
+async function stopAudioProcessor(
+  audioProcessor: AudioProcessingController | null,
+) {
+  try {
+    await audioProcessor?.stop()
+  } catch {
+    // Cleanup is best-effort because the user is already leaving the pipeline.
+  }
+}
+
+function stopMeetingWebSocket(meetingWebSocket: MeetingWebSocketClient | null) {
+  try {
+    meetingWebSocket?.stop()
+  } catch {
+    // Cleanup is best-effort because the user is already leaving the pipeline.
+  }
+}
+
+function isIdentityReady(state: SessionState): state is SessionState & {
+  clientId: string
+} {
+  return (
+    state.anonymousClientStatus === 'ready' &&
+    state.serverSyncStatus === 'synced' &&
+    state.clientId !== null
+  )
+}
+
 export const useSessionStore = create<SessionState>((set, get) => ({
   ...initialSessionState,
   beginCapture: async (mode, options = {}) => {
-    stopMediaStream(get().mediaStream)
+    const currentState = get()
+
+    if (!isIdentityReady(currentState)) {
+      set({
+        audioPipelineErrorCode: 'identity_not_ready',
+        captureErrorCode: null,
+        captureErrorMessage: '匿名身份尚未同步，稍后再开始捕获。',
+        captureStatus: 'idle',
+        status: 'idle',
+        webSocketStatus: 'error',
+      })
+      return
+    }
+
+    await stopAudioProcessor(currentState.audioProcessor)
+    stopMeetingWebSocket(currentState.meetingWebSocket)
+    stopMediaStream(currentState.mediaStream)
 
     set({
+      archiveUrl: null,
+      audioLevel: 0,
+      audioPipelineErrorCode: null,
+      audioProcessingStatus: 'idle',
+      audioProcessor: null,
       captureErrorCode: null,
       captureErrorMessage: null,
       captureMode: mode,
       captureStatus: 'requesting',
+      hasEffectiveAudio: false,
       mediaStream: null,
+      meetingWebSocket: null,
+      sessionId: null,
+      silenceWarning: false,
       status: 'idle',
+      webSocketStatus: 'idle',
     })
 
     const captureService: CaptureService =
@@ -184,52 +296,193 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
 
-    if (result.ok) {
+    const lastCaptureAttemptBase = {
+      attemptedAt,
+      browserName: browserNameFromUserAgent(userAgent),
+      captureMode: mode,
+      sourcePlatform,
+    }
+
+    if (!result.ok) {
       set({
-        captureErrorCode: null,
-        captureErrorMessage: null,
-        captureStatus: 'ready',
+        captureErrorCode: result.errorCode,
+        captureErrorMessage: result.message,
+        captureStatus: captureStatusFromErrorCode(result.errorCode),
         lastCaptureAttempt: {
-          attemptedAt,
-          authorizationResult: 'granted',
-          browserName: browserNameFromUserAgent(userAgent),
-          captureMode: mode,
-          failureCode: null,
-          sourcePlatform,
+          ...lastCaptureAttemptBase,
+          authorizationResult: authorizationResultFromErrorCode(result.errorCode),
+          failureCode: result.errorCode,
         },
-        mediaStream: result.stream,
-        status: 'capturing',
+        mediaStream: null,
+        status: 'idle',
       })
       return
     }
 
     set({
-      captureErrorCode: result.errorCode,
-      captureErrorMessage: result.message,
-      captureStatus: captureStatusFromErrorCode(result.errorCode),
+      captureErrorCode: null,
+      captureErrorMessage: null,
+      captureStatus: 'ready',
       lastCaptureAttempt: {
-        attemptedAt,
-        authorizationResult: authorizationResultFromErrorCode(result.errorCode),
-        browserName: browserNameFromUserAgent(userAgent),
-        captureMode: mode,
-        failureCode: result.errorCode,
-        sourcePlatform,
+        ...lastCaptureAttemptBase,
+        authorizationResult: 'granted',
+        failureCode: null,
       },
-      mediaStream: null,
-      status: 'idle',
+      mediaStream: result.stream,
+      status: 'capturing',
+      webSocketStatus: 'connecting',
     })
-  },
-  endSession: () =>
-    set((state) => {
-      stopMediaStream(state.mediaStream)
-      return {
-        captureErrorCode: null,
-        captureErrorMessage: null,
-        captureStatus: 'idle',
+
+    const connect = options.connectMeetingWebSocket ?? connectMeetingWebSocket
+    let meetingWebSocket: MeetingWebSocketClient
+    try {
+      meetingWebSocket = await connect({
+        captureMode: mode,
+        clientId: currentState.clientId,
+        onAudioStatus: (message) => {
+          set({
+            audioLevel: message.level ?? get().audioLevel,
+            hasEffectiveAudio: message.has_audio,
+          })
+        },
+        onClosed: () => {
+          set({
+            webSocketStatus: 'closed',
+          })
+        },
+        onError: () => {
+          set({
+            audioPipelineErrorCode: 'websocket_failed',
+            webSocketStatus: 'error',
+          })
+        },
+        onQuotaUpdate: (message) => {
+          set({
+            remainingSecondsToday: message.remaining_seconds_today,
+          })
+        },
+        onSessionStarted: (message) => {
+          set({
+            archiveUrl: message.archive_url,
+            remainingSecondsToday: message.remaining_seconds_today,
+            sessionId: message.session_id,
+          })
+        },
+        onStatusChange: (webSocketStatus) => {
+          set({
+            webSocketStatus,
+          })
+        },
+        sourcePlatform,
+      })
+    } catch {
+      stopMediaStream(result.stream)
+      set({
+        audioPipelineErrorCode: 'websocket_failed',
+        captureErrorCode: 'capture_failed',
+        captureErrorMessage: 'WebSocket 连接失败，请稍后重试。',
+        captureStatus: 'failed',
         mediaStream: null,
         status: 'idle',
-      }
-    }),
+        webSocketStatus: 'error',
+      })
+      return
+    }
+
+    set({
+      archiveUrl: meetingWebSocket.archiveUrl,
+      audioProcessingStatus: 'starting',
+      meetingWebSocket,
+      sessionId: meetingWebSocket.sessionId,
+      webSocketStatus: 'started',
+    })
+
+    const startProcessor = options.startAudioProcessing ?? startAudioProcessing
+    try {
+      const audioProcessor = await startProcessor({
+        onFrame: (frame: ArrayBuffer) => {
+          meetingWebSocket.sendAudioFrame(frame)
+        },
+        onLevel: (levelState: AudioLevelState) => {
+          set((state) => ({
+            audioLevel: levelState.level,
+            audioPipelineErrorCode: levelState.silenceWarning
+              ? 'audio_silent_timeout'
+              : state.audioPipelineErrorCode === 'audio_silent_timeout'
+                ? null
+                : state.audioPipelineErrorCode,
+            audioProcessingStatus: levelState.silenceWarning
+              ? 'silent'
+              : 'running',
+            hasEffectiveAudio: levelState.hasEffectiveAudio,
+            silenceWarning: levelState.silenceWarning,
+          }))
+        },
+        onSilenceWarning: () => {
+          set({
+            audioPipelineErrorCode: 'audio_silent_timeout',
+            audioProcessingStatus: 'silent',
+            hasEffectiveAudio: false,
+            silenceWarning: true,
+          })
+        },
+        stream: result.stream,
+      })
+
+      set((state) => ({
+        audioProcessingStatus:
+          state.audioProcessingStatus === 'silent' ? 'silent' : 'running',
+        audioProcessor,
+      }))
+    } catch (error) {
+      stopMeetingWebSocket(meetingWebSocket)
+      stopMediaStream(result.stream)
+      const isUnsupported = error instanceof AudioProcessingUnsupportedError
+      set({
+        audioPipelineErrorCode: isUnsupported
+          ? 'audio_processing_unsupported'
+          : 'audio_processing_failed',
+        audioProcessingStatus: isUnsupported ? 'unsupported' : 'failed',
+        captureErrorCode: 'capture_failed',
+        captureErrorMessage: isUnsupported
+          ? '当前浏览器不支持 AudioWorklet 音频处理。'
+          : '音频处理启动失败，请重新捕获。',
+        captureStatus: 'failed',
+        mediaStream: null,
+        meetingWebSocket: null,
+        sessionId: null,
+        status: 'idle',
+        webSocketStatus: 'closed',
+      })
+    }
+  },
+  endSession: async () => {
+    const state = get()
+    set({
+      webSocketStatus: state.meetingWebSocket ? 'closing' : state.webSocketStatus,
+    })
+    await stopAudioProcessor(state.audioProcessor)
+    stopMeetingWebSocket(state.meetingWebSocket)
+    stopMediaStream(state.mediaStream)
+
+    set({
+      archiveUrl: null,
+      audioLevel: 0,
+      audioPipelineErrorCode: null,
+      audioProcessingStatus: 'idle',
+      audioProcessor: null,
+      captureErrorCode: null,
+      captureErrorMessage: null,
+      captureStatus: 'idle',
+      hasEffectiveAudio: false,
+      mediaStream: null,
+      meetingWebSocket: null,
+      sessionId: null,
+      silenceWarning: false,
+      status: 'idle',
+      webSocketStatus: 'closed',
+    })
+  },
   initializeAnonymousClient: async (options = {}) => {
     const currentState = get()
     if (

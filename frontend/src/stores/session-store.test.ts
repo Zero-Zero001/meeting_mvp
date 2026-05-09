@@ -18,29 +18,83 @@ function createStream() {
   return { stream, track }
 }
 
+function setReadyIdentity() {
+  useSessionStore.setState({
+    ...initialSessionState,
+    anonymousClientStatus: 'ready',
+    clientId: '11111111-1111-4111-8111-111111111111',
+    serverSyncStatus: 'synced',
+  })
+}
+
+function createStartedWebSocket() {
+  return {
+    archiveUrl: '/archive/session-1?token=archive-token',
+    sendAudioFrame: vi.fn(),
+    sessionId: 'session-1',
+    stop: vi.fn(),
+  }
+}
+
+function createAudioProcessor() {
+  return {
+    stop: vi.fn(),
+  }
+}
+
 describe('useSessionStore', () => {
   beforeEach(() => {
     useSessionStore.setState(initialSessionState)
   })
 
-  it('starts capture with the selected mode after browser authorization', async () => {
+  it('starts capture, websocket session, and audio processing after browser authorization', async () => {
+    setReadyIdentity()
     const { stream } = createStream()
+    const meetingSocket = createStartedWebSocket()
+    const audioProcessor = createAudioProcessor()
+    const frame = new ArrayBuffer(3200)
 
     await useSessionStore.getState().beginCapture('system_audio', {
       captureService: async () => ({
         ok: true,
         stream,
       }),
+      connectMeetingWebSocket: async (options) => {
+        expect(options).toMatchObject({
+          captureMode: 'system_audio',
+          clientId: '11111111-1111-4111-8111-111111111111',
+          sourcePlatform: 'unknown',
+        })
+        return meetingSocket
+      },
       now: () => new Date('2026-05-07T09:00:00.000Z'),
+      startAudioProcessing: async (options) => {
+        expect(options.stream).toBe(stream)
+        options.onLevel?.({
+          hasEffectiveAudio: true,
+          level: 0.42,
+          silenceWarning: false,
+        })
+        options.onFrame(frame, { level: 0.42 })
+        return audioProcessor
+      },
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136.0.0.0 Safari/537.36',
     })
 
+    expect(meetingSocket.sendAudioFrame).toHaveBeenCalledWith(frame)
     expect(useSessionStore.getState()).toMatchObject({
+      archiveUrl: '/archive/session-1?token=archive-token',
+      audioLevel: 0.42,
+      audioPipelineErrorCode: null,
+      audioProcessingStatus: 'running',
       captureMode: 'system_audio',
       captureStatus: 'ready',
+      hasEffectiveAudio: true,
       mediaStream: stream,
+      sessionId: 'session-1',
       status: 'capturing',
+      webSocketStatus: 'started',
     })
     expect(useSessionStore.getState().lastCaptureAttempt).toMatchObject({
       authorizationResult: 'granted',
@@ -48,6 +102,22 @@ describe('useSessionStore', () => {
       captureMode: 'system_audio',
       failureCode: null,
       sourcePlatform: 'unknown',
+    })
+  })
+
+  it('requires a synced anonymous identity before capture starts', async () => {
+    const captureService = vi.fn()
+
+    await useSessionStore.getState().beginCapture('tab_audio', {
+      captureService,
+    })
+
+    expect(captureService).not.toHaveBeenCalled()
+    expect(useSessionStore.getState()).toMatchObject({
+      audioPipelineErrorCode: 'identity_not_ready',
+      captureStatus: 'idle',
+      status: 'idle',
+      webSocketStatus: 'error',
     })
   })
 
@@ -60,24 +130,8 @@ describe('useSessionStore', () => {
     })
   })
 
-  it('ends the active session without changing remaining quota', async () => {
-    await useSessionStore.getState().beginCapture('tab_audio', {
-      captureService: async () => ({
-        ok: true,
-        stream: createStream().stream,
-      }),
-    })
-    useSessionStore.getState().endSession()
-
-    expect(useSessionStore.getState()).toMatchObject({
-      captureStatus: 'idle',
-      mediaStream: null,
-      remainingSecondsToday: 2400,
-      status: 'idle',
-    })
-  })
-
   it('records permission denial and keeps the session idle', async () => {
+    setReadyIdentity()
     useSessionStore.getState().setSourcePlatform('tencent_meeting_web')
 
     await useSessionStore.getState().beginCapture('tab_audio', {
@@ -107,7 +161,8 @@ describe('useSessionStore', () => {
     })
   })
 
-  it('stops the captured media stream when ending the session', async () => {
+  it('handles websocket failure by stopping the captured media stream', async () => {
+    setReadyIdentity()
     const { stream, track } = createStream()
 
     await useSessionStore.getState().beginCapture('tab_audio', {
@@ -115,15 +170,83 @@ describe('useSessionStore', () => {
         ok: true,
         stream,
       }),
+      connectMeetingWebSocket: async () => {
+        throw new Error('connect failed')
+      },
     })
-
-    useSessionStore.getState().endSession()
 
     expect(track.stop).toHaveBeenCalledOnce()
     expect(useSessionStore.getState()).toMatchObject({
-      captureStatus: 'idle',
+      audioPipelineErrorCode: 'websocket_failed',
+      captureStatus: 'failed',
       mediaStream: null,
       status: 'idle',
+      webSocketStatus: 'error',
+    })
+  })
+
+  it('records the 30 second silence warning without uploading silent frames', async () => {
+    setReadyIdentity()
+    const { stream } = createStream()
+    const meetingSocket = createStartedWebSocket()
+
+    await useSessionStore.getState().beginCapture('tab_audio', {
+      captureService: async () => ({
+        ok: true,
+        stream,
+      }),
+      connectMeetingWebSocket: async () => meetingSocket,
+      startAudioProcessing: async (options) => {
+        options.onLevel?.({
+          hasEffectiveAudio: false,
+          level: 0,
+          silenceWarning: false,
+        })
+        options.onSilenceWarning?.()
+        return createAudioProcessor()
+      },
+    })
+
+    expect(meetingSocket.sendAudioFrame).not.toHaveBeenCalled()
+    expect(useSessionStore.getState()).toMatchObject({
+      audioLevel: 0,
+      audioPipelineErrorCode: 'audio_silent_timeout',
+      audioProcessingStatus: 'silent',
+      hasEffectiveAudio: false,
+      silenceWarning: true,
+    })
+  })
+
+  it('stops audio processing, websocket, and media tracks when ending the session', async () => {
+    setReadyIdentity()
+    const { stream, track } = createStream()
+    const meetingSocket = createStartedWebSocket()
+    const audioProcessor = createAudioProcessor()
+
+    await useSessionStore.getState().beginCapture('tab_audio', {
+      captureService: async () => ({
+        ok: true,
+        stream,
+      }),
+      connectMeetingWebSocket: async () => meetingSocket,
+      startAudioProcessing: async () => audioProcessor,
+    })
+
+    await useSessionStore.getState().endSession()
+
+    expect(audioProcessor.stop).toHaveBeenCalledOnce()
+    expect(meetingSocket.stop).toHaveBeenCalledOnce()
+    expect(track.stop).toHaveBeenCalledOnce()
+    expect(useSessionStore.getState()).toMatchObject({
+      audioLevel: 0,
+      audioProcessingStatus: 'idle',
+      captureStatus: 'idle',
+      hasEffectiveAudio: false,
+      mediaStream: null,
+      remainingSecondsToday: 2400,
+      sessionId: null,
+      status: 'idle',
+      webSocketStatus: 'closed',
     })
   })
 })

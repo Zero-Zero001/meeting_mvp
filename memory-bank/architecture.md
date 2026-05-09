@@ -535,3 +535,47 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
 - 静态边界扫描未发现 Step 13 新增 AudioWorklet、WebSocket client、MediaStream audio graph 或 PCM16 转换代码；命中的 `pcm16` 仅来自 Step 10 既有协议 schema/test。
 - 本步自动化测试使用 mock `getDisplayMedia`，真实 Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 兼容性矩阵仍需人工验收；Step 14 未开始。
+
+## 2026-05-09 Step 14 前端音频前处理与 binary 上传
+
+### 架构状态
+- Step 14 将前端捕获链路从“只保留 `MediaStream` 引用”升级为完整的本地上传前管线：`getDisplayMedia` 成功后先建立 WebSocket session，再通过 Web Audio API / `AudioWorklet` 处理实时音频。
+- 前端上传格式固定为 16 kHz、mono、PCM16、100ms 一帧；每帧 1600 samples / 3200 bytes。
+- 静音判定在前端完成，默认 RMS 阈值为 `0.015`；低于阈值的静音帧不会通过 WebSocket binary frame 发送。
+- 30 秒无有效音频只触发前端 `silenceWarning` 和 `audio_silent_timeout`，不发送静音 binary frame。
+- WebSocket JSON 继续复用 Step 10 既有 schema：`session_start`、`session_stop`、`session_started`、`quota_update`、`audio_status`、`error`、`session_closed`；本步不修改 wire schema。
+- Step 14 不实现 STT/Qwen/mock Provider，不生成 interim/final 文本，不写 `transcript_segment`，不实现归档页数据流。
+- Step 14 不修改后端 REST API、后端 `/ws` 编排、数据库 schema、环境变量清单或部署配置。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/lib/audio-frames.ts` | 音频帧纯函数模块。定义固定 `AUDIO_FORMAT`，实现多声道混合为 mono、线性重采样到 16 kHz、RMS 音量计算、有效音频阈值判断、PCM16 little-endian 编码和 100ms 帧生成。该模块无浏览器副作用，便于 Vitest 覆盖边界行为。 |
+| `frontend/public/audio-worklet/pcm16-processor.js` | 浏览器 AudioWorklet processor。运行在 AudioWorkletGlobalScope 中，接收实时输入音频，把各通道样本与输入 sample rate 通过 `postMessage` 传回主线程；不保存、不上传原始音频。 |
+| `frontend/src/lib/audio-processing.ts` | 前端实时音频处理管线。创建 `AudioContext`、`MediaStreamAudioSourceNode` 和 `AudioWorkletNode`，把 worklet 样本送入 `audio-frames` 处理器；只对有效音频调用 binary frame callback，管理 30 秒静音 warning，并在 `stop()` 时清理 node/context/timer。 |
+| `frontend/src/lib/meeting-websocket.ts` | 前端会议 WebSocket client。解析 `VITE_WS_BASE_URL` 或从当前页面推导 `/ws`，open 后发送 `session_start`，收到 `session_started` 后允许发送 PCM16 `ArrayBuffer`，结束时发送 `session_stop` 并关闭连接；只消费本步需要的既有服务端消息。 |
+| `frontend/src/stores/session-store.ts` | 会话状态中枢。Step 14 新增 WebSocket 状态、音频处理状态、音量电平、有效音频、静音 warning、session id、archive url 和 pipeline error code；`beginCapture()` 串联身份同步检查、浏览器捕获、WebSocket 建会和音频处理启动，`endSession()` 完整清理 processor/WebSocket/tracks。 |
+| `frontend/src/App.tsx` | 会议工作台 UI。状态栏新增 WebSocket、音频处理、音量电平、有效音频、会话编号和归档入口；开始按钮根据身份同步、授权、连接和处理状态禁用；四区布局继续保持 Step 12 的工具型工作台结构。 |
+| `frontend/src/lib/audio-frames.test.ts` | 纯函数单元测试。覆盖固定格式、mono 混合、16 kHz 重采样、PCM16 clamp/编码、RMS level、阈值判断和 100ms 帧生成。 |
+| `frontend/src/lib/audio-processing.test.ts` | 音频处理单元测试。覆盖有效帧触发 binary callback、静音帧不发送、跨 worklet message 累积 100ms 帧、30 秒静音 warning 和 stop 清理 audio graph。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | WebSocket client 单元测试。覆盖 URL 推导、`session_start` 发送、`session_started` 后发送 binary frame、`session_stop` 和错误关闭。 |
+| `frontend/src/stores/session-store.test.ts` | store 集成式单元测试。通过 fake capture service、fake WebSocket client 和 fake audio processor 覆盖 Step 14 状态流、identity gate、WebSocket 失败清理、静音 warning 和结束会议清理。 |
+| `frontend/src/App.test.tsx` | React UI 测试。覆盖新增状态栏控件、开始捕获后的 WebSocket/音频处理状态、音量电平、有效音频、静音提示，以及 Step 13 授权失败/无音轨提示。 |
+| `frontend/e2e/app.spec.ts` | Playwright 测试。通过 mock `getDisplayMedia`、`fetch`、`WebSocket`、`AudioContext`、`AudioWorkletNode` 覆盖有效音频 binary 上传、静音不上传、授权失败、无音轨降级、桌面/移动无水平溢出。 |
+
+### 状态与边界
+- 新增 `AudioProcessingStatus = idle | starting | running | silent | unsupported | failed`，表示本地 AudioWorklet/PCM16 管线状态。
+- 新增 `WebSocketStatus = idle | connecting | started | closing | closed | error`，表示前端 WebSocket client 生命周期。
+- 新增 `AudioPipelineErrorCode = identity_not_ready | websocket_failed | audio_processing_unsupported | audio_processing_failed | audio_silent_timeout`，只描述前端音频上传前链路错误。
+- `beginCapture()` 现在要求匿名身份已同步；否则不会请求浏览器捕获，也不会建立 WebSocket。
+- `session_started` 后才启动音频处理；有效 PCM16 frame 只在 WebSocket session 已建立后发送。
+- `endSession()` 会停止 audio processor、发送 `session_stop`、关闭 WebSocket，并停止 `MediaStream.getTracks()`。
+- 静音 frame 不发送，后端 Step 11 的“首个非空 binary frame 激活会话”仍可避免静音导致额度开始消耗。
+
+### 验证结论
+- Step 14 已先跑 RED 测试确认缺口，再实现到 GREEN。
+- `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 均已通过。
+- 完整 Vitest 结果为 10 个测试文件、55 个测试通过；Playwright 结果为 6 个 Chromium 测试通过。
+- `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
+- 真实 Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 音频兼容性和真实无声 30 秒场景仍需人工验收；Step 15 未开始。

@@ -1,9 +1,39 @@
 import { expect, test, type Page } from '@playwright/test'
 
+declare global {
+  interface Window {
+    __audioWorkletNode: {
+      port: {
+        onmessage?: ((event: MessageEvent) => void) | null
+      }
+    }
+    __meetingWebSocket: unknown
+    __sentBinaryFrames: number[]
+  }
+}
+
 type CaptureMockMode = 'success' | 'denied' | 'no_audio'
 
-async function mockDisplayMedia(page: Page, mode: CaptureMockMode) {
+async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
   await page.addInitScript((captureMode) => {
+    window.localStorage.setItem(
+      'meeting_mvp.client_id',
+      '11111111-1111-4111-8111-111111111111',
+    )
+
+    const syncResponse = {
+      client_id: '11111111-1111-4111-8111-111111111111',
+      daily_free_seconds: 2400,
+      is_new: false,
+      remaining_seconds_today: 2400,
+    }
+
+    window.fetch = async () =>
+      new Response(JSON.stringify(syncResponse), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      })
+
     function createTrack(kind: 'audio' | 'video') {
       return {
         kind,
@@ -35,11 +65,115 @@ async function mockDisplayMedia(page: Page, mode: CaptureMockMode) {
         },
       },
     })
+
+    window.__sentBinaryFrames = []
+
+    class FakeWebSocket {
+      static CLOSED = 3
+      static CONNECTING = 0
+      static OPEN = 1
+
+      binaryType = 'blob'
+      onclose = null
+      onerror = null
+      onmessage = null
+      onopen = null
+      readyState = WebSocket.CONNECTING
+
+      constructor() {
+        window.__meetingWebSocket = this
+        queueMicrotask(() => {
+          this.readyState = WebSocket.OPEN
+          this.onopen?.(new Event('open'))
+        })
+      }
+
+      send(data) {
+        if (data instanceof ArrayBuffer) {
+          window.__sentBinaryFrames.push(data.byteLength)
+          return
+        }
+
+        const payload = JSON.parse(data)
+        if (payload.type === 'session_start') {
+          queueMicrotask(() => {
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  archive_token: 'archive-token',
+                  archive_url: '/archive/session-1?token=archive-token',
+                  remaining_seconds_today: 2400,
+                  session_id: 'session-1',
+                  type: 'session_started',
+                }),
+              }),
+            )
+          })
+        }
+      }
+
+      close() {
+        this.readyState = WebSocket.CLOSED
+        this.onclose?.(new CloseEvent('close'))
+      }
+    }
+
+    class FakeAudioContext {
+      audioWorklet = {
+        addModule: async () => undefined,
+      }
+      close = async () => undefined
+      createMediaStreamSource = () => ({
+        connect() {},
+        disconnect() {},
+      })
+      resume = async () => undefined
+      sampleRate = 48000
+      state = 'running'
+    }
+
+    class FakeAudioWorkletNode {
+      constructor() {
+        this.port = {
+          onmessage: null,
+        }
+        window.__audioWorkletNode = this
+      }
+
+      disconnect() {}
+    }
+
+    Object.defineProperty(window, 'WebSocket', {
+      configurable: true,
+      value: FakeWebSocket,
+    })
+    Object.defineProperty(window, 'AudioContext', {
+      configurable: true,
+      value: FakeAudioContext,
+    })
+    Object.defineProperty(window, 'AudioWorkletNode', {
+      configurable: true,
+      value: FakeAudioWorkletNode,
+    })
   }, mode)
 }
 
+async function emitAudioSamples(page: Page, value: number) {
+  await page.evaluate((sampleValue) => {
+    window.__audioWorkletNode.port.onmessage?.(
+      new MessageEvent('message', {
+        data: {
+          channels: [new Float32Array(4800).fill(sampleValue)],
+          inputSampleRate: 48000,
+          type: 'audio_samples',
+        },
+      }),
+    )
+  }, value)
+}
+
 test('renders the desktop workspace shell', async ({ page }) => {
-  await mockDisplayMedia(page, 'success')
+  await mockBrowserPipeline(page, 'success')
   await page.setViewportSize({ width: 1366, height: 900 })
   await page.goto('/')
 
@@ -55,6 +189,8 @@ test('renders the desktop workspace shell', async ({ page }) => {
   await expect(page.getByRole('button', { name: '开始捕获' })).toBeVisible()
   await expect(page.getByRole('button', { name: '标签页音频' })).toBeVisible()
   await expect(page.getByRole('button', { name: '系统音频' })).toBeVisible()
+  await expect(statusBar.getByText('WebSocket')).toBeVisible()
+  await expect(statusBar.getByText('音频处理')).toBeVisible()
   await expect(statusBar.getByText('ASR')).toBeVisible()
   await expect(statusBar.getByText('翻译')).toBeVisible()
   await expect(page.getByRole('combobox', { name: '会议平台' })).toBeVisible()
@@ -66,7 +202,7 @@ test('renders the desktop workspace shell', async ({ page }) => {
 })
 
 test('renders the mobile workspace without horizontal overflow', async ({ page }) => {
-  await mockDisplayMedia(page, 'success')
+  await mockBrowserPipeline(page, 'success')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
 
@@ -83,19 +219,43 @@ test('renders the mobile workspace without horizontal overflow', async ({ page }
   expect(hasHorizontalOverflow).toBe(false)
 })
 
-test('captures display audio through the browser picker', async ({ page }) => {
-  await mockDisplayMedia(page, 'success')
+test('uploads only effective PCM16 audio frames after session_started', async ({
+  page,
+}) => {
+  await mockBrowserPipeline(page, 'success')
   await page.goto('/')
 
   await page.getByRole('button', { name: '开始捕获' }).click()
+  const statusBar = page.getByRole('banner', { name: '会议状态栏' })
+  await expect(statusBar.getByText('已建会')).toBeVisible()
 
-  await expect(
-    page.getByRole('banner', { name: '会议状态栏' }).getByText('已捕获音频'),
-  ).toBeVisible()
+  await emitAudioSamples(page, 0.1)
+
+  await expect(statusBar.getByText('已检测到')).toBeVisible()
+  await expect
+    .poll(() => page.evaluate(() => window.__sentBinaryFrames.length))
+    .toBeGreaterThan(0)
+  await expect
+    .poll(() => page.evaluate(() => window.__sentBinaryFrames[0]))
+    .toBe(3200)
+})
+
+test('does not upload silent audio frames', async ({ page }) => {
+  await mockBrowserPipeline(page, 'success')
+  await page.goto('/')
+
+  await page.getByRole('button', { name: '开始捕获' }).click()
+  const statusBar = page.getByRole('banner', { name: '会议状态栏' })
+  await expect(statusBar.getByText('已建会')).toBeVisible()
+
+  await emitAudioSamples(page, 0)
+
+  await expect(statusBar.getByText('等待有效音频')).toBeVisible()
+  expect(await page.evaluate(() => window.__sentBinaryFrames.length)).toBe(0)
 })
 
 test('shows retry guidance when display capture is denied', async ({ page }) => {
-  await mockDisplayMedia(page, 'denied')
+  await mockBrowserPipeline(page, 'denied')
   await page.goto('/')
 
   await page.getByRole('button', { name: '开始捕获' }).click()
@@ -107,7 +267,7 @@ test('shows retry guidance when display capture is denied', async ({ page }) => 
 test('shows system audio fallback guidance when capture has no audio track', async ({
   page,
 }) => {
-  await mockDisplayMedia(page, 'no_audio')
+  await mockBrowserPipeline(page, 'no_audio')
   await page.goto('/')
 
   await page.getByRole('button', { name: '开始捕获' }).click()

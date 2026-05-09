@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import {
   Activity,
   Captions,
@@ -17,10 +17,12 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   useSessionStore,
+  type AudioProcessingStatus,
   type CaptureMode,
   type CaptureStatus,
   type ServerSyncStatus,
   type SourcePlatform,
+  type WebSocketStatus,
 } from '@/stores/session-store'
 
 const SOURCE_PLATFORM_OPTIONS: Array<{
@@ -77,8 +79,58 @@ function audioStatusLabel(status: CaptureStatus): string {
   }
 }
 
-function startButtonLabel(status: CaptureStatus): string {
+function webSocketStatusLabel(status: WebSocketStatus): string {
   switch (status) {
+    case 'idle':
+      return '未连接'
+    case 'connecting':
+      return '连接中'
+    case 'started':
+      return '已建会'
+    case 'closing':
+      return '关闭中'
+    case 'closed':
+      return '已关闭'
+    case 'error':
+      return '连接失败'
+  }
+}
+
+function audioProcessingStatusLabel(status: AudioProcessingStatus): string {
+  switch (status) {
+    case 'idle':
+      return '未开始'
+    case 'starting':
+      return '启动中'
+    case 'running':
+      return '运行中'
+    case 'silent':
+      return '静音'
+    case 'unsupported':
+      return '不支持'
+    case 'failed':
+      return '处理失败'
+  }
+}
+
+function startButtonLabel({
+  captureStatus,
+  identityReady,
+  webSocketStatus,
+}: {
+  captureStatus: CaptureStatus
+  identityReady: boolean
+  webSocketStatus: WebSocketStatus
+}): string {
+  if (!identityReady) {
+    return '等待身份同步'
+  }
+
+  if (webSocketStatus === 'connecting') {
+    return '连接中'
+  }
+
+  switch (captureStatus) {
     case 'requesting':
       return '等待授权'
     case 'ready':
@@ -97,31 +149,67 @@ function App() {
   const {
     anonymousClientError,
     anonymousClientStatus,
+    archiveUrl,
+    audioLevel,
+    audioProcessingStatus,
     captureErrorMessage,
     captureMode,
     captureStatus,
     clientId,
+    endSession,
+    hasEffectiveAudio,
     initializeAnonymousClient,
     remainingSecondsToday,
     serverSyncError,
     serverSyncStatus,
+    sessionId,
+    silenceWarning,
     sourcePlatform,
+    webSocketStatus,
     beginCapture,
-    endSession,
     setCaptureMode,
     setSourcePlatform,
   } = useSessionStore()
+  const identityReady =
+    anonymousClientStatus === 'ready' &&
+    clientId !== null &&
+    serverSyncStatus === 'synced'
   const isRequestingCapture = captureStatus === 'requesting'
-  const isCaptureReady = captureStatus === 'ready'
-  const canChangeCaptureInputs = !isRequestingCapture && !isCaptureReady
+  const isConnecting = webSocketStatus === 'connecting'
+  const isProcessingStarting = audioProcessingStatus === 'starting'
+  const isPipelineActive =
+    captureStatus === 'ready' ||
+    webSocketStatus === 'started' ||
+    audioProcessingStatus === 'running' ||
+    audioProcessingStatus === 'silent'
+  const canChangeCaptureInputs =
+    !isRequestingCapture && !isConnecting && !isProcessingStarting && !isPipelineActive
+  const startDisabled =
+    !identityReady ||
+    isRequestingCapture ||
+    isConnecting ||
+    isProcessingStarting ||
+    isPipelineActive
+  const endDisabled =
+    !isRequestingCapture &&
+    !isConnecting &&
+    !isProcessingStarting &&
+    !isPipelineActive
   const quotaMinutes = Math.floor(remainingSecondsToday / 60)
   const clientIdLabel =
     anonymousClientStatus === 'ready' && clientId
       ? clientId.slice(0, 8)
       : '未初始化'
   const audioLabel = audioStatusLabel(captureStatus)
-  const asrStatusLabel = isCaptureReady ? '等待音频处理' : '未连接'
-  const translationStatusLabel = isCaptureReady ? '等待英文 final' : '未连接'
+  const webSocketLabel = webSocketStatusLabel(webSocketStatus)
+  const audioProcessingLabel =
+    audioProcessingStatusLabel(audioProcessingStatus)
+  const effectiveAudioLabel = hasEffectiveAudio ? '已检测到' : '等待有效音频'
+  const audioLevelLabel = `${Math.round(Math.min(audioLevel, 1) * 100)}%`
+  const asrStatusLabel =
+    webSocketStatus === 'started' ? '等待后端 ASR' : '未连接'
+  const translationStatusLabel =
+    webSocketStatus === 'started' ? '等待英文 final' : '未连接'
   const captureGuide =
     captureMode === 'system_audio'
       ? '系统音频模式可能包含其他应用声音。'
@@ -171,8 +259,8 @@ function App() {
 
               <div
                 aria-label="捕获模式"
-                role="group"
                 className="inline-flex w-full rounded-md border border-border bg-background p-1 sm:w-auto"
+                role="group"
               >
                 <Button
                   aria-pressed={captureMode === 'tab_audio'}
@@ -202,16 +290,20 @@ function App() {
 
               <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                 <Button
-                  disabled={isRequestingCapture || isCaptureReady}
+                  disabled={startDisabled}
                   onClick={() => void beginCapture(captureMode)}
                   type="button"
                 >
                   <Play data-icon="inline-start" />
-                  {startButtonLabel(captureStatus)}
+                  {startButtonLabel({
+                    captureStatus,
+                    identityReady,
+                    webSocketStatus,
+                  })}
                 </Button>
                 <Button
-                  disabled={!isCaptureReady}
-                  onClick={endSession}
+                  disabled={endDisabled}
+                  onClick={() => void endSession()}
                   type="button"
                   variant="outline"
                 >
@@ -224,54 +316,85 @@ function App() {
 
           <div
             aria-live="polite"
-            className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-6"
+            className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-9"
           >
-            <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <UserRound className="size-4 shrink-0" />
-                <span>匿名身份</span>
-              </div>
-              <p className="mt-1 truncate font-medium">{clientIdLabel}</p>
-            </div>
-            <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <ShieldCheck className="size-4 shrink-0" />
-                <span>服务端同步</span>
-              </div>
-              <p className="mt-1 font-medium">{serverSyncLabel(serverSyncStatus)}</p>
-            </div>
-            <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Clock3 className="size-4 shrink-0" />
-                <span>今日剩余额度</span>
-              </div>
-              <p className="mt-1 font-medium">{quotaMinutes} 分钟</p>
-            </div>
-            <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Activity className="size-4 shrink-0" />
-                <span>音频状态</span>
-              </div>
-              <p className="mt-1 font-medium">{audioLabel}</p>
-            </div>
-            <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Captions className="size-4 shrink-0" />
-                <span>ASR</span>
-              </div>
-              <p className="mt-1 font-medium">{asrStatusLabel}</p>
-            </div>
-            <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Languages className="size-4 shrink-0" />
-                <span>翻译</span>
-              </div>
-              <p className="mt-1 font-medium">{translationStatusLabel}</p>
-            </div>
+            <StatusItem
+              icon={<UserRound className="size-4 shrink-0" />}
+              label="匿名身份"
+              value={clientIdLabel}
+            />
+            <StatusItem
+              icon={<ShieldCheck className="size-4 shrink-0" />}
+              label="服务端同步"
+              value={serverSyncLabel(serverSyncStatus)}
+            />
+            <StatusItem
+              icon={<Clock3 className="size-4 shrink-0" />}
+              label="今日剩余额度"
+              value={`${quotaMinutes} 分钟`}
+            />
+            <StatusItem
+              icon={<Activity className="size-4 shrink-0" />}
+              label="音频状态"
+              value={audioLabel}
+            />
+            <StatusItem
+              icon={<RadioTower className="size-4 shrink-0" />}
+              label="WebSocket"
+              value={webSocketLabel}
+            />
+            <StatusItem
+              icon={<Volume2 className="size-4 shrink-0" />}
+              label="音频处理"
+              value={audioProcessingLabel}
+            />
+            <StatusItem
+              icon={<Activity className="size-4 shrink-0" />}
+              label="音量电平"
+              value={audioLevelLabel}
+            />
+            <StatusItem
+              icon={<Captions className="size-4 shrink-0" />}
+              label="ASR"
+              value={asrStatusLabel}
+            />
+            <StatusItem
+              icon={<Languages className="size-4 shrink-0" />}
+              label="翻译"
+              value={translationStatusLabel}
+            />
+          </div>
+
+          <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <StatusItem
+              icon={<Activity className="size-4 shrink-0" />}
+              label="有效音频"
+              value={effectiveAudioLabel}
+            />
+            <StatusItem
+              icon={<RadioTower className="size-4 shrink-0" />}
+              label="会话编号"
+              value={sessionId ? sessionId.slice(0, 8) : '未创建'}
+            />
+            <StatusItem
+              icon={<ShieldCheck className="size-4 shrink-0" />}
+              label="归档入口"
+              value={archiveUrl ? '已生成' : '未生成'}
+            />
+            <StatusItem
+              icon={<ListChecks className="size-4 shrink-0" />}
+              label="会议平台"
+              value={sourcePlatformLabel(sourcePlatform)}
+            />
           </div>
 
           <div className="rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
             <p>{captureGuide}</p>
+            {!identityReady ? (
+              <p className="mt-1 font-medium text-zinc-950" role="status">
+                匿名身份同步完成后才能开始上传音频。
+              </p>
+            ) : null}
             {captureErrorMessage ? (
               <p className="mt-1 font-medium text-zinc-950" role="status">
                 {captureErrorMessage}
@@ -280,6 +403,11 @@ function App() {
             {captureStatus === 'no_audio' ? (
               <p className="mt-1 font-medium text-zinc-950">
                 请切换系统音频模式后重新捕获。
+              </p>
+            ) : null}
+            {silenceWarning ? (
+              <p className="mt-1 font-medium text-zinc-950">
+                30 秒内未检测到有效音频，请检查共享音频。
               </p>
             ) : null}
           </div>
@@ -304,7 +432,7 @@ function App() {
                   英文原文区
                 </h2>
                 <span className="text-xs text-muted-foreground">
-                  {isCaptureReady ? '实时等待中' : '未开始'}
+                  {webSocketStatus === 'started' ? '等待后端事件' : '未开始'}
                 </span>
               </div>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-muted-foreground">
@@ -357,26 +485,13 @@ function App() {
                 <ListChecks className="size-4 text-muted-foreground" />
               </div>
               <dl className="mt-4 grid gap-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-muted-foreground">会议平台</dt>
-                  <dd className="font-medium">{sourcePlatformLabel(sourcePlatform)}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-muted-foreground">捕获模式</dt>
-                  <dd className="font-medium">{captureModeLabel(captureMode)}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-muted-foreground">音频状态</dt>
-                  <dd className="font-medium">{audioLabel}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-muted-foreground">ASR</dt>
-                  <dd className="font-medium">{asrStatusLabel}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-muted-foreground">翻译</dt>
-                  <dd className="font-medium">{translationStatusLabel}</dd>
-                </div>
+                <TimelineItem label="会议平台" value={sourcePlatformLabel(sourcePlatform)} />
+                <TimelineItem label="捕获模式" value={captureModeLabel(captureMode)} />
+                <TimelineItem label="音频状态" value={audioLabel} />
+                <TimelineItem label="WebSocket" value={webSocketLabel} />
+                <TimelineItem label="有效音频" value={effectiveAudioLabel} />
+                <TimelineItem label="ASR" value={asrStatusLabel} />
+                <TimelineItem label="翻译" value={translationStatusLabel} />
               </dl>
               <p className="mt-4 text-sm leading-6 text-muted-foreground">
                 暂无会议事件。
@@ -386,6 +501,35 @@ function App() {
         </section>
       </section>
     </main>
+  )
+}
+
+function StatusItem({
+  icon,
+  label,
+  value,
+}: {
+  icon: ReactNode
+  label: string
+  value: string
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-background px-3 py-2">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <p className="mt-1 truncate font-medium">{value}</p>
+    </div>
+  )
+}
+
+function TimelineItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium">{value}</dd>
+    </div>
   )
 }
 
