@@ -60,6 +60,35 @@ describe('websocket message schema', () => {
     expect(() => parseClientMessage({ type: 'provider_start' })).toThrow()
   })
 
+  it('parses session_resume client messages', () => {
+    const message = parseClientMessage({
+      type: 'session_resume',
+      client_id: '77777777-7777-4777-8777-777777777777',
+      session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      archive_token: 'archive-token',
+      audio_format: validAudioFormat,
+    })
+
+    expect(message).toMatchObject({
+      type: 'session_resume',
+      session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      archive_token: 'archive-token',
+    })
+  })
+
+  it('rejects session_resume with extra fields', () => {
+    expect(() =>
+      parseClientMessage({
+        type: 'session_resume',
+        client_id: '77777777-7777-4777-8777-777777777777',
+        session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        archive_token: 'archive-token',
+        audio_format: validAudioFormat,
+        source_platform: 'google_meet',
+      }),
+    ).toThrow()
+  })
+
   it('identifies WebSocket binary frames as audio chunks', () => {
     expect(isAudioChunkFrame(new Uint8Array([0, 1, 2, 3]).buffer)).toBe(true)
     expect(isAudioChunkFrame(new Uint8Array([0, 1, 2, 3]))).toBe(true)
@@ -78,6 +107,22 @@ describe('websocket message schema', () => {
 
     expect(message).toMatchObject({
       type: 'session_started',
+      remaining_seconds_today: 1800,
+    })
+  })
+
+  it('parses session_resumed response fields', () => {
+    const message = parseServerMessage({
+      type: 'session_resumed',
+      session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      archive_url:
+        '/archive/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?token=archive-token',
+      remaining_seconds_today: 1800,
+    })
+
+    expect(message).toMatchObject({
+      type: 'session_resumed',
+      session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       remaining_seconds_today: 1800,
     })
   })

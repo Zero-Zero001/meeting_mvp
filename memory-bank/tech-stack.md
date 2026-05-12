@@ -54,13 +54,13 @@
 -> 16 kHz mono PCM16 frames
 -> WebSocket binary upload
 -> FastAPI
--> Google STT streaming
+-> Qwen realtime ASR WebSocket
 ```
 
 理由：
 
-- Google STT streaming 更适合接收稳定的 PCM 音频帧。
-- 浏览器侧固定转换成 16 kHz mono PCM16 后，后端不需要 FFmpeg 做 WebM/Opus 转码，Google STT 配置也更稳定。
+- Qwen3-ASR-Flash-Realtime 当前可从腾讯云 Lighthouse 稳定访问，适合作为第一版英文实时 ASR 主路径。
+- 浏览器侧固定转换成 16 kHz mono PCM16 后，后端不需要 FFmpeg 做 WebM/Opus 转码，Qwen realtime ASR 配置也更稳定。
 - 减少 Lighthouse 单机 CPU 压力、降低延迟，并减少服务端故障点。
 
 第一版不把 MediaRecorder + WebM + 服务端 FFmpeg 作为主路径。它可以保留为后续兼容性 fallback 研究项。
@@ -78,6 +78,7 @@
 - Alembic
 - psycopg
 - redis-py asyncio
+- websockets
 - httpx
 - tenacity
 - structlog
@@ -95,6 +96,7 @@
 - SQLAlchemy 2 async + psycopg 访问 PostgreSQL。
 - Alembic 管理数据库迁移。
 - redis-py asyncio 管理实时会话、配额、限流、预算保险丝和短期状态。
+- websockets 连接 Qwen realtime ASR 双向 WebSocket。
 - httpx 调用 OpenAI-compatible HTTP provider。
 - tenacity 处理 Qwen/OpenAI/COS 等外部 API 的有限重试。
 - structlog 输出结构化日志，便于后续接入日志采集。
@@ -113,7 +115,7 @@
 
 主用：
 
-- Google Cloud Speech-to-Text v2 streaming
+- Alibaba Cloud Model Studio `qwen3-asr-flash-realtime`
 
 用途：
 
@@ -124,12 +126,13 @@
 备用/对比：
 
 - OpenAI STT provider
+- Google STT
 
 用途：
 
 - 保留 provider 接口。
 - 可作为管理员实验入口或后续成本/质量对比。
-- 第一阶段不要求完整替代 Google STT。
+- Google STT 曾作为 Step 16 原候选，但腾讯云 Lighthouse 到 Google Speech API 的真实 gRPC/HTTP2 出口不可用，因此不再是 M1-A 生产主路径。
 
 ### Chinese Interim Translation
 
@@ -223,7 +226,7 @@ Caddy
 FastAPI
   -> PostgreSQL
   -> Redis
-  -> Google STT
+  -> Qwen realtime ASR
   -> Qwen
   -> OpenAI optional
   -> Tencent COS
@@ -291,8 +294,8 @@ docker compose ps
 - MDN `getDisplayMedia`: https://developer.mozilla.org/en-US/docs/Web/API/MediaDevices/getDisplayMedia
 - MDN Web Audio / AudioWorklet: https://developer.mozilla.org/docs/Web/API/Web_Audio_API/Using_AudioWorklet
 - MDN WebSocket API: https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API
-- Google STT streaming: https://cloud.google.com/speech-to-text/v2/docs/streaming-recognize
-- Google STT audio encoding: https://cloud.google.com/speech-to-text/v2/docs/encoding
+- Alibaba Cloud Qwen realtime ASR: https://www.alibabacloud.com/help/en/model-studio/qwen-real-time-speech-recognition
+- Alibaba Cloud Qwen realtime ASR interaction process: https://www.alibabacloud.com/help/en/model-studio/qwen-asr-realtime-interaction-process
 - Alibaba Cloud Model Studio Qwen OpenAI-compatible API: https://help.aliyun.com/zh/model-studio/qwen3-livetranslate-flash-api
 - OpenAI text generation, optional provider: https://platform.openai.com/docs/guides/chat-completions
 - Docker Compose docs: https://docs.docker.com/compose/

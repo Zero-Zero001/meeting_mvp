@@ -23,7 +23,7 @@
 - Step 13 已实现前端会议音频捕获：新增 `frontend/src/lib/audio-capture.ts` 封装 `getDisplayMedia`，store 记录捕获状态、会议平台、授权尝试和 `MediaStream`，UI 处理授权成功/拒绝/无音轨/不支持/失败提示；本地前端 lint/test/build/e2e 均已通过。
 - Step 14 已实现前端音频前处理与 binary 上传：新增 `frontend/src/lib/audio-frames.ts`、`frontend/src/lib/audio-processing.ts`、`frontend/src/lib/meeting-websocket.ts` 和 `frontend/public/audio-worklet/pcm16-processor.js`，将捕获到的 `MediaStream` 转为 16 kHz mono PCM16 100ms frame，仅上传超过 RMS 阈值的非静音 binary frame，并通过前端 WebSocket client 发送 `session_start`/`session_stop`；本地前端 lint/test/build/e2e 均已通过。
 - Step 15 已实现本地 mock Provider 链路：后端新增 `meeting_mvp_backend.mock_providers` 固定脚本，并在首个有效 binary frame 激活会话后推送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`，同时写入 `transcript_segment`；前端 WebSocket client、Zustand store 和四区 UI 已消费实时文本；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 16 已实现 F06 Google STT 实时英文转写：后端新增 `meeting_mvp_backend.stt_providers` 接入 Google Speech-to-Text v2 streaming，非 local 环境 WebSocket 会话会把首帧和后续非空 PCM16 binary frame 持续转发给 STT provider，并发送 `asr_interim` 与新增 `asr_final`；local 环境继续保留 Step 15 mock Provider；前端 WebSocket client、Zustand store 和英文原文区已消费 `asr_final`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 17。
+- Step 16 已将 F06 英文实时转写生产主路径替换为 Qwen3-ASR-Flash-Realtime：后端 `meeting_mvp_backend.stt_providers` 接入 Qwen realtime ASR WebSocket，非 local 环境 WebSocket 会话会把首帧和后续非空 PCM16 binary frame 以 Base64 `input_audio_buffer.append` 持续转发给 Qwen，并发送 `asr_interim` 与 `asr_final`；local 环境继续保留 Step 15 mock Provider；前端 WebSocket client、Zustand store 和英文原文区已消费 `asr_final`，并支持 `session_resume` / `session_resumed` 浏览器断线恢复；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 17。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -32,7 +32,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 16 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Google STT 实时英文转写和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 16 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -47,7 +47,7 @@
 
 ## 3. 第一版范围与优先级
 
-- M1-A 必须上线闭环：匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、基础归档页。
+- M1-A 必须上线闭环：匿名使用、额度、音频捕获、WebSocket、Qwen realtime ASR、Qwen interim、Qwen final、四区 UI、基础异常、基础归档页。
 - M1-B 上线后增强：final 重试、轻量看板、Provider 开关、当前重点句增强、会议时间线增强。
 - M2 会后归档增强与导出：搜索、复制、Markdown / JSON 导出、腾讯 COS 存储。
 - M3 成本与运营：成本估算、漏斗分析、兼容性报告、OpenAI STT 对比入口。
@@ -113,7 +113,7 @@
 - Pydantic v2、pydantic-settings。
 - SQLAlchemy 2 async、Alembic、psycopg。
 - redis-py asyncio。
-- google-cloud-speech 用于 Google Speech-to-Text v2 streaming。
+- websockets 用于 Qwen realtime ASR 双向 WebSocket。
 - httpx、tenacity、structlog。
 - pytest、pytest-asyncio、Ruff、mypy。
 - 使用 `uv` 管理 Python 版本、虚拟环境和依赖锁定。
@@ -128,12 +128,13 @@
 
 ## 7. AI Provider 策略
 
-- 英文实时转写主路径：Google Cloud Speech-to-Text v2 streaming。
+- 英文实时转写主路径：阿里云百炼 `qwen3-asr-flash-realtime` realtime WebSocket。
 - 中文 interim 主路径：阿里云百炼 Qwen Flash/Turbo，使用 OpenAI-compatible API。
 - 中文 final 主路径：阿里云百炼 Qwen `qwen3.6-max-preview`，默认携带最近 5 个 final 片段作为上下文。
 - 环境变量必须包含并区分：
   - `QWEN_INTERIM_MODEL`
   - `QWEN_FINAL_MODEL=qwen3.6-max-preview`
+- Google STT 曾作为 Step 16 原候选，但北京地区腾讯云 Lighthouse 到 Google Speech API 的真实 gRPC/HTTP2 streaming 不可用，因此仅作为后续备用/对比候选，不再是第一版生产主路径。
 - OpenAI 不作为第一版 M1-A 主路径；由于腾讯云 Lighthouse 当前无法访问官方 `api.openai.com:443`，OpenAI 仅保留为后续备用、质量对比或网络恢复后的扩展项。
 - Qwen interim 失败不应阻塞英文转写和 Qwen final；Qwen final 失败时片段进入可重试状态。
 
@@ -146,7 +147,7 @@
 - `.python-version` 用于固定后端项目解释器为 Python 3.12，可提交；`.venv` 不提交。
 - 所有后端命令使用 `uv run ...`，不要全局 `pip install` 项目依赖或开发工具。
 - Docker Compose、PostgreSQL、Redis、Alembic migration、数据库集成测试、Redis 集成测试、生产部署演练都在腾讯云 Lighthouse 或后续 CI 环境执行。
-- 真实 Google STT、Qwen、COS smoke test 在 Lighthouse 云端后端容器执行；Windows 本地只跑 mock Provider 和不依赖真实密钥的测试。
+- 真实 Qwen realtime ASR、Qwen 文本模型、COS smoke test 在 Lighthouse 云端后端容器执行；Windows 本地只跑 mock Provider 和不依赖真实密钥的测试。
 - GitHub Actions 第一版只做检查，不自动部署到 Lighthouse。
 
 已锁定实施决策：
@@ -171,20 +172,20 @@
 - 生产部署目标：Caddy 服务 Vite 静态前端，并通过 HTTPS/WSS 反向代理 `/api/*` 和 `/ws/*` 到 FastAPI。
 - PostgreSQL 和 Redis 通过 Docker Compose 容器运行；5432 和 6379 不对公网开放。
 - Step 06 Compose 骨架中 Caddy 是唯一公网入口，只映射 80/443；PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`，Redis 挂载 `/opt/meeting_mvp/data/redis`。
-- Step 06 Compose 骨架中后端容器只读挂载 `GOOGLE_APPLICATION_CREDENTIALS` 指向的 Google STT 服务账号 JSON；该文件仍只允许位于服务器安全目录，不进入镜像或 Git。
+- Step 16 替换后，Compose 后端容器不再只读挂载 Google STT 服务账号 JSON；Qwen API key 只通过后端安全环境变量提供，不进入镜像或 Git。
 - 远端配置检查命令为：`cd /opt/meeting_mvp/app && docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`；Step 06 已执行通过，但未执行 `docker compose up -d`、`docker compose ps` 或 Alembic migration。
 - Step 07 远端 migration 和 PostgreSQL 集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step07` 完成，验收后已清理临时容器、临时数据目录、远端临时脚本和测试缓存。
 - Step 07 backend build 曾卡在 Lighthouse Docker build 的 `uv sync` 依赖下载阶段；`backend/Dockerfile` 已增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120`，后续 Compose backend build 已通过。
 - Step 07 发现远端 `.env.production` 当前未包含 Compose 所需的数据库、Redis 和站点变量名；后续正式部署前需要补齐这些变量，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
 - Step 08 远端匿名接口集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step08` 和临时 env 文件 `.env.step08` 完成；验收后已删除临时 PostgreSQL 容器、临时 env、临时数据目录和测试缓存。
 - Step 09 远端 Redis 集成测试使用独立 Compose project `meeting_mvp_step09`、临时数据目录 `/opt/meeting_mvp/data/redis_step09`、临时 env 文件 `.env.step09` 和非真实 Google 凭据占位文件完成；验收后已删除临时 Redis 容器、临时网络、临时 backend 镜像、临时 env、占位凭据、临时 Redis 数据目录和测试缓存。
-- Step 16 真实 Google STT smoke 曾在 Lighthouse 使用 Google 官方公开 `brooklyn_bridge.raw` 英文样本尝试执行：样本下载成功，Google 凭证文件和必需环境变量存在性检查通过，未输出任何密钥或生产 env 内容。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`，未返回 interim/final。临时容器、临时代码包和 `/tmp/meeting_mvp_step16_*` 均已清理；修通 Google Speech API gRPC/HTTP2 出口前，真实 Google STT smoke 仍无法完成。
+- 2026-05-09 真实 Google STT smoke 曾在 Lighthouse 使用 Google 官方公开 `brooklyn_bridge.raw` 英文样本尝试执行：样本下载成功，Google 凭证文件和必需环境变量存在性检查通过，未输出任何密钥或生产 env 内容。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`，未返回 interim/final。该结果已作为历史背景记录，Google STT 不再是 M1-A 生产主路径。
 - 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
 
 ## 9. 密钥与安全
 
 - 不要把任何密钥写入 Git、前端代码、前端构建产物或 `AGENTS.md`。
-- Google STT 服务账号 JSON 在服务器上应位于 `/opt/meeting_mvp/secrets/google-stt-sa.json`，权限 `600 ubuntu ubuntu`。
+- Qwen API key 只应写入服务器安全环境变量文件，不得写入 Git、前端代码、前端构建产物或项目记忆文档；历史 Google STT 服务账号 JSON 不再是生产必需项。
 - 生产环境变量文件在服务器上应位于 `/opt/meeting_mvp/app/.env.production`，权限 `600 ubuntu ubuntu`。
 - 密钥文件只做脱敏校验；日志中不得打印 API key、SecretId、SecretKey、Google private key 或完整服务账号 JSON。
 - `usage_event.payload` 不得保存密钥和原始音频。
@@ -236,7 +237,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 16 Google STT 实时英文转写已完成；Step 17 必须等用户明确允许后再开始。
+- Step 16 Qwen realtime ASR 英文实时转写已完成；Step 17 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -260,7 +261,7 @@ Step 12 前端实时会议工作台骨架已落地：
 - 前端 `frontend/src/App.tsx` 已重构为第一屏会议工作台：顶部 `会议状态栏` 包含捕获模式、开始捕获、结束会议、匿名身份、服务端同步、今日剩余额度、音频状态、ASR 和翻译状态。
 - 四个实时工作区以可访问区域名固定为 `英文原文区`、`中文翻译区`、`当前重点句区`、`会议时间线区`；桌面左右分栏，移动端纵向堆叠。
 - 前端 `frontend/src/stores/session-store.ts` 新增 `setCaptureMode(mode)`，用于在开始捕获前切换 `tab_audio` / `system_audio`；`beginCapture()` / `endSession()` 仍是本地 UI 占位行为。
-- Step 12 不实现 `getDisplayMedia`、真实音频捕获、AudioWorklet、WebSocket client、binary 上传、Google STT、Qwen 或 Provider 链路；其中 `getDisplayMedia` 和前端捕获授权已在 Step 13 落地，其余链路仍必须等后续步骤明确允许后再开始。
+- Step 12 不实现 `getDisplayMedia`、真实音频捕获、AudioWorklet、WebSocket client、binary 上传、真实 ASR、Qwen 或 Provider 链路；其中 `getDisplayMedia` 和前端捕获授权已在 Step 13 落地，其余链路仍必须等后续步骤明确允许后再开始。
 - `frontend/src/App.test.tsx`、`frontend/src/stores/session-store.test.ts` 和 `frontend/e2e/app.spec.ts` 覆盖状态栏、四区、捕获模式、按钮状态、匿名身份/额度/同步展示，以及桌面/移动无水平溢出。
 
 Step 13 前端会议音频捕获已落地：
@@ -268,7 +269,7 @@ Step 13 前端会议音频捕获已落地：
 - 前端 `frontend/src/lib/audio-capture.ts` 负责调用 `navigator.mediaDevices.getDisplayMedia({ audio: true, video: true })`，将授权拒绝映射为 `permission_denied`，将不支持/非安全上下文映射为 `not_supported`，将无 audio track 映射为 `no_audio_track` 并停止所有 tracks。
 - 前端 `frontend/src/stores/session-store.ts` 新增 `SourcePlatform`、`captureStatus`、`captureErrorCode`、`captureErrorMessage`、`lastCaptureAttempt`、`mediaStream` 和 `setSourcePlatform()`；`beginCapture()` 为 async action，可注入 fake capture service，默认调用捕获封装；`endSession()` 会停止并清空当前 `MediaStream`。
 - 前端 `frontend/src/App.tsx` 新增会议平台选择控件，开始捕获会触发浏览器授权；成功后显示 `已捕获音频`，拒绝授权显示重试入口，无 audio track 显示切换系统音频的降级提示，系统音频模式显示可能包含其他应用声音的风险提示。
-- Step 13 只保留 `MediaStream` 引用，不读取、不保存、不上传原始音频；不实现 AudioWorklet、16 kHz mono PCM16 转换、音量电平/静音检测、WebSocket client、binary 上传、Google STT、Qwen 或 Provider 链路。
+- Step 13 只保留 `MediaStream` 引用，不读取、不保存、不上传原始音频；不实现 AudioWorklet、16 kHz mono PCM16 转换、音量电平/静音检测、WebSocket client、binary 上传、真实 ASR、Qwen 或 Provider 链路。
 - `frontend/src/lib/audio-capture.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts` 覆盖捕获成功、授权拒绝、不支持、无 audio track 清理、结束会议停止 tracks、授权尝试记录、桌面/移动无水平溢出。
 - Step 13 自动化测试使用 mock `getDisplayMedia`；真实 Windows Chrome/Edge + Google Meet/Teams/Zoom/腾讯会议 Web 兼容性矩阵仍需人工执行，不能把自动化测试等同于真实平台验收。
 
@@ -281,7 +282,7 @@ Step 14 前端音频前处理与 binary 上传已落地：
 - 前端 `frontend/src/stores/session-store.ts` 新增 `audioProcessingStatus`、`audioLevel`、`hasEffectiveAudio`、`silenceWarning`、`webSocketStatus`、`sessionId`、`archiveUrl`、`audioPipelineErrorCode`；`beginCapture()` 串联匿名身份同步检查、Step 13 捕获、WebSocket 建会和 AudioWorklet 处理；`endSession()` 清理 processor、WebSocket 和 media tracks。
 - 前端 `frontend/src/App.tsx` 在状态栏显示 WebSocket、音频处理、音量电平、有效音频、会话编号、归档入口和 30 秒无有效音频提示；四区工作台布局继续沿用 Step 12。
 - `frontend/src/lib/audio-frames.test.ts`、`frontend/src/lib/audio-processing.test.ts`、`frontend/src/lib/meeting-websocket.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts` 覆盖 PCM16 帧、AudioWorklet 管线、WebSocket client、store/UI 状态和浏览器 mock 上传路径。
-- Step 14 不实现 mock STT/Qwen Provider，不生成 interim/final 文本，不写归档，不接入 Google STT 或 Qwen；真实会议平台兼容性矩阵和真实无声 30 秒场景仍需人工验收。
+- Step 14 不实现 mock STT/Qwen Provider，不生成 interim/final 文本，不写归档，不接入真实 ASR 或 Qwen；真实会议平台兼容性矩阵和真实无声 30 秒场景仍需人工验收。
 
 Step 15 本地 mock Provider 链路已落地：
 
@@ -295,23 +296,29 @@ Step 15 本地 mock Provider 链路已落地：
 - `backend/tests/test_websocket_sessions.py` 覆盖 mock Provider 消息、final 入库、停止/断开取消和 warning 不阻塞 final；`frontend/src/lib/meeting-websocket.test.ts`、`frontend/src/stores/session-store.test.ts`、`frontend/src/App.test.tsx` 和 `frontend/e2e/app.spec.ts` 覆盖前端 callbacks、store、UI 和浏览器 mock 实时文本流。
 - Step 15 只用于本地开发和自动化测试，不接入真实 Qwen，不新增 Provider 密钥变量，不保存原始音频，不新增会后归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
 
-Step 16 Google STT 实时英文转写已落地：
+Step 16 Qwen realtime ASR 英文实时转写已落地：
 
-- 后端 `backend/src/meeting_mvp_backend/stt_providers.py` 定义 `StreamingSttProvider` 协议、`SttInterimEvent`、`SttFinalEvent` 和 `GoogleStreamingSttProvider`，使用 `google-cloud-speech` 的 `SpeechAsyncClient.streaming_recognize()`。
-- Google STT 首个 request 携带 recognizer 与 streaming config，后续 request 只携带 audio；音频配置固定为 LINEAR16、16 kHz、1 channel、`language_codes=["en-US"]`、`interim_results=True`。
-- recognizer 规则固定为：`GOOGLE_STT_RECOGNIZER` 已是 `projects/.../recognizers/...` 时直接使用，否则由 `GOOGLE_CLOUD_PROJECT`、`GOOGLE_STT_LOCATION` 和 recognizer 名拼接。
-- WebSocket 服务端消息 schema 新增 `asr_final`，字段为 `sequence`、`start_ms`、`end_ms`、`text` 和 `confidence|null`；后端 Pydantic schema 与前端 Zod schema 已同步。
-- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 在首个非空 binary frame 激活会话后启动 STT provider，并把首帧和后续非空 PCM16 binary frame 持续转发给 provider；Google interim 转为 `asr_interim`，Google final 转为 `asr_final`。
-- Google STT 异常会发送 `error(code="google_stt_error")`，关闭 provider，释放 Redis active session，并发送 `session_closed`；`session_stop`、浏览器断开和 task 取消也会清理 provider。
-- `APP_ENV=local` 继续保留 Step 15 mock Provider 行为；非 local 环境由 `backend/src/meeting_mvp_backend/main.py` 注入 Google STT provider factory。
+- 后端 `backend/src/meeting_mvp_backend/stt_providers.py` 定义 `StreamingSttProvider` 协议、`SttInterimEvent`、`SttFinalEvent` 和 `QwenRealtimeAsrProvider`，使用 `websockets` 连接 Qwen realtime ASR。
+- Qwen realtime ASR 首包发送 `session.update`，配置 16 kHz、mono、`pcm`、可选语言；后续将浏览器 PCM16 binary frame Base64 后发送 `input_audio_buffer.append`。
+- 配置新增 `ASR_PROVIDER=qwen_realtime`、`QWEN_ASR_MODEL=qwen3-asr-flash-realtime`、`QWEN_ASR_BASE_URL`、`QWEN_ASR_SAMPLE_RATE_HZ=16000`、`QWEN_ASR_AUDIO_FORMAT=pcm`、`QWEN_ASR_LANGUAGE`、`SESSION_RESUME_GRACE_SECONDS=30`；前端不新增任何 `VITE_QWEN_*`。
+- WebSocket 服务端消息 schema 保留 `asr_final`，字段为 `sequence`、`start_ms`、`end_ms`、`text` 和 `confidence|null`；后端 Pydantic schema 与前端 Zod schema 已同步。
+- WebSocket 协议新增 client `session_resume` 和 server `session_resumed`；浏览器断线后可在宽限期内用同一 `client_id + session_id + archive_token` 恢复同一业务 session。
+- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 在首个非空 binary frame 激活会话后启动 Qwen provider，并把首帧和后续非空 PCM16 binary frame 持续转发给 provider；Qwen interim 转为 `asr_interim`，Qwen final/completed 转为 `asr_final`。
+- Qwen ASR 缺少时间戳时，后端用累计已发送音频字节数估算 `start_ms/end_ms`；由于前端过滤静音 frame，Qwen provider 会在音频短暂停顿后补发短静音尾帧以触发 server VAD final；`session_stop` 时先发送 `session.finish` 并等待 final/finished，再关闭 provider。
+- Qwen ASR 异常会发送 `error(code="qwen_asr_error")`，关闭 provider，释放 Redis active session，并发送 `session_closed`。
+- 浏览器断线恢复记录会先写入内存 registry，再清理旧 provider，避免前端快速重连时抢在 registry 写入之前导致 `session_resume_failed`。
+- `APP_ENV=local` 继续保留 Step 15 mock Provider 行为；非 local 环境由 `backend/src/meeting_mvp_backend/main.py` 注入 Qwen realtime ASR provider factory。
 - `asr_final` 不写数据库；正式 `transcript_segment` 仍只保存后续双语 final 链路产物，避免在中文 final 尚未生成时写入不完整片段。
-- 前端 `frontend/src/lib/meeting-websocket.ts` 新增 `onAsrFinal` callback，`frontend/src/stores/session-store.ts` 新增 `englishFinalSegments`，`frontend/src/App.tsx` 英文原文区渲染 `asr_interim` 与 `asr_final`；中文区不伪造中文。
-- 新增 `backend/tests/integration/test_google_stt_smoke.py` 作为真实 Google STT smoke hook，仅在真实 Google 环境变量和测试专用 `GOOGLE_STT_SMOKE_AUDIO_PATH` 同时存在时运行；不得打印服务账号 JSON、API key、完整环境变量值或生产 `.env` 内容。
-- Step 16 不调用 Qwen，不新增中文 interim/final 逻辑，不新增导出、COS、会后归档页/API 或完整 `usage_event` 链路；Step 17 仍未开始。
+- 前端 `frontend/src/lib/meeting-websocket.ts` 保留 `onAsrFinal` callback 并新增自动 resume 逻辑，`frontend/src/stores/session-store.ts` 保存 `archiveToken` 与 `englishFinalSegments`，`frontend/src/App.tsx` 英文原文区渲染 `asr_interim` 与 `asr_final`；中文区不伪造中文。
+- 新增 `backend/tests/integration/test_qwen_realtime_asr_smoke.py` 作为真实 Qwen ASR gated smoke hook，仅在显式启用、真实 Qwen ASR 环境变量和测试音频 manifest 同时存在时运行；不得打印 API key、完整环境变量值或生产 `.env` 内容。
+- 新增 `scripts/prepare-qwen-asr-smoke-audio.ps1`，下载公开 `brooklyn_bridge.raw` 并生成 30 秒、3 分钟、10 分钟 loop 样本和 smoke manifest；脚本不包含密钥。
+- 真实 Qwen smoke 已使用 `D:\meeting_mvp_secrets\provider.env` 和公开样本 manifest 跑通：latency/resume 通过；完整 smoke 5 passed、1 skipped，30 秒/3 分钟/10 分钟连续流、术语、自动标点通过，中英混杂因 manifest 未配置样本跳过。
+- Step 16 不调用 Qwen 文本翻译，不新增中文 interim/final 逻辑，不新增导出、COS、会后归档页/API 或完整 `usage_event` 链路；Step 17 仍未开始。
 
 核心 WebSocket 请求消息：
 
 - `session_start`
+- `session_resume`
 - `audio_chunk`
 - `heartbeat`
 - `session_stop`
@@ -319,6 +326,7 @@ Step 16 Google STT 实时英文转写已落地：
 核心 WebSocket 响应消息：
 
 - `session_started`
+- `session_resumed`
 - `quota_update`
 - `audio_status`
 - `asr_interim`
@@ -351,7 +359,7 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 
 - 前端：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
 - 后端：在 `backend/` 内执行 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；数据库步骤完成后再执行 `uv run alembic upgrade head`。
-- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis/Google STT 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py`、`tests/integration/test_quota_redis_integration.py` 或 `tests/integration/test_google_stt_smoke.py`；Google STT smoke 还需要真实 Google 环境变量和测试专用 `GOOGLE_STT_SMOKE_AUDIO_PATH`。
+- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis/Qwen ASR 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py`、`tests/integration/test_quota_redis_integration.py` 或 `tests/integration/test_qwen_realtime_asr_smoke.py`；Qwen ASR smoke 还需要 `RUN_QWEN_ASR_SMOKE=1`、真实 Qwen ASR 环境变量和测试音频 manifest。
 - 云端部署：`docker compose config`、`docker compose up -d`、`docker compose ps`。
 - 本机若默认 npm cache 遇到 `EPERM` 权限错误，可临时设置 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'`；该目录已被根目录 `.gitignore` 忽略。
 
@@ -361,5 +369,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 17 必须等待用户明确允许后再开始；Step 16 当前只提供 Google STT 英文实时转写、`asr_interim`、`asr_final` 和英文原文区展示，不调用 Qwen，不生成中文 interim/final，不新增会后归档 API/页面、COS 导出或完整 `usage_event` 链路。
+- Step 17 必须等待用户明确允许后再开始；Step 16 当前只提供 Qwen realtime ASR 英文实时转写、`asr_interim`、`asr_final`、英文原文区展示和浏览器断线恢复，不调用 Qwen 文本翻译，不生成中文 interim/final，不新增会后归档 API/页面、COS 导出或完整 `usage_event` 链路。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

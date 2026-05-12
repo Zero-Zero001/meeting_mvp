@@ -181,7 +181,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Caddy 是唯一公网入口，只映射 `80` 和 `443`，负责 HTTPS/WSS、静态前端、`/api/*` 和 `/ws/*` 反向代理。
 - PostgreSQL 16 和 Redis 7 通过 Compose 容器运行，不安装到 Lighthouse 宿主机；两者均不发布 `5432` 或 `6379` 到宿主机公网。
 - PostgreSQL 数据绑定挂载到 `/opt/meeting_mvp/data/postgres`；Redis 数据绑定挂载到 `/opt/meeting_mvp/data/redis`。
-- 后端容器基于 Python 3.12 与 `uv.lock` 构建，运行 `meeting_mvp_backend.main:app`，并通过 Compose 环境变量接收数据库、Redis、Provider、COS、额度和归档配置；Google STT 服务账号 JSON 通过 `GOOGLE_APPLICATION_CREDENTIALS` 指向的只读 bind mount 进入容器。
+- 后端容器基于 Python 3.12 与 `uv.lock` 构建，运行 `meeting_mvp_backend.main:app`，并通过 Compose 环境变量接收数据库、Redis、Provider、COS、额度和归档配置；Step 16 替换后生产 ASR 改用 Qwen realtime，Compose 不再挂载 Google STT 服务账号 JSON。
 - Step 06 只建立部署骨架和配置合法性边界；已在 Lighthouse 上完成 `docker compose config --quiet` 验收，但尚未启动生产容器，尚未执行 Alembic migration，尚未进入 Step 07 数据模型。
 - Windows 本地仍不安装 Docker；本地只做静态部署检查和前后端现有测试。
 - Lighthouse 远端验收使用用户提供的 SSH 私钥完成；本轮没有输出生产 `.env.production` 内容。
@@ -206,7 +206,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Redis 入口：`redis` 仅由 Compose 网络内服务访问 `redis:6379`，不对公网发布端口。
 - 正式档案仍以未来 PostgreSQL 数据模型为准；Redis 只保存短期状态，不能作为正式会议归档来源。
 - 生产真实配置仍应放在服务器安全环境文件中；`deploy/.env.example` 只用于示例和安全配置检查。
-- Google STT 服务账号 JSON 不进入镜像和 Git，只在服务器 `/opt/meeting_mvp/secrets/google-stt-sa.json` 以只读挂载方式提供给后端容器。
+- Provider 密钥不进入镜像和 Git；Step 16 替换后 Qwen API key 只通过后端环境变量提供，前端和 Compose 镜像均不包含密钥值。
 
 ### Step 06 验证结论
 
@@ -214,7 +214,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 后端 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest` 已通过。
 - 前端 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e` 已通过。
 - Lighthouse `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet` 已在 `/opt/meeting_mvp/app` 执行通过。
-- 远端边界检查已确认只发布 `80` / `443`，不发布 `5432` / `6379`，保留 PostgreSQL 与 Redis 的 `/opt/meeting_mvp/data/*` 挂载路径，并包含后端只读 Google STT 凭据挂载。
+- 远端边界检查已确认只发布 `80` / `443`，不发布 `5432` / `6379`，保留 PostgreSQL 与 Redis 的 `/opt/meeting_mvp/data/*` 挂载路径；Step 16 替换后不再需要后端只读 Google STT 凭据挂载。
 
 ## 2026-05-05 Step 07 数据库迁移和数据模型
 
@@ -590,7 +590,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - mock task 绑定在 `WebSocketSessionState` 上，`session_stop`、浏览器断开和 task 取消都会取消 mock task；已写入的 final 片段保留，Redis active session 释放和额度结算仍沿用 Step 11 逻辑。
 - 前端 WebSocket client 只新增 callbacks，不新增公开环境变量；`VITE_*` 边界保持不变。
 - Zustand store 新增实时文本状态，四区 UI 从占位状态升级为消费 mock 实时数据：英文区、中文区、重点句区和时间线区都会随服务端消息更新。
-- 本步不是 Step 16：没有接入 Google STT streaming，没有调用真实 Qwen，没有新增 Provider 密钥变量，没有新增会后归档查询 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
+- 本步不是 Step 16：当时没有接入真实 ASR provider，没有调用真实 Qwen，没有新增 Provider 密钥变量，没有新增会后归档查询 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
 
 ### 文件作用
 
@@ -619,56 +619,64 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 后端完整验证通过：`uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；结果为 Python 3.12.11、Ruff 通过、mypy 25 个源文件无问题、pytest 43 passed 且 5 integration deselected。
 - 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`；结果为 lint 通过、Vitest 10 个测试文件 58 个测试通过、build 通过、Playwright 6 个 Chromium 测试通过。
 - `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
-- Step 16 尚未开始；真实 Google STT、真实 Qwen、真实 Provider smoke test 和会后归档页面/API 仍等待后续明确步骤。
+- Step 15 完成时 Step 16 尚未开始；当前最新 Step 16 状态见下方 Qwen realtime ASR 替换记录，会后归档页面/API 仍等待后续明确步骤。
 
-## 2026-05-09 Step 16 Google STT 实时英文转写
+## 2026-05-10 Step 16 Qwen realtime ASR 替换
 
 ### 架构状态
-- Step 16 将 Step 14 的 PCM16 binary audio 与 Step 11/15 的 WebSocket 会话生命周期接到 Google Speech-to-Text v2 streaming，形成真实英文实时转写主路径。
-- WebSocket 服务端协议新增 `asr_final`，用于传递英文最终转写：`sequence`、`start_ms`、`end_ms`、`text` 和可空 `confidence`。`asr_final` 不写入 `transcript_segment`，避免在中文 final 尚未生成时写入不完整双语片段。
-- `asr_interim` 继续表示英文临时转写，可被覆盖；`asr_final` 表示英文 final 追加展示；`segment_final` 仍保留给后续双语 final 链路。
-- 后端 WebSocket 编排支持两条 provider 路径：`APP_ENV=local` 保留 Step 15 mock Provider；非 local 通过 provider factory 创建 Google STT streaming provider。
-- Google STT provider 的输入固定为 headerless PCM16：LINEAR16、16 kHz、mono、英文 `en-US`，并启用 interim results。
-- 后端在首个非空 binary frame 激活会话后启动 STT provider；首帧和后续非空 binary frame 都会继续转发给 provider，不再只处理首帧。
-- Google STT 异常会转为 `error(code="google_stt_error")`，随后关闭 provider、释放 Redis active session、结算/标记会话并发送 `session_closed`。
-- Step 16 不新增数据库 migration，不保存原始音频，不保存 interim，不把 Google `asr_final` 写入数据库，不新增后端密钥变量，也不新增前端 `VITE_*`。
-- Step 17 未开始：本步没有调用 Qwen，没有新增中文 interim/final 逻辑，没有新增导出、COS、会后归档页或完整 `usage_event` 链路。
+- Step 16 的英文实时 ASR 生产主路径已从 Google Speech-to-Text v2 streaming 替换为阿里云百炼 `qwen3-asr-flash-realtime`。
+- Google STT 相关运行依赖、生产环境变量和 Compose 凭据挂载已移除；`google-cloud-speech` 不再是后端运行依赖，`websockets` 成为 Qwen realtime ASR 的显式依赖。
+- WebSocket 服务端协议保留 `asr_interim` 与 `asr_final`。`asr_final` 字段仍为 `sequence`、`start_ms`、`end_ms`、`text`、`confidence|null`，且仍不写入 `transcript_segment`。
+- 后端 WebSocket 编排支持 `session_resume` / `session_resumed`：浏览器断线后，在 `SESSION_RESUME_GRACE_SECONDS=30` 内可用同一 `client_id + session_id + archive_token` 恢复同一业务 session；本步只恢复浏览器到后端 `/ws`，不补传断线期间音频，不做 Qwen Provider 自动重连补偿。
+- Qwen ASR provider 连接 `QWEN_ASR_BASE_URL + ?model=QWEN_ASR_MODEL`，使用 `Authorization: Bearer <QWEN_API_KEY>` 和 `OpenAI-Beta: realtime=v1`，首包发送 `session.update` 配置 16 kHz mono PCM，后续将 PCM16 frame Base64 后发送 `input_audio_buffer.append`。
+- 因 Step 14 前端会过滤静音 frame，Qwen provider 在音频输入短暂停顿后会补发一小段 16 kHz mono PCM 静音尾帧，帮助 Qwen server VAD 产生 `completed` / final 事件；`session_stop` 时也会先发送 `session.finish` 并等待 final/finished，再关闭 provider。
+- Qwen interim 映射为 `asr_interim`；Qwen completed/final 映射为 `asr_final`。Qwen 缺少时间戳时，后端用已发送 PCM16 字节数估算累计音频时长，保证 `start_ms/end_ms` 单调递增。
+- Qwen ASR 异常会转为 `error(code="qwen_asr_error")`，随后关闭 provider、释放 Redis active session、结算/标记会话并发送 `session_closed`。
+- 浏览器断开恢复记录会先写入内存 registry，再清理旧 provider，避免前端快速重连时抢在 registry 写入之前导致 `session_resume_failed`。
+- Step 16 不新增数据库 migration，不保存原始音频，不保存 interim，不把 `asr_final` 写入数据库，不新增前端 `VITE_QWEN_*` 或 provider 密钥变量。
+- Step 17 未开始：本步没有调用 Qwen 文本翻译，没有新增中文 interim/final 逻辑，没有新增导出、COS、会后归档页或完整 `usage_event` 链路。
 
 ### 文件作用
 
 | 文件 | 作用 |
 |---|---|
-| `backend/src/meeting_mvp_backend/stt_providers.py` | STT provider 抽象与 Google STT v2 streaming 实现。负责构造 recognizer、生成首包 streaming config、发送后续 audio request、解析 Google interim/final result，并输出 `SttInterimEvent` 与 `SttFinalEvent`。 |
-| `backend/src/meeting_mvp_backend/ws_messages.py` | 后端 WebSocket wire schema。Step 16 新增 `AsrFinalMessage`，并把 `asr_final` 纳入 `ServerMessage` union；同时用约束字段限制 `confidence` 在 0 到 1 之间或为空。 |
-| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 16 新增 STT provider 生命周期管理、binary frame 持续转发、`asr_final` 发送、Google STT 错误关闭和 stop/disconnect provider 清理；local/mock 路径继续保留 Step 15 行为。 |
-| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口与依赖组装。Step 16 在 WebSocket orchestrator 创建时根据 `APP_ENV` 注入 Google STT provider factory 或保留 local mock 路径。 |
-| `backend/pyproject.toml` | 后端项目依赖清单。Step 16 新增 `google-cloud-speech` 运行依赖。 |
-| `backend/uv.lock` | 后端 uv 锁文件。锁定 `google-cloud-speech` 及其传递依赖解析结果，保证后续环境可重复安装。 |
-| `backend/tests/test_google_stt_provider.py` | Google STT provider 单元测试。使用 fake async Google client 验证 request 顺序、PCM16 streaming config、recognizer 拼接、interim/final 事件解析、异常传播和关闭清理。 |
-| `backend/tests/test_ws_messages.py` | 后端 WebSocket schema 测试。Step 16 覆盖 `asr_final` 解析和非法 `confidence` 字段拒绝。 |
-| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 会话行为测试。Step 16 覆盖 binary frame 转发给 STT provider、`asr_interim`/`asr_final` 推送、Google STT 错误关闭、stop/disconnect 时 provider 清理，以及 Google 路径不写 `transcript_segment`。 |
-| `backend/tests/integration/test_google_stt_smoke.py` | 真实 Google STT 集成 smoke hook。仅在 Lighthouse/CI 提供真实 Google STT 环境变量和测试专用 16 kHz LINEAR16 英文音频路径时运行，验证限定时间内收到 interim 与 final。 |
-| `frontend/src/protocol/websocket-messages.ts` | 前端 Zod WebSocket wire schema。Step 16 镜像新增 `asr_final` 服务端消息，用于类型推导和运行时解析。 |
-| `frontend/src/lib/meeting-websocket.ts` | 前端 WebSocket client。Step 16 新增 `onAsrFinal` callback，把 `asr_final` 分发给 store。 |
-| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。Step 16 新增 `englishFinalSegments`，收到 `asr_final` 后追加；开始新会话时清空英文 final 展示状态。 |
-| `frontend/src/App.tsx` | 会议工作台 UI。Step 16 英文原文区同时渲染 `englishInterimText` 与 `englishFinalSegments`；中文区仍只渲染中文 interim 和 `segment_final` 中文内容。 |
-| `frontend/src/protocol/websocket-messages.test.ts` | 前端协议测试。覆盖 `asr_final` 合法解析与非法 `confidence` 拒绝。 |
-| `frontend/src/lib/meeting-websocket.test.ts` | 前端 WebSocket client 测试。覆盖 `asr_final` 消息分发到 `onAsrFinal` callback。 |
-| `frontend/src/stores/session-store.test.ts` | store 集成式单元测试。覆盖 `asr_final` 追加到 `englishFinalSegments`，以及新会话清空旧英文 final 状态。 |
-| `frontend/src/App.test.tsx` | React UI 测试。覆盖英文原文区渲染 Google `asr_final`，并确认中文区仍只由翻译消息驱动。 |
+| `backend/src/meeting_mvp_backend/stt_providers.py` | STT provider 抽象与 Qwen realtime ASR 实现。负责构造 realtime WebSocket URL/header，发送 `session.update`，Base64 转发 PCM16 audio append，补发短静音尾帧触发 VAD final，解析 Qwen interim/final/error/finished 事件，并输出 `SttInterimEvent` 与 `SttFinalEvent`。 |
+| `backend/src/meeting_mvp_backend/config.py` | 后端配置模型。新增 `ASR_PROVIDER`、`QWEN_ASR_MODEL`、`QWEN_ASR_BASE_URL`、`QWEN_ASR_SAMPLE_RATE_HZ`、`QWEN_ASR_AUDIO_FORMAT`、`QWEN_ASR_LANGUAGE` 和 `SESSION_RESUME_GRACE_SECONDS`，移除 Google STT 生产必填项。 |
+| `backend/src/meeting_mvp_backend/ws_messages.py` | 后端 WebSocket wire schema。保留 `AsrFinalMessage`，新增 `SessionResumeMessage` 与 `SessionResumedMessage`，并把恢复协议纳入 client/server union。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。负责 Qwen provider 生命周期、binary frame 持续转发、`asr_interim`/`asr_final` 推送、`qwen_asr_error` 错误关闭、stop/disconnect provider 清理，以及内存级短期 session resume registry。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口与依赖组装。非 local WebSocket orchestrator 注入 Qwen realtime ASR provider factory；local 仍保留 Step 15 mock Provider。 |
+| `backend/pyproject.toml` | 后端项目依赖清单。移除 `google-cloud-speech`，新增 `websockets>=16.0`。 |
+| `backend/uv.lock` | 后端 uv 锁文件。锁定 Qwen realtime ASR 所需的 `websockets` 依赖解析结果，移除 Google STT 传递依赖。 |
+| `backend/.env.example` | 后端示例环境变量。新增 Qwen ASR 与 session resume 配置，去掉 Google STT 服务账号/recognizer 配置。 |
+| `deploy/.env.example` | 部署示例环境变量。新增 Qwen ASR 与 session resume 配置，生产示例不再要求 Google STT。 |
+| `deploy/docker-compose.yml` | 生产 Compose 拓扑。后端环境变量改为 Qwen ASR 配置，移除 Google 服务账号 JSON 只读挂载。 |
+| `backend/tests/test_qwen_realtime_asr_provider.py` | Qwen realtime ASR provider 单元测试。使用 fake websocket client 验证 URL/header、首包配置、audio append、interim/final 解析、时间估算、异常传播和关闭清理。 |
+| `backend/tests/test_ws_messages.py` | 后端 WebSocket schema 测试。覆盖 `asr_final`、`session_resume`、`session_resumed` 的合法解析和非法字段拒绝。 |
+| `backend/tests/test_config.py` | 后端配置测试。覆盖 `.env.example` 加载、脱敏状态、生产必填和 OpenAI STT 可选边界。 |
+| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 会话行为测试。覆盖 binary frame 转发给 STT provider、`asr_interim`/`asr_final` 推送、`qwen_asr_error` 关闭、stop/disconnect provider 清理、断线恢复同一 session，以及 Qwen 路径不写 `transcript_segment`。 |
+| `backend/tests/integration/test_qwen_realtime_asr_smoke.py` | 真实 Qwen realtime ASR gated smoke hook。仅在显式启用、提供真实 Qwen ASR 环境变量和测试音频 manifest 时运行，覆盖 `/ws` 建连、首个 interim/final 延迟、30 秒/3 分钟/10 分钟连续流、术语、自动标点、中英混杂和断线恢复。 |
+| `scripts/prepare-qwen-asr-smoke-audio.ps1` | 测试音频准备脚本。下载公开 `brooklyn_bridge.raw`，生成 30 秒、3 分钟、10 分钟 loop 样本和 smoke manifest；不包含任何密钥。 |
+| `frontend/src/protocol/websocket-messages.ts` | 前端 Zod WebSocket wire schema。镜像 `asr_final`、`session_resume`、`session_resumed`，用于类型推导和运行时解析。 |
+| `frontend/src/lib/meeting-websocket.ts` | 前端 WebSocket client。保留 `onAsrFinal`，新增断线后自动发送 `session_resume` 的恢复逻辑；恢复后继续用同一 client 对象发送 audio frame。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。保存 `archiveToken`，新会话清空旧英文 final，收到 `asr_final` 后追加到 `englishFinalSegments`。 |
+| `frontend/src/App.tsx` | 会议工作台 UI。英文原文区展示 `asr_interim` 与 `asr_final`；中文区仍只由 `translation_interim` 与 `segment_final` 驱动。 |
+| `frontend/src/protocol/websocket-messages.test.ts` | 前端协议测试。覆盖 `asr_final`、`session_resume`、`session_resumed` 的解析与额外字段拒绝。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | 前端 WebSocket client 测试。覆盖 `asr_final` callback、断线后发送 `session_resume`、恢复成功后继续发送音频。 |
+| `frontend/src/stores/session-store.test.ts` | store 集成式单元测试。覆盖 `archiveToken` 持久化/清理、`asr_final` 追加，以及新会话清空旧英文 final 状态。 |
+| `frontend/src/App.test.tsx` | React UI 测试。覆盖英文原文区渲染 `asr_final`，并确认中文区仍只由翻译消息驱动。 |
 | `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。FakeWebSocket 推送 `asr_final`，验证真实页面英文区展示英文 final 且既有捕获/上传 smoke 仍通过。 |
 
 ### 状态与边界
-- `StreamingSttProvider.send_audio(frame)` 是 WebSocket binary frame 到 STT provider 的唯一入口；本步只传递前端已过滤的非空 PCM16 frame。
-- `SttFinalEvent.sequence` 从 1 开始递增；时间轴以 Google `result_end_offset` 为准，缺失时回退到上一结束时间，避免生成负数或倒退区间。
-- `confidence` 只在 Google 返回 0 到 1 的有效置信度时传递，否则按 `null` 处理。
-- Google STT provider 的 `close()` 会通知 request generator 停止并等待后台读取任务结束；WebSocket stop/disconnect/error 路径都会调用清理。
-- `APP_ENV=local` 不创建 Google STT provider，因此本地无真实 Google 凭证时仍使用 Step 15 mock Provider 测试链路。
-- 真实 Google STT smoke 不应在 Windows 本地默认运行；需要 Lighthouse/CI 提供真实凭证和测试音频，并且测试日志不得输出密钥或完整生产配置。
+- `StreamingSttProvider.send_audio(frame)` 仍是 WebSocket binary frame 到 ASR provider 的唯一入口；本步只传递前端已过滤的非空 PCM16 frame。
+- `SttFinalEvent.sequence` 从 1 开始递增；时间轴优先使用 provider 可得信息，当前 Qwen 缺少时间戳时用累计已发送音频字节数估算，避免倒退区间。
+- `confidence` 当前 Qwen ASR 路径按 `null` 处理，协议保留字段以兼容后续 provider。
+- `QwenRealtimeAsrProvider.close()` 会发送 `session.finish` 并关闭 realtime WebSocket；WebSocket stop/disconnect/error 路径都会调用清理。
+- `APP_ENV=local` 不创建真实 Qwen ASR provider，因此本地无真实 Qwen 凭证时仍使用 Step 15 mock Provider 测试链路。
+- 真实 Qwen realtime ASR smoke 不应在 Windows 本地默认运行；需要 Lighthouse/CI 提供真实凭证和测试音频，并且测试日志不得输出 API key、完整环境变量或生产 `.env` 内容。
+- Google STT 的 2026-05-09 真实 smoke 历史结论保留：样本和凭证存在性检查通过，但 Lighthouse 到 Google Speech API 的真实 gRPC/HTTP2 streaming 报 `ServiceUnavailable` / `tcp handshaker shutdown`，因此 Google STT 不再作为 M1-A 生产主路径。
 
 ### 验证结论
-- Step 16 已先跑 RED 测试确认缺口，再实现 Google STT provider、`asr_final` 协议、WebSocket 编排和前端消费到 GREEN。
-- 后端完整验证通过：`uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；结果为 Python 3.12.11、Ruff 通过、mypy 28 个源文件无问题、pytest 51 passed 且 6 integration deselected。
-- 前端完整验证通过：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`；结果为 lint 通过、Vitest 10 个测试文件 60 个测试通过、build 通过、Playwright 6 个 Chromium 测试通过。
-- 2026-05-09 已在 Lighthouse 用 Google 官方公开 `brooklyn_bridge.raw` 样本尝试真实 Google STT smoke；样本下载成功，Google 凭证文件和必需环境变量存在性检查通过。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`。因此真实 Google STT smoke 当前仍未完成，阻塞点是 Google Speech API 的 gRPC/HTTP2 流量出口，而不是公开样本、凭证文件存在性或 Step 16 代码路径。
-- Step 17 尚未开始；Qwen interim/final、中文 final 入库、会后归档页/API、导出和 COS 仍等待后续明确步骤。
+- Step 16 替换已先跑 RED 测试确认缺口，再实现 Qwen realtime ASR provider、`session_resume` 协议、WebSocket 编排和前端恢复到 GREEN。
+- 已通过的目标验证：后端 Step 16 目标集 `uv run pytest tests/test_qwen_realtime_asr_provider.py tests/test_ws_messages.py tests/test_config.py tests/test_websocket_sessions.py -q` 为 37 passed；前端协议/WebSocket/store 目标集为 29 passed；真实 Qwen smoke 使用 `D:\meeting_mvp_secrets\provider.env` 和公开样本 manifest 跑通，结果为 5 passed、1 skipped，中英混杂用例因 manifest 未配置样本跳过。
+- 完整本地验证结果记录在 `memory-bank/progress.md` 的最新 Step 16 替换进度中。
+- Step 17 尚未开始；Qwen interim/final 文本翻译、中文 final 入库、会后归档页/API、导出和 COS 仍等待后续明确步骤。

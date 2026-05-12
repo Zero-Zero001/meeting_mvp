@@ -48,6 +48,8 @@ from meeting_mvp_backend.ws_messages import (
     SegmentFinalMessage,
     ServerMessage,
     SessionClosedMessage,
+    SessionResumedMessage,
+    SessionResumeMessage,
     SessionStartedMessage,
     SessionStartMessage,
     SessionStopMessage,
@@ -69,7 +71,8 @@ SESSION_MISMATCH_REASON = "session_mismatch"
 CLIENT_NOT_INITIALIZED_REASON = "client_not_initialized"
 CONFIGURATION_ERROR_REASON = "configuration_error"
 INTERNAL_ERROR_REASON = "internal_error"
-GOOGLE_STT_ERROR_REASON = "google_stt_error"
+QWEN_ASR_ERROR_REASON = "qwen_asr_error"
+SESSION_RESUME_FAILED_REASON = "session_resume_failed"
 MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
 
 
@@ -138,6 +141,8 @@ class SessionQuotaService(Protocol):
 class WebSocketSessionState:
     session_id: uuid.UUID
     client_id: str
+    archive_token_hash: str
+    archive_url: str
     remaining_seconds_today: int
     active_started_at: datetime | None = None
     has_audio: bool = False
@@ -145,6 +150,54 @@ class WebSocketSessionState:
     mock_provider_task: asyncio.Task[None] | None = None
     stt_provider: StreamingSttProvider | None = None
     stt_provider_task: asyncio.Task[None] | None = None
+
+
+@dataclass(slots=True)
+class ResumableSessionRecord:
+    state: WebSocketSessionState
+    expires_at: datetime
+    cleanup_task: asyncio.Task[None] | None = None
+
+
+class InMemorySessionResumeRegistry:
+    def __init__(self) -> None:
+        self._records: dict[str, ResumableSessionRecord] = {}
+
+    def put(self, record: ResumableSessionRecord) -> None:
+        self._records[str(record.state.session_id)] = record
+
+    def pop(
+        self,
+        *,
+        archive_token_hash: str,
+        client_id: str,
+        now: datetime,
+        session_id: str,
+    ) -> ResumableSessionRecord | None:
+        record = self._records.get(session_id)
+        if record is None:
+            return None
+        if record.expires_at < now:
+            self._records.pop(session_id, None)
+            return None
+        state = record.state
+        if state.client_id != client_id:
+            return None
+        if state.archive_token_hash != archive_token_hash:
+            return None
+        self._records.pop(session_id, None)
+        if record.cleanup_task is not None:
+            record.cleanup_task.cancel()
+        return record
+
+    def expire(self, session_id: str, record: ResumableSessionRecord) -> bool:
+        if self._records.get(session_id) is not record:
+            return False
+        self._records.pop(session_id, None)
+        return True
+
+
+DEFAULT_SESSION_RESUME_REGISTRY = InMemorySessionResumeRegistry()
 
 
 class SQLAlchemyMeetingSessionRepository:
@@ -265,6 +318,7 @@ class WebSocketSessionOrchestrator:
         settings: Settings,
         clock: Clock | None = None,
         configuration_error: str | None = None,
+        resume_registry: InMemorySessionResumeRegistry | None = None,
         stt_provider_factory: SttProviderFactory | None = None,
     ) -> None:
         self._repository = repository
@@ -272,6 +326,7 @@ class WebSocketSessionOrchestrator:
         self._settings = settings
         self._clock = clock or _now_utc
         self._configuration_error = configuration_error
+        self._resume_registry = resume_registry or DEFAULT_SESSION_RESUME_REGISTRY
         self._stt_provider_factory = stt_provider_factory
 
     async def handle(self, websocket: WebSocket) -> None:
@@ -317,12 +372,7 @@ class WebSocketSessionOrchestrator:
         finally:
             if state is not None and not state.closed:
                 await asyncio.shield(
-                    self._finalize_session(
-                        state,
-                        reason=BROWSER_DISCONNECTED_REASON,
-                        send_messages=False,
-                        websocket=None,
-                    ),
+                    self._pause_session_for_resume(state),
                 )
 
     async def _handle_text_message(
@@ -351,6 +401,16 @@ class WebSocketSessionOrchestrator:
                 )
                 return _mark_closed(state)
             return await self._start_session(websocket, message)
+
+        if isinstance(message, SessionResumeMessage):
+            if state is not None:
+                await self._close_with_error(
+                    websocket=websocket,
+                    state=state,
+                    reason=INVALID_MESSAGE_REASON,
+                )
+                return _mark_closed(state)
+            return await self._resume_session(websocket, message)
 
         if state is None:
             await self._close_with_error(
@@ -462,11 +522,54 @@ class WebSocketSessionOrchestrator:
                 remaining_seconds_today=quota_decision.remaining_seconds_today,
             ),
         )
+        archive_url = build_archive_url(
+            self._settings.public_base_url,
+            session_id,
+            archive_token,
+        )
         return WebSocketSessionState(
             session_id=session_id,
             client_id=message.client_id,
+            archive_token_hash=hash_archive_token(archive_token),
+            archive_url=archive_url,
             remaining_seconds_today=quota_decision.remaining_seconds_today,
         )
+
+    async def _resume_session(
+        self,
+        websocket: WebSocket,
+        message: SessionResumeMessage,
+    ) -> WebSocketSessionState | None:
+        record = self._resume_registry.pop(
+            archive_token_hash=hash_archive_token(message.archive_token),
+            client_id=message.client_id,
+            now=self._clock(),
+            session_id=message.session_id,
+        )
+        if record is None:
+            await self._close_with_error(
+                websocket=websocket,
+                state=None,
+                reason=SESSION_RESUME_FAILED_REASON,
+                message="Session cannot be resumed",
+            )
+            return None
+
+        state = record.state
+        state.closed = False
+        state.mock_provider_task = None
+        state.stt_provider = None
+        state.stt_provider_task = None
+        await _send_server_message(
+            websocket,
+            SessionResumedMessage(
+                type="session_resumed",
+                session_id=str(state.session_id),
+                archive_url=state.archive_url,
+                remaining_seconds_today=state.remaining_seconds_today,
+            ),
+        )
+        return state
 
     async def _handle_binary_frame(
         self,
@@ -486,6 +589,11 @@ class WebSocketSessionOrchestrator:
             return
 
         if state.has_audio:
+            if (
+                state.stt_provider is None
+                and self._stt_provider_factory is not None
+            ):
+                self._start_stt_provider(websocket, state)
             if state.stt_provider is not None:
                 await state.stt_provider.send_audio(payload)
             return
@@ -517,7 +625,17 @@ class WebSocketSessionOrchestrator:
             )
             return
 
-        state.stt_provider = self._stt_provider_factory()
+        self._start_stt_provider(websocket, state)
+
+    def _start_stt_provider(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+    ) -> None:
+        stt_provider_factory = self._stt_provider_factory
+        if stt_provider_factory is None:
+            return
+        state.stt_provider = stt_provider_factory()
         state.stt_provider_task = asyncio.create_task(
             self._run_stt_provider_pipeline(websocket, state),
         )
@@ -553,13 +671,13 @@ class WebSocketSessionOrchestrator:
             raise
         except Exception as exc:
             logger.warning(
-                "google_stt_stream_failed",
+                "qwen_asr_stream_failed",
                 error_type=exc.__class__.__name__,
             )
             await self._close_with_error(
                 websocket=websocket,
                 state=state,
-                reason=GOOGLE_STT_ERROR_REASON,
+                reason=QWEN_ASR_ERROR_REASON,
                 message=exc.__class__.__name__,
             )
 
@@ -653,8 +771,8 @@ class WebSocketSessionOrchestrator:
             return
 
         await _cancel_mock_provider_task(state)
-        await _cancel_stt_provider_task(state)
         await _close_stt_provider(state)
+        await _cancel_stt_provider_task(state)
         repository = _require_repository(self._repository)
         quota_service = _require_quota_service(self._quota_service)
         ended_at = self._clock()
@@ -719,6 +837,52 @@ class WebSocketSessionOrchestrator:
         )
         await _safe_close(websocket)
         _mark_closed(state)
+
+    async def _pause_session_for_resume(
+        self,
+        state: WebSocketSessionState,
+    ) -> None:
+        mock_provider_task = state.mock_provider_task
+        stt_provider_task = state.stt_provider_task
+        stt_provider = state.stt_provider
+        state.mock_provider_task = None
+        state.stt_provider = None
+        state.stt_provider_task = None
+        state.closed = True
+        expires_at = self._clock() + timedelta(
+            seconds=self._settings.session_resume_grace_seconds,
+        )
+        record = ResumableSessionRecord(state=state, expires_at=expires_at)
+        record.cleanup_task = asyncio.create_task(
+            self._expire_resumable_session(record),
+        )
+        self._resume_registry.put(record)
+        await _cancel_task(mock_provider_task)
+        await _cancel_task(stt_provider_task)
+        await _close_provider(stt_provider)
+
+    async def _expire_resumable_session(
+        self,
+        record: ResumableSessionRecord,
+    ) -> None:
+        delay_seconds = max(
+            (record.expires_at - self._clock()).total_seconds(),
+            0,
+        )
+        try:
+            await asyncio.sleep(delay_seconds)
+        except asyncio.CancelledError:
+            return
+        session_id = str(record.state.session_id)
+        if not self._resume_registry.expire(session_id, record):
+            return
+        record.state.closed = False
+        await self._finalize_session(
+            record.state,
+            reason=BROWSER_DISCONNECTED_REASON,
+            send_messages=False,
+            websocket=None,
+        )
 
 
 def hash_archive_token(archive_token: str) -> str:
@@ -794,18 +958,14 @@ async def _send_server_message(
 
 
 async def _cancel_mock_provider_task(state: WebSocketSessionState) -> None:
-    task = state.mock_provider_task
-    if task is None or task.done():
-        return
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        return
+    await _cancel_task(state.mock_provider_task)
 
 
 async def _cancel_stt_provider_task(state: WebSocketSessionState) -> None:
-    task = state.stt_provider_task
+    await _cancel_task(state.stt_provider_task)
+
+
+async def _cancel_task(task: asyncio.Task[None] | None) -> None:
     if task is None or task.done() or task is asyncio.current_task():
         return
     task.cancel()
@@ -816,7 +976,10 @@ async def _cancel_stt_provider_task(state: WebSocketSessionState) -> None:
 
 
 async def _close_stt_provider(state: WebSocketSessionState) -> None:
-    provider = state.stt_provider
+    await _close_provider(state.stt_provider)
+
+
+async def _close_provider(provider: StreamingSttProvider | None) -> None:
     if provider is None:
         return
     await provider.close()

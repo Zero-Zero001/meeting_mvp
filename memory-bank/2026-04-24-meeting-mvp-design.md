@@ -16,8 +16,8 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 - 第一版重点支持 Google Meet、Microsoft Teams Web、Zoom Web、腾讯会议网页版。
 - 优先通过浏览器捕获会议标签页音频。
 - 当标签页音频不可用时，允许降级为整个屏幕/系统音频捕获，重点覆盖腾讯会议网页版兼容性风险。
-- 英文实时转写主用 Google Speech-to-Text。
-- 保留 OpenAI STT provider 架构，用于备用或后续对比，但第一版生产主路径是 Google STT。
+- 英文实时转写主用阿里云百炼 `qwen3-asr-flash-realtime`。
+- 保留 OpenAI STT / Google STT provider 架构用于备用或后续对比；Google STT 曾因腾讯云 Lighthouse 到 Google Speech API 的 gRPC/HTTP2 出口不可用而退出第一版生产主路径。
 - 中文 interim 临时理解使用阿里云百炼 Qwen Flash/Turbo。
 - 中文 final 正式翻译使用阿里云百炼 Qwen `qwen3.6-max-preview`，生成语义准确、自然、适合中国职场阅读的中文表达。
 - OpenAI 翻译不作为第一版主路径，仅在 Lighthouse 网络可达或后续需要质量对比时作为可选扩展。
@@ -78,7 +78,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 - 前端：Vite、React、TypeScript。
 - 后端：FastAPI、Python。
 - 实时通信：浏览器与后端通过 WebSocket。
-- 英文转写：Google Speech-to-Text streaming 作为主 provider。
+- 英文转写：Qwen3-ASR-Flash-Realtime 作为主 provider。
 - 中文 interim：阿里云百炼 Qwen Flash/Turbo。
 - 中文 final：阿里云百炼 Qwen `qwen3.6-max-preview`。
 - 数据库：PostgreSQL。
@@ -94,7 +94,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 -> AudioWorklet 生成 16 kHz mono PCM16
 -> WebSocket 上传音频片段
 -> FastAPI 会话编排
--> Google STT streaming
+-> Qwen realtime ASR
 -> 英文 interim/final 事件
 -> Qwen 生成中文 interim
 -> Qwen qwen3.6-max-preview 生成中文 final
@@ -123,7 +123,7 @@ Meeting MVP 是一个免登录网页效率工具，面向需要参加英语线�
 
 第一版主要浏览器目标：Windows Chrome 和 Edge。
 
-浏览器侧音频前处理使用 `getDisplayMedia` 获取会议标签页或系统音频，再通过 Web Audio API / `AudioWorklet` 转成 Google STT 友好的 16 kHz、mono、PCM16 音频帧，通过 WebSocket binary frame 上传。第一版不把 FFmpeg/WebM 服务端转码作为主路径，避免在单台 Lighthouse 服务器上引入额外 CPU、延迟和故障点。
+浏览器侧音频前处理使用 `getDisplayMedia` 获取会议标签页或系统音频，再通过 Web Audio API / `AudioWorklet` 转成 Qwen realtime ASR 兼容的 16 kHz、mono、PCM16 音频帧，通过 WebSocket binary frame 上传。第一版不把 FFmpeg/WebM 服务端转码作为主路径，避免在单台 Lighthouse 服务器上引入额外 CPU、延迟和故障点。
 
 ## 6. Provider 设计
 
@@ -141,8 +141,8 @@ STT provider 需要支持：
 
 第一版实现：
 
-- `GoogleStreamingSTTProvider`：生产主路径。
-- `OpenAISTTProvider`：备用/对比路径，可以先作为管理员实验入口，不要求第一阶段完整替代 Google STT。
+- `QwenRealtimeAsrProvider`：生产主路径。
+- `OpenAISTTProvider` / `GoogleStreamingSTTProvider`：备用/对比路径，可以先作为管理员实验入口，不要求第一阶段替代 Qwen realtime ASR。
 
 ### 翻译 Provider
 
@@ -267,7 +267,7 @@ STT provider 需要支持：
 
 成本控制：
 
-- 记录 Google STT 分钟数。
+- 记录 Qwen realtime ASR 音频分钟数。
 - 记录 Qwen interim 请求量和 token。
 - 记录 Qwen final 翻译请求量和 token。
 - 估算每场会议、每日、每月成本。
@@ -306,7 +306,7 @@ STT provider 需要支持：
 - FastAPI WebSocket 会话端点。
 - 匿名 client ID。
 - 每日和单场额度限制。
-- Google STT streaming 主链路。
+- Qwen realtime ASR 主链路。
 - Qwen 中文 interim 链路。
 - Qwen `qwen3.6-max-preview` 中文 final 链路。
 - 四区实时阅读 UI。
@@ -350,7 +350,7 @@ STT provider 需要支持：
 - 第一批测试用户为 10 到 50 人。
 - 每月预算为 0 到 500 RMB。
 - 产品方接受会议音频和文本发送给第三方 AI API 处理。
-- Google STT、阿里云百炼、PostgreSQL、Redis、腾讯 COS 的凭据都通过环境变量提供。
+- Qwen realtime ASR、阿里云百炼文本模型、PostgreSQL、Redis、腾讯 COS 的凭据都通过环境变量提供。
 - 第一版中文 final 模型通过 `QWEN_FINAL_MODEL` 配置，默认 `qwen3.6-max-preview`。
 - 腾讯云 Lighthouse 当前无法稳定访问 OpenAI 官方 `api.openai.com:443`，因此 OpenAI 不作为第一版生产主路径。
 - 第一版不需要登录。

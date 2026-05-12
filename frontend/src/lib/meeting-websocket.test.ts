@@ -104,6 +104,7 @@ describe('meeting websocket client', () => {
 
     const client = await connection
     expect(client.sessionId).toBe('session-1')
+    expect(client.archiveToken).toBe('archive-token')
     expect(client.archiveUrl).toBe('/archive/session-1?token=archive-token')
     expect(onStatusChange).toHaveBeenCalledWith('started')
   })
@@ -134,6 +135,58 @@ describe('meeting websocket client', () => {
     client.sendAudioFrame(frame)
 
     expect(socket.sent.at(-1)).toBe(frame)
+  })
+
+  it('resumes the same backend session after an unexpected browser websocket close', async () => {
+    FakeWebSocket.instances = []
+    const onStatusChange = vi.fn()
+    const connection = connectMeetingWebSocket({
+      WebSocketCtor,
+      captureMode: 'tab_audio',
+      clientId: '11111111-1111-4111-8111-111111111111',
+      onStatusChange,
+      sourcePlatform: 'unknown',
+      url: 'ws://localhost/ws',
+    })
+    const firstSocket = FakeWebSocket.instances[0]
+    firstSocket.open()
+    firstSocket.message(
+      JSON.stringify({
+        archive_token: 'archive-token',
+        archive_url: '/archive/session-1?token=archive-token',
+        remaining_seconds_today: 2400,
+        session_id: 'session-1',
+        type: 'session_started',
+      }),
+    )
+    const client = await connection
+
+    firstSocket.close()
+    const resumedSocket = FakeWebSocket.instances[1]
+    resumedSocket.open()
+
+    expect(JSON.parse(resumedSocket.sent[0] as string)).toEqual({
+      archive_token: 'archive-token',
+      audio_format: AUDIO_FORMAT,
+      client_id: '11111111-1111-4111-8111-111111111111',
+      session_id: 'session-1',
+      type: 'session_resume',
+    })
+
+    resumedSocket.message(
+      JSON.stringify({
+        archive_url: '/archive/session-1?token=archive-token',
+        remaining_seconds_today: 2390,
+        session_id: 'session-1',
+        type: 'session_resumed',
+      }),
+    )
+    const frame = new ArrayBuffer(3200)
+    client.sendAudioFrame(frame)
+
+    expect(resumedSocket.sent.at(-1)).toBe(frame)
+    expect(onStatusChange).toHaveBeenCalledWith('connecting')
+    expect(onStatusChange).toHaveBeenCalledWith('started')
   })
 
   it('forwards realtime transcript, translation, timeline, and warning messages', async () => {

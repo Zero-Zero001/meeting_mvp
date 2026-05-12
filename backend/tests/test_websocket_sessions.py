@@ -20,6 +20,7 @@ from meeting_mvp_backend.main import app, get_websocket_session_orchestrator
 from meeting_mvp_backend.quota import QuotaDecision, QuotaDenialReason
 from meeting_mvp_backend.stt_providers import SttEvent, SttFinalEvent, SttInterimEvent
 from meeting_mvp_backend.ws_sessions import (
+    InMemorySessionResumeRegistry,
     WebSocketSessionOrchestrator,
     hash_archive_token,
 )
@@ -249,6 +250,7 @@ def make_client(
     repository: FakeSessionRepository,
     quota_service: FakeQuotaService,
     clock: Callable[[], datetime] | None = None,
+    resume_registry: InMemorySessionResumeRegistry | None = None,
     stt_provider: FakeSttProvider | None = None,
 ) -> TestClient:
     settings = Settings()
@@ -261,6 +263,7 @@ def make_client(
             quota_service=quota_service,
             settings=settings,
             clock=clock or (lambda: FIXED_NOW),
+            resume_registry=resume_registry,
             stt_provider_factory=(lambda: stt_provider) if stt_provider else None,
         )
 
@@ -276,6 +279,21 @@ def session_start_payload(client_id: str) -> dict[str, object]:
         "client_id": client_id,
         "capture_mode": "tab_audio",
         "source_platform": "google_meet",
+        "audio_format": VALID_AUDIO_FORMAT,
+    }
+
+
+def session_resume_payload(
+    *,
+    archive_token: str,
+    client_id: str,
+    session_id: str,
+) -> dict[str, object]:
+    return {
+        "type": "session_resume",
+        "client_id": client_id,
+        "session_id": session_id,
+        "archive_token": archive_token,
         "audio_format": VALID_AUDIO_FORMAT,
     }
 
@@ -481,11 +499,11 @@ def test_binary_frames_stream_to_stt_provider_and_emit_english_results() -> None
     assert stt_provider.closed is True
 
 
-def test_google_stt_error_closes_session_and_releases_quota() -> None:
+def test_qwen_asr_error_closes_session_and_releases_quota() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
     quota_service = FakeQuotaService()
-    stt_provider = FakeSttProvider(error=RuntimeError("google unavailable"))
+    stt_provider = FakeSttProvider(error=RuntimeError("qwen unavailable"))
 
     with make_client(
         repository=repository,
@@ -502,8 +520,8 @@ def test_google_stt_error_closes_session_and_releases_quota() -> None:
             closed = websocket.receive_json()
 
     assert error["type"] == "error"
-    assert error["code"] == "google_stt_error"
-    assert closed == {"type": "session_closed", "reason": "google_stt_error"}
+    assert error["code"] == "qwen_asr_error"
+    assert closed == {"type": "session_closed", "reason": "qwen_asr_error"}
     assert repository.sessions[session_id].status is MeetingSessionStatus.ERROR
     assert quota_service.released_session_ids == [session_id]
     assert stt_provider.closed is True
@@ -562,21 +580,84 @@ def test_stopping_session_cancels_mock_provider_after_preserving_segments() -> N
     assert repository.sessions[session_id].status is MeetingSessionStatus.ENDED
 
 
-def test_browser_disconnect_releases_active_session() -> None:
+def test_browser_disconnect_can_resume_same_session_before_user_stop() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
     quota_service = FakeQuotaService()
+    resume_registry = InMemorySessionResumeRegistry()
 
-    with make_client(repository=repository, quota_service=quota_service) as client:
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        resume_registry=resume_registry,
+    ) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(session_start_payload(client_id))
             started = websocket.receive_json()
+            session_id = str(started["session_id"])
+            archive_token = str(started["archive_token"])
+            websocket.send_bytes(b"\x00\x01")
+            assert websocket.receive_json()["type"] == "audio_status"
 
-    assert quota_service.released_session_ids == [started["session_id"]]
-    assert (
-        repository.sessions[started["session_id"]].status
-        is MeetingSessionStatus.ERROR
-    )
+        assert quota_service.released_session_ids == []
+        assert repository.sessions[session_id].status is MeetingSessionStatus.ACTIVE
+
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(
+                session_resume_payload(
+                    archive_token=archive_token,
+                    client_id=client_id,
+                    session_id=session_id,
+                ),
+            )
+            resumed = websocket.receive_json()
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            closed = receive_until_message_type(websocket, "session_closed")
+
+    assert resumed == {
+        "type": "session_resumed",
+        "session_id": session_id,
+        "archive_url": started["archive_url"],
+        "remaining_seconds_today": 2400,
+    }
+    assert closed == {"type": "session_closed", "reason": "user_stopped"}
+    assert quota_service.released_session_ids == [session_id]
+    assert repository.sessions[session_id].status is MeetingSessionStatus.ENDED
+
+
+def test_rejects_session_resume_with_invalid_archive_token() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    resume_registry = InMemorySessionResumeRegistry()
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        resume_registry=resume_registry,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = str(started["session_id"])
+
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(
+                session_resume_payload(
+                    archive_token="wrong-token",
+                    client_id=client_id,
+                    session_id=session_id,
+                ),
+            )
+            error = websocket.receive_json()
+            closed = websocket.receive_json()
+
+    assert error == {
+        "type": "error",
+        "code": "session_resume_failed",
+        "message": "Session cannot be resumed",
+    }
+    assert closed == {"type": "session_closed", "reason": "session_resume_failed"}
 
 
 def test_rejects_duplicate_active_session() -> None:

@@ -32,7 +32,7 @@
 | 本地代码环境 | Git、Node.js 24 LTS、npm、系统 Python、uv、Chrome、Edge、VS Code、SSH 客户端 | 在 PowerShell 中能输出版本号或启动应用；项目后端 Python 由 uv 固定为 3.12。 |
 | 云服务器访问 | Lighthouse 公网 IP、SSH 用户、SSH 私钥路径 | 能从 Windows PowerShell 通过 SSH 登录服务器。 |
 | 云端运行环境 | Docker、Docker Compose plugin、PostgreSQL container、Redis container | 在 Lighthouse 上执行 Docker 和 Compose 检查。 |
-| 外部服务凭证 | Google STT、Qwen、Tencent COS；OpenAI 可选 | 凭证只保存在安全位置，后续写入服务器环境变量。 |
+| 外部服务凭证 | Qwen realtime ASR、Qwen 文本模型、Tencent COS；OpenAI/Google STT 可选备用 | 凭证只保存在安全位置，后续写入服务器环境变量。 |
 | 域名与 HTTPS | 域名解析到 Lighthouse 公网 IP | Caddy 可自动签发 HTTPS，浏览器可使用安全上下文。 |
 
 预期结果：Codex 可以在本地完成代码开发和轻量测试，并通过 SSH 在 Lighthouse 上完成 Docker、PostgreSQL、Redis 和部署相关验证。
@@ -256,31 +256,33 @@ npx playwright --version
 
 ## 3. Provider 凭证准备
 
-### 3.1 Google Cloud Speech-to-Text v2
+### 3.1 阿里云百炼 Qwen realtime ASR
 
-目标：提供英文 streaming STT 主链路。
+目标：提供英文 realtime ASR 主链路。
 
 准备步骤：
 
-1. 创建或选择 Google Cloud 项目。
-2. 启用 Speech-to-Text API。
-3. 创建服务账号。
-4. 给服务账号授予调用 Speech-to-Text 所需权限。
-5. 生成服务账号 JSON 凭证。
-6. 将 JSON 文件安全保存，不提交到 Git。
+1. 登录阿里云百炼控制台。
+2. 开通 `qwen3-asr-flash-realtime`。
+3. 创建或复用 `QWEN_API_KEY`。
+4. 确认 Qwen realtime ASR WebSocket endpoint 可从 Lighthouse 访问。
+5. 记录模型名、endpoint、采样率、音频格式和语言策略。
 
 环境变量建议：
 
 | 变量名 | 用途 |
 |---|---|
-| `GOOGLE_APPLICATION_CREDENTIALS` | Google 服务账号 JSON 文件路径。 |
-| `GOOGLE_CLOUD_PROJECT` | Google Cloud 项目 ID。 |
-| `GOOGLE_STT_LOCATION` | Speech-to-Text v2 使用的 region。 |
-| `GOOGLE_STT_RECOGNIZER` | Recognizer 名称或默认 recognizer 配置。 |
+| `ASR_PROVIDER` | 当前固定为 `qwen_realtime`。 |
+| `QWEN_API_KEY` | 阿里云百炼 API Key；复用于 ASR realtime 和后续 Qwen 文本模型。 |
+| `QWEN_ASR_MODEL` | 英文 realtime ASR 模型，当前为 `qwen3-asr-flash-realtime`。 |
+| `QWEN_ASR_BASE_URL` | Qwen realtime ASR WebSocket endpoint。 |
+| `QWEN_ASR_SAMPLE_RATE_HZ` | 当前固定为 `16000`。 |
+| `QWEN_ASR_AUDIO_FORMAT` | 当前固定为 `pcm`。 |
+| `QWEN_ASR_LANGUAGE` | `auto` 表示不强制语言；也可按 provider 支持指定语言。 |
 
-验证测试：使用 Google 官方控制台或最小调用脚本验证 Speech-to-Text API 可用。
+验证测试：使用后端 gated smoke test 验证 `/ws` 建连、首个 interim/final 延迟、30 秒/3 分钟/10 分钟连续流、术语识别、自动标点、中英混杂和断线恢复。
 
-预期结果：Google STT 凭证具备 streaming recognize 权限。
+预期结果：Qwen realtime ASR 能返回英文 `asr_interim` 和 `asr_final`，失败时后端返回 `error(code="qwen_asr_error")`。
 
 ### 3.2 阿里云百炼 Qwen
 
@@ -611,17 +613,20 @@ nslookup 你的工具域名
 | `BUDGET_FUSE_RMB` | 预算保险丝阈值，建议 400。 |
 | `ARCHIVE_RETENTION_DAYS` | 会议归档和 COS 导出默认保留天数，MVP 固定为 30。 |
 | `COS_SIGNED_URL_TTL_SECONDS` | COS 导出短期签名 URL 有效期，建议默认 3600。 |
+| `SESSION_RESUME_GRACE_SECONDS` | 浏览器断线后允许恢复同一业务 session 的宽限秒数，默认 30。 |
 
 ### 6.4 Provider 和 COS
 
 | 变量名 | 用途 |
 |---|---|
-| `GOOGLE_APPLICATION_CREDENTIALS` | Google 服务账号 JSON 路径。 |
-| `GOOGLE_CLOUD_PROJECT` | Google Cloud 项目 ID。 |
-| `GOOGLE_STT_LOCATION` | Google STT region。 |
-| `GOOGLE_STT_RECOGNIZER` | Google STT recognizer。 |
+| `ASR_PROVIDER` | 英文 realtime ASR provider，当前固定为 `qwen_realtime`。 |
 | `QWEN_API_KEY` | 阿里云百炼 API Key。 |
 | `QWEN_BASE_URL` | Qwen OpenAI-compatible endpoint。 |
+| `QWEN_ASR_MODEL` | 英文 realtime ASR 模型，当前为 `qwen3-asr-flash-realtime`。 |
+| `QWEN_ASR_BASE_URL` | Qwen realtime ASR WebSocket endpoint。 |
+| `QWEN_ASR_SAMPLE_RATE_HZ` | Qwen ASR 输入采样率，当前固定为 16000。 |
+| `QWEN_ASR_AUDIO_FORMAT` | Qwen ASR 输入音频格式，当前固定为 `pcm`。 |
+| `QWEN_ASR_LANGUAGE` | Qwen ASR 识别语言，`auto` 表示不强制语言。 |
 | `QWEN_INTERIM_MODEL` | 中文 interim 模型。 |
 | `QWEN_INTERIM_ENABLED` | 是否启用中文 interim。 |
 | `QWEN_FINAL_MODEL` | 中文 final 模型，第一版默认 `qwen3.6-max-preview`。 |
@@ -713,7 +718,7 @@ docker compose exec backend uv run pytest -m integration
 | WSS | 前端连接 `/ws/*` | WebSocket 连接成功，不被浏览器安全策略阻止。 |
 | PostgreSQL | 后端健康检查或 migration | 数据库可连接，migration 已执行。 |
 | Redis | 后端健康检查 | Redis 可连接，可写入 active session。 |
-| Google STT | 云端后端容器 Provider smoke test | 英文 interim 和 final 可产生。 |
+| Qwen realtime ASR | 云端后端容器 gated smoke test | `/ws` 可建连，英文 interim/final 可产生，30 秒/3 分钟/10 分钟连续流和断线恢复通过。 |
 | Qwen interim | 云端后端容器 Provider smoke test | 中文 interim 可返回。 |
 | Qwen final | 云端后端容器 Provider smoke test | 使用 `qwen3.6-max-preview` 的中文 final 可返回。 |
 | OpenAI 可选 | 云端后端容器 Provider smoke test | 网络可达时中文 final 对比可返回；网络不可达时不影响 M1-A。 |
@@ -779,9 +784,9 @@ docker compose exec backend uv run pytest -m integration
 - 域名解析到服务器，80 和 443 可访问，5432 和 6379 不对公网开放。
 - PostgreSQL 16、Redis 7、Caddy、FastAPI、前端静态产物具备部署位置。
 - 需要真实 PostgreSQL、Redis、Docker Compose 的验证都能通过 SSH 在 Lighthouse 上执行。
-- Google STT、Qwen、Tencent COS 凭证已准备并安全保存；OpenAI 凭证为可选备用。
+- Qwen realtime ASR、Qwen 文本模型、Tencent COS 凭证已准备并安全保存；OpenAI/Google STT 凭证为可选备用。
 - 腾讯云 Lighthouse 当前无法访问 OpenAI 官方 `api.openai.com:443` 时，第一版仍可通过 Qwen final 完成主链路。
 - 所有密钥只进入后端环境变量或服务器安全配置，不进入 Git。
 - 会议归档和 COS 导出默认保留 30 天；COS 导出通过短期签名 URL 下载，不使用公开只读对象。
-- 真实 Google STT、Qwen 和 COS smoke test 在 Lighthouse 云端后端容器执行，本地只跑 mock Provider 和不依赖真实密钥的测试。
+- 真实 Qwen realtime ASR、Qwen 文本模型和 COS smoke test 在 Lighthouse 云端后端容器执行，本地只跑 mock Provider 和不依赖真实密钥的测试。
 - 腾讯会议网页版标签页音频失败时，已接受系统音频作为第一版验证降级入口。

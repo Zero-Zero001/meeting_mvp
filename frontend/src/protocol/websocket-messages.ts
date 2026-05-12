@@ -28,6 +28,16 @@ export const sessionStartMessageSchema = z
   })
   .strict()
 
+export const sessionResumeMessageSchema = z
+  .object({
+    type: z.literal('session_resume'),
+    client_id: z.string().min(1),
+    session_id: z.string().min(1),
+    archive_token: z.string().min(1),
+    audio_format: audioFormatSchema,
+  })
+  .strict()
+
 export const heartbeatMessageSchema = z
   .object({
     type: z.literal('heartbeat'),
@@ -44,6 +54,7 @@ export const sessionStopMessageSchema = z
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
   sessionStartMessageSchema,
+  sessionResumeMessageSchema,
   heartbeatMessageSchema,
   sessionStopMessageSchema,
 ])
@@ -53,6 +64,15 @@ export const sessionStartedMessageSchema = z
     type: z.literal('session_started'),
     session_id: z.string().min(1),
     archive_token: z.string().min(1),
+    archive_url: z.string().min(1),
+    remaining_seconds_today: nonNegativeInteger,
+  })
+  .strict()
+
+export const sessionResumedMessageSchema = z
+  .object({
+    type: z.literal('session_resumed'),
+    session_id: z.string().min(1),
     archive_url: z.string().min(1),
     remaining_seconds_today: nonNegativeInteger,
   })
@@ -159,6 +179,7 @@ export const sessionClosedMessageSchema = z
 
 export const serverMessageSchema = z.discriminatedUnion('type', [
   sessionStartedMessageSchema,
+  sessionResumedMessageSchema,
   quotaUpdateMessageSchema,
   audioStatusMessageSchema,
   asrInterimMessageSchema,

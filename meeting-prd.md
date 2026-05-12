@@ -86,9 +86,9 @@ flowchart LR
   WS --> Backend["FastAPI 会话编排"]
   Backend --> Quota{"额度与预算是否允许"}
   Quota -- "否" --> Reject["拒绝新会话或停止消耗"]
-  Quota -- "是" --> Google["Google STT streaming"]
-  Google --> InterimEN["英文 interim"]
-  Google --> FinalEN["英文 final"]
+  Quota -- "是" --> ASR["Qwen realtime ASR"]
+  ASR --> InterimEN["英文 interim"]
+  ASR --> FinalEN["英文 final"]
   InterimEN --> Qwen["Qwen Flash/Turbo 中文 interim"]
   FinalEN --> QwenFinal["Qwen qwen3.6-max-preview 中文 final"]
   Qwen --> Push["WebSocket 推送实时 UI"]
@@ -120,7 +120,7 @@ flowchart TD
   HasAudio -- "否" --> NoCharge["不消耗额度，提示检查共享音频"]
   HasAudio -- "是" --> Session["创建 meeting_session"]
   Session --> Stream["上传 PCM16 音频帧"]
-  Stream --> STT{"Google STT 是否正常"}
+  Stream --> STT{"Qwen realtime ASR 是否正常"}
   STT -- "否" --> SttError["推送错误，关闭会话或进入备用路径"]
   STT -- "是" --> EnEvents["接收英文 interim/final"]
   EnEvents --> InterimCN{"是否满足 interim 节流条件"}
@@ -145,7 +145,7 @@ sequenceDiagram
   participant FE as Browser Frontend
   participant API as FastAPI WebSocket
   participant Redis as Redis
-  participant STT as Google STT
+  participant STT as Qwen ASR
   participant Qwen as Qwen Interim
   participant QwenFinal as Qwen Final
   participant DB as PostgreSQL
@@ -155,7 +155,7 @@ sequenceDiagram
   Redis-->>API: allowed / denied
   API-->>FE: quota_update + session_started
   FE->>API: audio_chunk(binary PCM16)
-  API->>STT: stream audio
+  API->>STT: append PCM16 audio
   STT-->>API: asr_interim
   API-->>FE: asr_interim
   API->>Qwen: throttled interim translation
@@ -186,8 +186,8 @@ sequenceDiagram
 
 Provider 层保持轻量接口：
 
-- Google STT 主用，输出英文 interim/final。
-- OpenAI STT 保留备用/对比接口。
+- Qwen realtime ASR 主用，输出英文 interim/final。
+- OpenAI STT / Google STT 保留备用/对比接口；Google STT 不再是第一版生产主路径。
 - Qwen 负责中文 interim。
 - Qwen `qwen3.6-max-preview` 负责中文 final。
 - OpenAI 翻译保留为后续备用/对比，不作为第一版主路径。
@@ -207,14 +207,14 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 系统音频 | 浏览器捕获整个屏幕或系统声音时获得的音频，可能包含非会议声音。 |
 | interim | 临时结果，可替换，不进入正式档案。 |
 | final | 稳定确认结果，追加进入正式档案。 |
-| 英文 interim | Google STT 实时返回的临时英文转写。 |
-| 英文 final | Google STT 返回的稳定英文转写片段。 |
+| 英文 interim | Qwen realtime ASR 实时返回的临时英文转写。 |
+| 英文 final | Qwen realtime ASR 返回的稳定英文转写片段。 |
 | 中文 interim | Qwen 基于英文 interim 生成的临时中文理解。 |
 | 中文 final | Qwen `qwen3.6-max-preview` 基于英文 final 和上下文生成的正式中文翻译。 |
 | AudioWorklet | 浏览器 Web Audio API 的音频处理机制，用于将捕获音频转为 16 kHz mono PCM16。 |
-| 16 kHz mono PCM16 | 16 kHz 采样率、单声道、16-bit PCM 音频帧，是第一版浏览器上传给后端和 Google STT 的固定格式。 |
+| 16 kHz mono PCM16 | 16 kHz 采样率、单声道、16-bit PCM 音频帧，是第一版浏览器上传给后端和 Qwen realtime ASR 的固定格式。 |
 | WebSocket binary frame | WebSocket 的二进制消息，用于上传 PCM16 音频帧。 |
-| Provider | 外部能力适配器，例如 Google STT、Qwen、OpenAI、腾讯 COS。 |
+| Provider | 外部能力适配器，例如 Qwen realtime ASR、Qwen 文本模型、OpenAI、Google STT、腾讯 COS。 |
 | 预算保险丝 | 当全站月度预估成本超过阈值时，系统拒绝新会话以控制成本。 |
 | 原文归档型纪要 | 以逐段英文原文和中文翻译对应关系为核心的会后记录，而不是仅保留摘要。 |
 | 会议时间线 | 按时间顺序展示 final 片段、重点句和导出节点的记录线。 |
@@ -226,13 +226,16 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 消息名 | 方向 | 定义 |
 |---|---|---|
 | `session_start` | 前端到后端 | 请求创建实时会议会话，携带匿名身份、捕获模式、会议平台和音频格式。 |
+| `session_resume` | 前端到后端 | 浏览器断线后请求恢复同一业务会话，携带 `client_id`、`session_id`、`archive_token` 和音频格式。 |
 | `audio_chunk` | 前端到后端 | 上传浏览器处理后的 16 kHz mono PCM16 音频帧，使用 WebSocket binary frame 承载。 |
 | `heartbeat` | 前端到后端 | 连接保活与断连探测消息，用于避免异常会话长期占用额度和并发。 |
 | `session_stop` | 前端到后端 | 用户主动结束会议时发送，触发 Provider 关闭、额度结算和会后归档收尾。 |
 | `session_started` | 后端到前端 | 会话创建成功后返回 `session_id`、`archive_token`、`archive_url` 和剩余额度；会话先进入 `pending_audio`，检测到有效音频后开始计费。 |
+| `session_resumed` | 后端到前端 | 会话恢复成功后返回原 `session_id`、`archive_url` 和剩余额度；只保证继续同一业务 session，不补传断线期间音频。 |
 | `quota_update` | 后端到前端 | 推送匿名用户当前额度状态，包括今日剩余额度和额度变化。 |
 | `audio_status` | 后端到前端 | 推送音频检测状态，例如是否检测到有效声音和当前音量电平。 |
 | `asr_interim` | 后端到前端 | 推送英文临时转写结果，内容可被后续更稳定结果替换。 |
+| `asr_final` | 后端到前端 | 推送英文 ASR 稳定结果，供 Step 16 英文原文区展示；不写入正式归档，后续 Step 18 双语 final 才写 `transcript_segment`。 |
 | `translation_interim` | 后端到前端 | 推送中文临时理解结果，用于实时辅助阅读，不进入正式归档。 |
 | `segment_final` | 后端到前端 | 推送已确认并归档的双语 final 片段，是会后记录的核心数据来源。 |
 | `key_sentence_update` | 后端到前端 | 推送当前重点句，用于帮助用户快速抓住正在讨论的关键表达。 |
@@ -359,7 +362,7 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 3 | 会议音频捕获 | 通过 `getDisplayMedia` 捕获会议标签页音频，失败时支持系统音频。 | M1-A | 重点验证腾讯会议网页版。 |
 | 4 | 音频前处理 | 使用 AudioWorklet 转 16 kHz mono PCM16 并通过 WebSocket binary frame 上传。 | M1-A | 不以 FFmpeg 为主路径。 |
 | 5 | WebSocket 会话编排 | 建立、维持、关闭实时会议会话。 | M1-A | FastAPI 实现。 |
-| 6 | 英文实时转写 | Google STT streaming 输出英文 interim/final。 | M1-A | 生产主路径。 |
+| 6 | 英文实时转写 | Qwen3-ASR-Flash-Realtime 输出英文 interim/final。 | M1-A | 生产主路径。 |
 | 7 | 中文 interim | Qwen Flash/Turbo 生成临时中文理解。 | M1-A | 节流触发，不归档。 |
 | 8 | 中文 final | Qwen `qwen3.6-max-preview` 生成正式中文翻译。 | M1-A | 归档。 |
 | 9 | 四区实时 UI | 英文原文、中文翻译、当前重点句、会议时间线。 | M1-A | 第一屏即工作台。 |
@@ -368,7 +371,7 @@ PostgreSQL 保存正式记录，Redis 保存短期状态，腾讯 COS 保存导�
 | 12 | Markdown / JSON 导出 | 生成导出文件并写入腾讯 COS。 | M2 | Word 后续扩展。 |
 | 13 | final 翻译重试 | Qwen final 翻译失败后允许重试或后台补译。 | M1-B | 保证档案完整性。 |
 | 14 | 使用量与成本看板 | 展示分钟数、token、费用估算、错误和延迟。 | M1-B | M1-A 先写事件，M1-B 做轻量看板。 |
-| 15 | Provider 开关 | 管理 Google STT、OpenAI STT、Qwen interim、Qwen final 状态。 | M1-B | OpenAI 翻译后续可选。 |
+| 15 | Provider 开关 | 管理 Qwen realtime ASR、OpenAI STT、Google STT 备用、Qwen interim、Qwen final 状态。 | M1-B | OpenAI/Google STT 后续可选。 |
 | 16 | 异常与降级提示 | 捕获失败、无音频、额度不足、Provider 错误时给出可执行提示。 | M1-A | 必须面向普通用户可理解。 |
 | 17 | 当前重点句增强 | 基于 final 片段提取或人工标记当前重点句。 | M1-B | M1-A 可先展示最新 final。 |
 | 18 | 会议时间线增强 | 增加关键节点、导出节点、异常节点和筛选能力。 | M1-B | M1-A 只要求基础 final 时间线。 |
@@ -450,7 +453,7 @@ flowchart LR
 
 ### 预期
 
-后端收到稳定 PCM16 音频帧并转发给 Google STT。若音频电平持续为 0，前端展示“未检测到会议声音”，后端不应继续消耗会议额度。
+后端收到稳定 PCM16 音频帧并转发给 Qwen realtime ASR。若音频电平持续为 0，前端展示“未检测到会议声音”，后端不应继续消耗会议额度。
 
 ## F05 WebSocket 会话编排（M1-A）
 
@@ -470,15 +473,15 @@ flowchart LR
 
 ### 条件
 
-当后端收到有效 PCM16 音频帧，且 Google STT provider 可用。
+当后端收到有效 PCM16 音频帧，且 Qwen realtime ASR provider 可用。
 
 ### 动作
 
-后端将音频帧写入 Google STT streaming session，接收英文 interim 和英文 final 事件，并通过 WebSocket 推送给前端。
+后端将音频帧写入 Qwen realtime ASR session，接收英文 interim 和英文 final 事件，并通过 WebSocket 推送给前端。
 
 ### 预期
 
-用户讲话期间能看到英文 interim；英文 final 出现后进入正式片段处理。若 Google STT 异常，后端推送 `error`，关闭或暂停会话，并记录 `usage_event`。第一版可保留 OpenAI STT 作为实验入口，不要求自动无缝切换。
+用户讲话期间能看到英文 interim；英文 final 出现后进入正式片段处理。若 Qwen realtime ASR 异常，后端推送 `error(code="qwen_asr_error")`，关闭或暂停会话，并记录 `usage_event`。第一版可保留 OpenAI STT / Google STT 作为实验入口，不要求自动无缝切换。
 
 ## F07 中文 interim（M1-A）
 
@@ -498,7 +501,7 @@ flowchart LR
 
 ### 条件
 
-当 Google STT 返回英文 final segment。
+当 Qwen realtime ASR 返回英文 final segment。
 
 ### 动作
 
@@ -587,11 +590,11 @@ interim 内容可替换，final 内容只追加。任何区域更新失败不应
 
 ### 条件
 
-当系统持续产生会话时长、STT 分钟数、Qwen interim token、Qwen final token、导出、错误和延迟事件。
+当系统持续产生会话时长、ASR 音频分钟数、Qwen interim token、Qwen final token、导出、错误和延迟事件。
 
 ### 动作
 
-M1-A 写入 `usage_event` 并维护成本估算；M1-B 提供轻量看板，展示每日会议数、STT 分钟数、Provider 请求量、预估成本、错误率、延迟和预算保险丝状态。
+M1-A 写入 `usage_event` 并维护成本估算；M1-B 提供轻量看板，展示每日会议数、ASR 音频分钟数、Provider 请求量、预估成本、错误率、延迟和预算保险丝状态。
 
 ### 预期
 
@@ -601,15 +604,15 @@ M1-A 写入 `usage_event` 并维护成本估算；M1-B 提供轻量看板，展�
 
 ### 条件
 
-当需要临时关闭某个 Provider、切换备用路径，或对比 Google STT 与 OpenAI STT 的效果。
+当需要临时关闭某个 Provider、切换备用路径，或对比 Qwen realtime ASR、Google STT 与 OpenAI STT 的效果。
 
 ### 动作
 
-后端通过环境变量或管理配置控制 Google STT、OpenAI STT、Qwen interim、Qwen final 的启停状态。前端不暴露密钥，只展示用户需要知道的服务状态或降级提示。
+后端通过环境变量或管理配置控制 Qwen realtime ASR、OpenAI STT、Google STT 备用、Qwen interim、Qwen final 的启停状态。前端不暴露密钥，只展示用户需要知道的服务状态或降级提示。
 
 ### 预期
 
-Provider 异常时可以快速降级，不需要重新部署前端。Qwen interim 关闭时，英文转写和 Qwen final 仍能工作；OpenAI STT 作为备用/对比入口时，不影响 Google STT 主路径。
+Provider 异常时可以快速降级，不需要重新部署前端。Qwen interim 关闭时，英文转写和 Qwen final 仍能工作；OpenAI STT / Google STT 作为备用/对比入口时，不影响 Qwen realtime ASR 主路径。
 
 ## F16 异常与降级提示（M1-A）
 
@@ -677,7 +680,7 @@ M1-A 是产品是否能进入小范围测试的最低闭环，必须一次性打
 - 标签页音频捕获与系统音频降级。
 - AudioWorklet 生成 16 kHz mono PCM16。
 - WebSocket 音频上传和会话关闭。
-- Google STT 英文 interim/final。
+- Qwen realtime ASR 英文 interim/final。
 - Qwen 中文 interim。
 - Qwen `qwen3.6-max-preview` 中文 final。
 - 四区实时 UI 基础展示。
@@ -749,7 +752,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 - 单场会议最多 30 分钟。
 - 同一匿名用户最多 1 个活跃会议。
 - 全站月度预算保险丝初始阈值建议 400 RMB。
-- 记录 Google STT 分钟数、Qwen interim token、Qwen final token、导出次数和失败重试次数。
+- 记录 Qwen realtime ASR 音频分钟数、Qwen interim token、Qwen final token、导出次数和失败重试次数。
 
 ## 可维护性
 
@@ -805,7 +808,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 
 ### 动作
 
-部署 Docker、Docker Compose、Caddy、PostgreSQL、Redis、后端容器和前端静态产物。配置 Google STT、阿里云百炼、腾讯 COS、PostgreSQL、Redis 的环境变量；OpenAI 环境变量仅作为后续备用/对比配置。
+部署 Docker、Docker Compose、Caddy、PostgreSQL、Redis、后端容器和前端静态产物。配置 Qwen realtime ASR、阿里云百炼文本模型、腾讯 COS、PostgreSQL、Redis 的环境变量；OpenAI/Google STT 环境变量仅作为后续备用/对比配置。
 
 ### 预期
 
@@ -816,7 +819,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 ### 内部验证
 
 - 使用本地 mock Provider 验证 UI 和 WebSocket 协议。
-- 通过 SSH 在 Lighthouse 云端后端容器使用真实 Google STT 验证英文 interim/final。
+- 通过 SSH 在 Lighthouse 云端后端容器使用真实 Qwen realtime ASR 验证英文 interim/final、连续流稳定性和断线恢复。
 - 通过 SSH 在 Lighthouse 云端后端容器使用真实 Qwen 验证中文 interim。
 - 通过 SSH 在 Lighthouse 云端后端容器使用真实 Qwen `qwen3.6-max-preview` 验证中文 final。
 - 通过 SSH 在 Lighthouse 云端后端容器使用腾讯 COS 验证 Markdown / JSON 导出和短期签名 URL。
@@ -898,6 +901,11 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 
 | 指标 | 定义 | 建议成功阈值 | 解释 |
 |---|---|---:|---|
+| 首个英文 interim 延迟 | 有效音频开始上传到首条 `asr_interim` 的时间 | <= 10 秒 | 判断 ASR 实时链路是否可用。 |
+| 首个英文 final 延迟 | 有效音频开始上传到首条 `asr_final` 的时间 | <= 30 秒 | 判断 ASR 稳定片段是否可用。 |
+| 英文会议术语错误数 | 术语测试音频中预期会议/技术词未命中的数量 | <= 2 | 判断英文会议专有名词识别质量。 |
+| 自动标点可用性 | 英文 final 中是否自动包含可读标点 | 关键样本通过 | 判断会后阅读体验。 |
+| 中英混杂稳定性 | 中英混杂样本是否能稳定产生 final 且不报错 | 关键样本通过 | 判断真实中国团队会议场景。 |
 | 中文 final 主观满意度 | 测试用户对正式中文翻译的 1-5 分评分 | >= 4.0 | 判断核心翻译质量。 |
 | 中文 final 平均延迟 | 英文 final 到中文 final 推送完成的平均时间 | <= 5 秒 | 判断实时阅读体验。 |
 | Provider 错误率 | Provider 错误次数 / 有效会议数 | <= 10% | 判断外部服务稳定性。 |
@@ -933,9 +941,9 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 | TC-008 | 用户拒绝授权 | 浏览器弹窗出现 | 用户拒绝共享 | 不创建正式会话，不消耗额度，显示重试入口 | M1-A |
 | TC-009 | 无音频输入 | 捕获成功但会议无声音 | 保持静音 30 秒 | 不消耗额度，提示未检测到会议声音 | M1-A |
 | TC-010 | AudioWorklet 输出 | 捕获到音频 | 开始处理音频 | 前端持续发送 16 kHz mono PCM16 binary frame | M1-A |
-| TC-011 | WebSocket 断开 | 会议进行中 | 主动断开网络或关闭标签页 | 后端清理 active session，保留已归档片段 | M1-A |
-| TC-012 | Google STT interim | 有效音频上传 | 英文发言 10 秒 | 前端显示英文 interim | M1-A |
-| TC-013 | Google STT final | 有效音频上传 | 英文发言并停顿 | 产生英文 final，触发中文 final 流程 | M1-A |
+| TC-011 | WebSocket 断开恢复 | 会议进行中 | 主动断开网络或关闭标签页，并在 30 秒内重连 | 后端恢复同一业务 session，继续接收音频；超时后清理 active session，保留已归档片段 | M1-A |
+| TC-012 | Qwen ASR interim | 有效音频上传 | 英文发言 10 秒 | 前端显示英文 interim，并记录首个 interim 延迟 | M1-A |
+| TC-013 | Qwen ASR final | 有效音频上传 | 英文发言并停顿 | 产生英文 final，记录首个 final 延迟；后续 Step 18 触发中文 final 流程 | M1-A |
 | TC-014 | Qwen interim 成功 | 英文 interim 满足节流条件 | 持续英文发言 | 前端显示中文临时理解，且不写入正式档案 | M1-A |
 | TC-015 | Qwen interim 失败 | 模拟 Qwen provider 错误 | 持续英文发言 | 英文转写和中文 final 不受阻塞，记录 provider 错误 | M1-A |
 | TC-016 | Qwen final 成功 | 英文 final 已产生 | 请求正式翻译 | 生成中文 final，写入 `transcript_segment` | M1-A |
@@ -977,7 +985,7 @@ M1-B 在 M1-A 小范围可用后推进，不阻塞 MVP 首次上线：
 
 - 日活匿名用户数。
 - 每日会议数。
-- 每日 STT 分钟数。
+- 每日 ASR 音频分钟数。
 - Qwen interim 请求量和 token。
 - Qwen final 请求量和 token。
 - 预估日成本和月成本。
@@ -1036,8 +1044,8 @@ flowchart LR
 |---|---|---|
 | 有效音频输入 | `audio_detected` | 捕获链路是否持续有效。 |
 | 上传音频帧 | `audio_chunk_uploaded` | WebSocket 是否稳定。 |
-| 英文 interim | `asr_interim_received` | STT 实时性是否可接受。 |
-| 英文 final | `asr_final_received` | STT 是否能稳定出正式片段。 |
+| 英文 interim | `asr_interim_received` | Qwen ASR 实时性是否可接受。 |
+| 英文 final | `asr_final_received` | Qwen ASR 是否能稳定出正式片段。 |
 | 中文 interim | `translation_interim_requested` | 临时理解是否按节流工作。 |
 | 中文 final | `translation_final_completed` | 正式翻译质量和延迟是否可接受。 |
 | 片段归档 | `segment_archived` | 会后记录是否完整。 |
@@ -1069,7 +1077,7 @@ flowchart LR
 
 ## 关键依赖
 
-- Google Cloud Speech-to-Text v2 streaming。
+- 阿里云百炼 `qwen3-asr-flash-realtime`。
 - 阿里云百炼 Qwen Flash/Turbo。
 - 阿里云百炼 Qwen `qwen3.6-max-preview`。
 - 腾讯 COS。
@@ -1084,8 +1092,10 @@ flowchart LR
 | API 成本超预算 | 影响测试持续性 | 每日额度、单场限制、预算保险丝、成本看板。 |
 | Qwen interim 质量不稳定 | 影响实时理解 | 明确标记临时状态，失败不阻塞主链路。 |
 | Qwen final 延迟较高 | 影响正式中文出现速度 | UI 先展示英文 final 和中文生成中，完成后补齐。 |
+| Qwen realtime ASR 长连接不稳定 | 影响英文实时结果 | gated smoke 覆盖 30 秒、3 分钟、10 分钟连续流；浏览器到后端支持 30 秒内恢复同一 session。 |
 | Lighthouse 无法访问 OpenAI 官方端点 | 影响后续 OpenAI 翻译/对比能力 | 第一版不依赖 OpenAI 翻译；仅在网络可达或提供中转后启用可选对比。 |
-| WebSocket 断开 | 可能中断会议 | 清理资源，保留已归档内容，显示结束原因。 |
+| Lighthouse 无法访问 Google Speech API gRPC/HTTP2 | 影响 Google STT 备用路径 | Google STT 不作为第一版生产主路径；后续仅作为备用或对比候选。 |
+| WebSocket 断开 | 可能中断会议 | 30 秒内允许同一 `client_id + session_id + archive_token` 恢复；超时后清理资源，保留已归档内容，显示结束原因。 |
 | 无登录额度被绕过 | 成本风险 | 第一版防普通滥用，规模扩大后加邀请码或登录。 |
 
 # 其他必要说明

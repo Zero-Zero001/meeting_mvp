@@ -29,7 +29,7 @@
 - 中文 final 主路径固定为 Qwen `qwen3.6-max-preview`；OpenAI 只作为后续备用或对比。
 - COS 导出文件保持私有，后端生成短期签名 URL 给用户下载。
 - MVP 数据默认保留 30 天，到期清理会议归档和 COS 导出文件。
-- 真实 Google STT、Qwen、COS smoke test 在 Lighthouse 云端后端容器执行；Windows 本地只运行 mock Provider 和不依赖真实密钥的测试。
+- 真实 Qwen realtime ASR、Qwen 文本模型、COS smoke test 在 Lighthouse 云端后端容器执行；Windows 本地只运行 mock Provider 和不依赖真实密钥的测试。
 - GitHub Actions 第一版只做检查，不自动部署到 Lighthouse。
 
 ## Codex 执行约束
@@ -47,7 +47,7 @@
 
 | 阶段 | 目标 | 完成标准 |
 |---|---|---|
-| M1-A 必须上线闭环 | 匿名使用、额度、音频捕获、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础异常、基础归档页。 | 测试用户能打开网页，捕获会议音频，看到英文和中文结果，并通过基础归档页追溯 final 片段。 |
+| M1-A 必须上线闭环 | 匿名使用、额度、音频捕获、WebSocket、Qwen3-ASR-Flash-Realtime、Qwen interim、Qwen final、四区 UI、基础异常、基础归档页。 | 测试用户能打开网页，捕获会议音频，看到英文和中文结果，并通过基础归档页追溯 final 片段。 |
 | M1-B 上线后增强 | final 重试、轻量看板、Provider 开关、重点句增强、时间线增强。 | M1-A 跑通后，能降低运营风险并提升可观察性。 |
 | M2 会后归档增强与导出 | 搜索、复制、Markdown / JSON 导出、Tencent COS。 | 用户能带走完整双语会议记录。 |
 | M3 成本与运营 | 成本估算、漏斗分析、兼容性报告、OpenAI STT 对比入口。 | 产品负责人能判断价值、质量和成本是否值得继续迭代。 |
@@ -98,7 +98,7 @@
 
 目标：让所有部署配置可由环境变量控制。
 
-具体指令：建立前端公开配置、后端服务配置、Provider 配置、数据库配置、Redis 配置、COS 配置、预算配置、归档保留配置和签名 URL 配置的唯一环境变量清单；同时提供示例文件，但不得写入真实密钥。清单必须覆盖 `QWEN_FINAL_MODEL`、`QWEN_INTERIM_ENABLED`、`OPENAI_STT_ENABLED`、`OPENAI_STT_MODEL`、`TENCENT_COS_EXPORT_PREFIX`、`ARCHIVE_RETENTION_DAYS=30`、`COS_SIGNED_URL_TTL_SECONDS`。
+具体指令：建立前端公开配置、后端服务配置、Provider 配置、数据库配置、Redis 配置、COS 配置、预算配置、归档保留配置和签名 URL 配置的唯一环境变量清单；同时提供示例文件，但不得写入真实密钥。清单必须覆盖 `ASR_PROVIDER=qwen_realtime`、`QWEN_ASR_MODEL`、`QWEN_ASR_BASE_URL`、`QWEN_ASR_SAMPLE_RATE_HZ=16000`、`QWEN_ASR_AUDIO_FORMAT=pcm`、`QWEN_ASR_LANGUAGE`、`SESSION_RESUME_GRACE_SECONDS`、`QWEN_FINAL_MODEL`、`QWEN_INTERIM_ENABLED`、`OPENAI_STT_ENABLED`、`OPENAI_STT_MODEL`、`TENCENT_COS_EXPORT_PREFIX`、`ARCHIVE_RETENTION_DAYS=30`、`COS_SIGNED_URL_TTL_SECONDS`。
 
 验证测试：启动后端时缺少必填密钥应得到明确配置错误；使用示例配置启动本地 mock 模式应成功；脱敏打印已加载配置名时不得出现任何密钥值。
 
@@ -186,7 +186,7 @@
 
 ### Step 14：实现 F04 音频前处理
 
-目标：浏览器侧输出 Google STT 友好的 16 kHz mono PCM16 音频帧。
+目标：浏览器侧输出 Qwen realtime ASR 兼容的 16 kHz mono PCM16 音频帧。
 
 具体指令：前端用 Web Audio API 和 AudioWorklet 将捕获音频转换为 16 kHz、mono、PCM16，并通过 WebSocket binary frame 持续上传；静音时不应开始正式消耗额度。
 
@@ -206,13 +206,13 @@
 
 ### Step 16：实现 F06 英文实时转写
 
-目标：接入 Google Speech-to-Text v2 streaming 主链路。
+目标：接入 Qwen3-ASR-Flash-Realtime 主链路。
 
-具体指令：后端创建 Google STT streaming 会话，转发 PCM16 音频帧，接收英文 interim 和英文 final；Google STT 失败时发送 `error` 并清理会话。
+具体指令：后端创建 Qwen realtime ASR WebSocket 会话，发送 `session.update` 配置 16 kHz mono PCM 音频，后续将浏览器上传的 PCM16 binary frame 以 Base64 `input_audio_buffer.append` 转发给 Qwen，接收英文 interim 和英文 final；Qwen ASR 失败时发送 `error(code="qwen_asr_error")` 并清理会话。协议保留 `asr_interim` 和 `asr_final`，`asr_final` 不写入 `transcript_segment`；新增 `session_resume` / `session_resumed`，允许同一 `client_id + session_id + archive_token` 在 `SESSION_RESUME_GRACE_SECONDS` 内恢复浏览器到后端的业务 session。
 
-验证测试：通过 SSH 在 Lighthouse 云端后端容器中使用真实 Google STT 凭证运行英文音频 smoke test，确认 10 秒内出现英文 interim，停顿后产生英文 final。
+验证测试：本地新增 Qwen provider 单测，覆盖连接配置、首包、音频 append、interim/final 解析、时间估算、异常和关闭清理；更新后端 WebSocket schema/session 测试和前端协议/WebSocket/store 测试，覆盖 `asr_final` 与断线恢复。通过 SSH 在 Lighthouse 云端后端容器中使用真实 Qwen ASR 凭证和测试音频运行 gated smoke，覆盖 `/ws` 建连、首个 interim 延迟、首个 final 延迟、30 秒/3 分钟/10 分钟连续流稳定性、英文会议专有名词错误数、自动标点、中英混杂识别稳定性和断线重连后继续同一 session。
 
-预期结果：英文 interim 实时显示，英文 final 稳定追加，并能进入中文 final 流程。
+预期结果：英文 interim 实时显示，英文 final 稳定追加；`asr_final` 作为 Step 16 英文 ASR 结果供前端展示，不伪造中文，不写正式归档，并等待 Step 17/18 进入中文 interim/final 流程。
 
 ### Step 17：实现 F07 中文 interim
 
@@ -338,7 +338,7 @@
 
 目标：支持 Provider 降级、关闭和实验入口。
 
-具体指令：后端用配置控制 Google STT、OpenAI STT、Qwen interim、Qwen final 的启停；OpenAI 翻译只作为后续可选扩展，不进入第一版生产主路径；前端只展示服务状态和可执行提示，不暴露密钥。
+具体指令：后端用配置控制 Qwen realtime ASR、OpenAI STT 备用/对比入口、Qwen interim、Qwen final 的启停；OpenAI 翻译只作为后续可选扩展，不进入第一版生产主路径；前端只展示服务状态和可执行提示，不暴露密钥。
 
 验证测试：运行 Provider 开关测试，覆盖关闭 Qwen interim、关闭 Qwen final、启用 OpenAI STT 对比入口、配置缺失。
 
@@ -409,7 +409,7 @@
 
 ## 最终验收清单
 
-- M1-A：匿名初始化、额度、捕获、音频处理、WebSocket、Google STT、Qwen interim、Qwen final、四区 UI、基础归档页、异常提示全部通过。
+- M1-A：匿名初始化、额度、捕获、音频处理、WebSocket、Qwen realtime ASR、Qwen interim、Qwen final、四区 UI、基础归档页、异常提示全部通过。
 - M1-B：final 重试、看板、Provider 开关、重点句增强、时间线增强有独立测试。
 - M2：归档、搜索、复制、Markdown / JSON 导出和 COS 上传通过。
 - M3：漏斗、成本、兼容性和 Provider 状态可观察。

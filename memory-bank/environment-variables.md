@@ -48,17 +48,20 @@
 | `BUDGET_FUSE_RMB` | `400` | 否 | 预算保险丝阈值。 |
 | `ARCHIVE_RETENTION_DAYS` | `30` | 否 | 会议归档和 COS 导出默认保留天数。 |
 | `COS_SIGNED_URL_TTL_SECONDS` | `3600` | 否 | COS 短期签名 URL 有效期。 |
+| `SESSION_RESUME_GRACE_SECONDS` | `30` | 否 | 浏览器断线后允许恢复同一业务 session 的宽限秒数。 |
 
 ## Provider 与 COS
 
 | 变量名 | 默认值 | 可进入前端 | 用途 |
 |---|---:|---|---|
-| `GOOGLE_APPLICATION_CREDENTIALS` | 空 | 否 | Google 服务账号 JSON 路径。 |
-| `GOOGLE_CLOUD_PROJECT` | 空 | 否 | Google Cloud 项目 ID。 |
-| `GOOGLE_STT_LOCATION` | 空 | 否 | Google STT region。 |
-| `GOOGLE_STT_RECOGNIZER` | 空 | 否 | Google STT recognizer。 |
+| `ASR_PROVIDER` | `qwen_realtime` | 否 | 英文实时 ASR provider；当前生产主路径固定为 Qwen realtime。 |
 | `QWEN_API_KEY` | 空 | 否 | 阿里云百炼 API Key。 |
 | `QWEN_BASE_URL` | 空 | 否 | Qwen OpenAI-compatible endpoint。 |
+| `QWEN_ASR_MODEL` | `qwen3-asr-flash-realtime` | 否 | 英文实时 ASR 模型。 |
+| `QWEN_ASR_BASE_URL` | 空 | 否 | Qwen realtime ASR WebSocket endpoint。 |
+| `QWEN_ASR_SAMPLE_RATE_HZ` | `16000` | 否 | Qwen realtime ASR 输入采样率；必须与浏览器 PCM16 输出一致。 |
+| `QWEN_ASR_AUDIO_FORMAT` | `pcm` | 否 | Qwen realtime ASR 输入音频格式；当前只允许 `pcm` / `pcm16` 映射到 `pcm`。 |
+| `QWEN_ASR_LANGUAGE` | `auto` | 否 | Qwen realtime ASR 识别语言；`auto` 表示不强制语言。 |
 | `QWEN_INTERIM_MODEL` | 空 | 否 | 中文 interim 模型。 |
 | `QWEN_INTERIM_ENABLED` | `true` | 否 | 是否启用中文 interim。 |
 | `QWEN_FINAL_MODEL` | `qwen3.6-max-preview` | 否 | 中文 final 模型。 |
@@ -76,6 +79,6 @@
 ## 校验边界
 
 - `local` 模式允许以上私有配置为空，便于 Windows 本地跑 mock 和轻量测试。
-- `staging`、`production` 模式要求后端启动前具备数据库、Redis、Google STT、Qwen final/interim 和 COS 关键配置。
+- `staging`、`production` 模式要求后端启动前具备数据库、Redis、Qwen realtime ASR、Qwen final/interim 和 COS 关键配置。
 - 后端启动日志只允许输出配置名和 `set` / `unset` 状态，不允许输出任何变量值。
 - 前端构建产物中不应包含 `QWEN_*`、`OPENAI_*`、`GOOGLE_*`、`DATABASE_URL`、`REDIS_URL`、`TENCENT_COS_*`。

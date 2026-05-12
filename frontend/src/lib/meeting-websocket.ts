@@ -28,6 +28,7 @@ export type MeetingWebSocketConstructor = new (
 ) => MeetingWebSocketLike
 
 export type MeetingWebSocketClient = {
+  archiveToken: string
   archiveUrl: string
   sendAudioFrame: (frame: ArrayBuffer) => void
   sessionId: string
@@ -112,11 +113,14 @@ export function connectMeetingWebSocket({
 
   return new Promise((resolve, reject) => {
     let settled = false
+    let stopping = false
+    let currentArchiveToken: string | null = null
     let currentSessionId: string | null = null
     let currentArchiveUrl: string | null = null
     let socket: MeetingWebSocketLike
 
     function fail(error: Error) {
+      stopping = true
       onError?.(error)
       onStatusChange?.('error')
       if (!settled) {
@@ -131,6 +135,7 @@ export function connectMeetingWebSocket({
 
     function createClient(): MeetingWebSocketClient {
       return {
+        archiveToken: currentArchiveToken ?? '',
         archiveUrl: currentArchiveUrl ?? '',
         sendAudioFrame(frame) {
           if (socket.readyState === OPEN_READY_STATE) {
@@ -139,6 +144,7 @@ export function connectMeetingWebSocket({
         },
         sessionId: currentSessionId ?? '',
         stop() {
+          stopping = true
           if (socket.readyState === OPEN_READY_STATE && currentSessionId) {
             onStatusChange?.('closing')
             sendJson({
@@ -157,92 +163,122 @@ export function connectMeetingWebSocket({
       }
     }
 
-    try {
-      socket = new WebSocketCtor(url)
-    } catch (error) {
-      fail(error instanceof Error ? error : websocketFailure())
-      return
-    }
+    function attachSocketHandlers(mode: 'start' | 'resume') {
+      socket.binaryType = 'arraybuffer'
 
-    socket.binaryType = 'arraybuffer'
+      socket.onopen = () => {
+        if (mode === 'resume' && currentSessionId && currentArchiveToken) {
+          sendJson({
+            archive_token: currentArchiveToken,
+            audio_format: AUDIO_FORMAT,
+            client_id: clientId,
+            session_id: currentSessionId,
+            type: 'session_resume',
+          })
+          return
+        }
 
-    socket.onopen = () => {
-      sendJson({
-        audio_format: AUDIO_FORMAT,
-        capture_mode: captureMode,
-        client_id: clientId,
-        source_platform: sourcePlatform,
-        type: 'session_start',
-      })
-    }
-
-    socket.onmessage = (event) => {
-      let message: ServerMessage
-      try {
-        message = parseServerMessage(JSON.parse(String(event.data)))
-      } catch {
-        fail(websocketFailure('Invalid WebSocket message'))
-        return
+        sendJson({
+          audio_format: AUDIO_FORMAT,
+          capture_mode: captureMode,
+          client_id: clientId,
+          source_platform: sourcePlatform,
+          type: 'session_start',
+        })
       }
 
-      switch (message.type) {
-        case 'session_started':
-          currentSessionId = message.session_id
-          currentArchiveUrl = message.archive_url
-          onSessionStarted?.(message)
-          onStatusChange?.('started')
-          if (!settled) {
-            settled = true
-            resolve(createClient())
-          }
-          break
-        case 'quota_update':
-          onQuotaUpdate?.(message)
-          break
-        case 'audio_status':
-          onAudioStatus?.(message)
-          break
-        case 'asr_interim':
-          onAsrInterim?.(message)
-          break
-        case 'asr_final':
-          onAsrFinal?.(message)
-          break
-        case 'translation_interim':
-          onTranslationInterim?.(message)
-          break
-        case 'segment_final':
-          onSegmentFinal?.(message)
-          break
-        case 'key_sentence_update':
-          onKeySentenceUpdate?.(message)
-          break
-        case 'timeline_update':
-          onTimelineUpdate?.(message)
-          break
-        case 'warning':
-          onWarning?.(message)
-          break
-        case 'error':
-          fail(websocketFailure(message.message ?? message.code))
-          break
-        case 'session_closed':
-          onClosed?.(message)
-          onStatusChange?.('closed')
-          break
+      socket.onmessage = (event) => {
+        let message: ServerMessage
+        try {
+          message = parseServerMessage(JSON.parse(String(event.data)))
+        } catch {
+          fail(websocketFailure('Invalid WebSocket message'))
+          return
+        }
+
+        switch (message.type) {
+          case 'session_started':
+            currentArchiveToken = message.archive_token
+            currentSessionId = message.session_id
+            currentArchiveUrl = message.archive_url
+            onSessionStarted?.(message)
+            onStatusChange?.('started')
+            if (!settled) {
+              settled = true
+              resolve(createClient())
+            }
+            break
+          case 'session_resumed':
+            currentSessionId = message.session_id
+            currentArchiveUrl = message.archive_url
+            onStatusChange?.('started')
+            break
+          case 'quota_update':
+            onQuotaUpdate?.(message)
+            break
+          case 'audio_status':
+            onAudioStatus?.(message)
+            break
+          case 'asr_interim':
+            onAsrInterim?.(message)
+            break
+          case 'asr_final':
+            onAsrFinal?.(message)
+            break
+          case 'translation_interim':
+            onTranslationInterim?.(message)
+            break
+          case 'segment_final':
+            onSegmentFinal?.(message)
+            break
+          case 'key_sentence_update':
+            onKeySentenceUpdate?.(message)
+            break
+          case 'timeline_update':
+            onTimelineUpdate?.(message)
+            break
+          case 'warning':
+            onWarning?.(message)
+            break
+          case 'error':
+            fail(websocketFailure(message.message ?? message.code))
+            break
+          case 'session_closed':
+            stopping = true
+            onClosed?.(message)
+            onStatusChange?.('closed')
+            break
+        }
       }
-    }
 
-    socket.onerror = () => {
-      fail(websocketFailure())
-    }
-
-    socket.onclose = () => {
-      if (!settled) {
+      socket.onerror = () => {
         fail(websocketFailure())
+      }
+
+      socket.onclose = () => {
+        if (!settled) {
+          fail(websocketFailure())
+          return
+        }
+        if (!stopping && currentSessionId && currentArchiveToken) {
+          openSocket('resume')
+          return
+        }
+        onStatusChange?.('closed')
+      }
+    }
+
+    function openSocket(mode: 'start' | 'resume') {
+      onStatusChange?.('connecting')
+      try {
+        socket = new WebSocketCtor(url)
+      } catch (error) {
+        fail(error instanceof Error ? error : websocketFailure())
         return
       }
-      onStatusChange?.('closed')
+      attachSocketHandlers(mode)
     }
+
+    openSocket('start')
   })
 }

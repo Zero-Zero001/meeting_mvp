@@ -27,5 +27,5 @@ Step 06 只要求配置合法；不要在本步骤执行 `docker compose up -d`�
 - PostgreSQL `5432` 与 Redis `6379` 不映射到宿主机公网端口，只允许容器网络内访问。
 - PostgreSQL 数据目录使用 `/opt/meeting_mvp/data/postgres`。
 - Redis 数据目录使用 `/opt/meeting_mvp/data/redis`。
-- 后端容器只读挂载 `GOOGLE_APPLICATION_CREDENTIALS` 指向的 Google STT 服务账号 JSON；该文件只放在服务器安全目录，不进入镜像和 Git。
-- 不在本目录放置真实 `.env`、生产密钥、Google 服务账号 JSON、COS SecretId 或 SecretKey。
+- Step 16 替换后，生产 ASR 使用 Qwen realtime ASR，后端容器不再挂载 Google STT 服务账号 JSON；Qwen API key 只通过服务器安全环境变量提供。
+- 不在本目录放置真实 `.env`、生产密钥、Qwen API key、Google 服务账号 JSON、COS SecretId 或 SecretKey。

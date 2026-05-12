@@ -7,6 +7,8 @@ from meeting_mvp_backend.ws_messages import (
     AsrFinalMessage,
     AudioStatusMessage,
     SegmentFinalMessage,
+    SessionResumedMessage,
+    SessionResumeMessage,
     SessionStartedMessage,
     SessionStartMessage,
     TimelineUpdateMessage,
@@ -73,6 +75,36 @@ def test_rejects_unknown_client_message_type() -> None:
         parse_client_message({"type": "provider_start"})
 
 
+def test_parses_session_resume_message() -> None:
+    message = parse_client_message(
+        {
+            "type": "session_resume",
+            "client_id": "77777777-7777-4777-8777-777777777777",
+            "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "archive_token": "archive-token",
+            "audio_format": VALID_AUDIO_FORMAT,
+        },
+    )
+
+    assert isinstance(message, SessionResumeMessage)
+    assert message.session_id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert message.archive_token == "archive-token"
+
+
+def test_rejects_session_resume_with_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        parse_client_message(
+            {
+                "type": "session_resume",
+                "client_id": "77777777-7777-4777-8777-777777777777",
+                "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "archive_token": "archive-token",
+                "audio_format": VALID_AUDIO_FORMAT,
+                "source_platform": "google_meet",
+            },
+        )
+
+
 def test_identifies_binary_audio_chunk_frame() -> None:
     assert is_audio_chunk_frame(b"\x00\x01\x02\x03") is True
     assert is_audio_chunk_frame(bytearray(b"\x00\x01")) is True
@@ -94,6 +126,23 @@ def test_parses_required_session_started_response_fields() -> None:
     )
 
     assert isinstance(message, SessionStartedMessage)
+    assert message.remaining_seconds_today == 1800
+
+
+def test_parses_session_resumed_response_fields() -> None:
+    message = parse_server_message(
+        {
+            "type": "session_resumed",
+            "session_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "archive_url": (
+                "/archive/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                "?token=archive-token"
+            ),
+            "remaining_seconds_today": 1800,
+        },
+    )
+
+    assert isinstance(message, SessionResumedMessage)
     assert message.remaining_seconds_today == 1800
 
 

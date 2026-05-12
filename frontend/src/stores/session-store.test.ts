@@ -29,6 +29,7 @@ function setReadyIdentity() {
 
 function createStartedWebSocket() {
   return {
+    archiveToken: 'archive-token',
     archiveUrl: '/archive/session-1?token=archive-token',
     sendAudioFrame: vi.fn(),
     sessionId: 'session-1',
@@ -84,6 +85,7 @@ describe('useSessionStore', () => {
 
     expect(meetingSocket.sendAudioFrame).toHaveBeenCalledWith(frame)
     expect(useSessionStore.getState()).toMatchObject({
+      archiveToken: 'archive-token',
       archiveUrl: '/archive/session-1?token=archive-token',
       audioLevel: 0.42,
       audioPipelineErrorCode: null,
@@ -326,6 +328,7 @@ describe('useSessionStore', () => {
       hasEffectiveAudio: false,
       mediaStream: null,
       remainingSecondsToday: 2400,
+      archiveToken: null,
       sessionId: null,
       status: 'idle',
       webSocketStatus: 'closed',

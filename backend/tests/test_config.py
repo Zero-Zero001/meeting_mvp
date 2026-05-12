@@ -31,10 +31,13 @@ SETTINGS_ENV_NAMES = [
     "BUDGET_FUSE_RMB",
     "ARCHIVE_RETENTION_DAYS",
     "COS_SIGNED_URL_TTL_SECONDS",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_STT_LOCATION",
-    "GOOGLE_STT_RECOGNIZER",
+    "ASR_PROVIDER",
+    "QWEN_ASR_MODEL",
+    "QWEN_ASR_BASE_URL",
+    "QWEN_ASR_SAMPLE_RATE_HZ",
+    "QWEN_ASR_AUDIO_FORMAT",
+    "QWEN_ASR_LANGUAGE",
+    "SESSION_RESUME_GRACE_SECONDS",
     "QWEN_API_KEY",
     "QWEN_BASE_URL",
     "QWEN_INTERIM_MODEL",
@@ -69,6 +72,12 @@ def test_example_config_loads_local_mock_defaults(
     assert settings.app_env is AppEnv.LOCAL
     assert settings.archive_retention_days == 30
     assert settings.cos_signed_url_ttl_seconds == 3600
+    assert settings.asr_provider == "qwen_realtime"
+    assert settings.qwen_asr_model == "qwen3-asr-flash-realtime"
+    assert settings.qwen_asr_sample_rate_hz == 16000
+    assert settings.qwen_asr_audio_format == "pcm"
+    assert settings.qwen_asr_language == "auto"
+    assert settings.session_resume_grace_seconds == 30
     assert settings.qwen_final_model == "qwen3.6-max-preview"
     assert settings.openai_stt_enabled is False
 
@@ -86,8 +95,9 @@ def test_production_config_reports_missing_required_names(
     for name in [
         "DATABASE_URL",
         "REDIS_URL",
-        "GOOGLE_APPLICATION_CREDENTIALS",
         "QWEN_API_KEY",
+        "QWEN_ASR_BASE_URL",
+        "QWEN_ASR_MODEL",
         "TENCENT_COS_SECRET_KEY",
     ]:
         assert name in message
@@ -112,12 +122,10 @@ def test_openai_stt_settings_required_only_when_enabled(
     for name in [
         "DATABASE_URL",
         "REDIS_URL",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "GOOGLE_CLOUD_PROJECT",
-        "GOOGLE_STT_LOCATION",
-        "GOOGLE_STT_RECOGNIZER",
         "QWEN_API_KEY",
         "QWEN_BASE_URL",
+        "QWEN_ASR_BASE_URL",
+        "QWEN_ASR_MODEL",
         "QWEN_INTERIM_MODEL",
         "QWEN_FINAL_MODEL",
         "TENCENT_COS_SECRET_ID",

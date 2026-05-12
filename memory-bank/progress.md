@@ -797,7 +797,9 @@
 - 当前“归档生成”仅指后端写入 `transcript_segment`；会后归档查询 API/页面、搜索、复制、Markdown/JSON 导出、COS 和完整 `usage_event` 链路仍属于后续步骤。
 - Qwen interim warning 在本步是可恢复 mock warning，不阻塞英文 final、中文 final 或 `transcript_segment` 写入。
 
-## 2026-05-09 Step 16：Google STT 实时英文转写
+## 2026-05-09 Step 16：Google STT 实时英文转写历史记录
+
+> 2026-05-10 已确认北京地区腾讯云 Lighthouse 无法稳定完成 Google Speech API gRPC/HTTP2 streaming，Step 16 生产主路径已改为 Qwen3-ASR-Flash-Realtime。以下内容保留为历史执行记录，最新架构和验证结果见后续“Qwen realtime ASR 替换”章节。
 
 ### 本次完成
 
@@ -854,3 +856,65 @@
 - 本地默认测试不会访问真实 Google STT；真实 smoke 需要在 Lighthouse/CI 后端环境中提供现有 Google 变量和测试专用 `GOOGLE_STT_SMOKE_AUDIO_PATH`，且不得打印服务账号 JSON、API key、完整环境变量或生产 `.env` 内容。
 - `asr_final` 是英文最终转写展示消息，不写数据库；后续双语 final 步骤需要继续决定何时把英文 final 与中文 final 组合写入 `transcript_segment`。
 - 2026-05-09 已尝试在 Lighthouse 使用互联网公开样本完成真实 Google STT smoke；当前阻塞不是代码、样本或凭证文件存在性，而是 Google STT gRPC streaming 连接仍被网络层中断。第二次网络调整后容器内 TCP/TLS 探针可达 `speech.googleapis.com:443`，但真实 gRPC 仍返回 `tcp handshaker shutdown`，因此仍需继续修通对 Google Speech API gRPC/HTTP2 流量的出口或换用可稳定访问该 API 的运行环境。
+
+## 2026-05-10 Step 16：Qwen realtime ASR 替换
+
+### 本次完成
+
+- 按用户要求将 Step 16 英文实时 ASR 主路径从 Google STT v2 streaming 替换为阿里云百炼 `qwen3-asr-flash-realtime`，未开始 Step 17。
+- 后端 `backend/src/meeting_mvp_backend/stt_providers.py` 改为 Qwen realtime ASR provider：
+  - 保留 `StreamingSttProvider`、`SttInterimEvent`、`SttFinalEvent` 抽象。
+  - 使用 `websockets` 连接 `QWEN_ASR_BASE_URL`，并追加 `?model=QWEN_ASR_MODEL`。
+  - 首包发送 `session.update`，配置 16 kHz、mono、`pcm`、可选语言；后续 PCM16 binary frame Base64 后发送 `input_audio_buffer.append`。
+  - Qwen interim 映射为 `asr_interim`，completed/final 映射为 `asr_final`。
+  - Qwen 缺少时间戳时，用累计已发送音频字节数估算 `start_ms/end_ms`，保持时间范围单调递增。
+  - Qwen error 映射为 `RuntimeError`，由 WebSocket 编排层转为 `error(code="qwen_asr_error")`。
+  - 因前端 Step 14 会过滤静音 frame，provider 在音频输入短暂停顿后补发短静音尾帧，帮助 Qwen server VAD 产出 final。
+  - `close()` 先发送 `session.finish` 并等待 final/`session.finished`，再关闭 realtime WebSocket，避免截断最终转写。
+- 后端配置更新：
+  - `backend/src/meeting_mvp_backend/config.py` 新增 `ASR_PROVIDER=qwen_realtime`、`QWEN_ASR_MODEL`、`QWEN_ASR_BASE_URL`、`QWEN_ASR_SAMPLE_RATE_HZ`、`QWEN_ASR_AUDIO_FORMAT`、`QWEN_ASR_LANGUAGE`、`SESSION_RESUME_GRACE_SECONDS`。
+  - `GOOGLE_*` 不再是 production 必填；`google-cloud-speech` 从 `backend/pyproject.toml` / `backend/uv.lock` 移除，新增 `websockets>=16.0`。
+  - `backend/.env.example`、`deploy/.env.example` 和 `deploy/docker-compose.yml` 改为 Qwen ASR 配置；Compose 移除 Google 服务账号只读挂载。
+- WebSocket 协议更新：
+  - 保留 `asr_interim` / `asr_final`，`asr_final` 仍只用于英文展示，不写 `transcript_segment`。
+  - 新增 client `session_resume` 和 server `session_resumed`。
+  - 后端在 `SESSION_RESUME_GRACE_SECONDS=30` 内允许同一 `client_id + session_id + archive_token` 恢复同一业务 session；本步只恢复浏览器到后端 `/ws`，不补传断线期间音频，不做 Provider 到 Qwen 的自动重连补偿。
+  - 断线恢复记录会先写入内存 registry，再清理旧 provider，避免浏览器快速重连时发生 `session_resume_failed` race。
+- 前端更新：
+  - `frontend/src/protocol/websocket-messages.ts` 新增 `session_resume` / `session_resumed` schema。
+  - `frontend/src/lib/meeting-websocket.ts` 在非主动关闭时自动重连并发送 `session_resume`，恢复后继续复用同一 client 发送音频 frame。
+  - `frontend/src/stores/session-store.ts` 保存并清理 `archiveToken`，继续追加 `englishFinalSegments`。
+- 真实 Qwen smoke：
+  - 删除旧 `backend/tests/integration/test_google_stt_smoke.py`，新增 `backend/tests/integration/test_qwen_realtime_asr_smoke.py`。
+  - gated smoke 默认跳过；只有设置 `RUN_QWEN_ASR_SMOKE=1`、真实 Qwen ASR 配置和测试音频 manifest 时才访问真实服务。
+  - smoke 覆盖 `/ws` 建连、首个 interim 延迟、首个 final 延迟、30 秒/3 分钟/10 分钟连续流稳定性、英文会议专有名词错误数、自动标点、中英混杂稳定性和断线恢复。
+  - 新增 `scripts/prepare-qwen-asr-smoke-audio.ps1`，下载公开 `brooklyn_bridge.raw` 并生成 30 秒、3 分钟、10 分钟 loop 样本和 smoke manifest；脚本不包含密钥。
+- 文档同步：
+  - 更新 `meeting-prd.md`、`memory-bank/implementation-plan.md`、`memory-bank/architecture.md`、`memory-bank/environment-variables.md`、`memory-bank/set-up-env.md`、`memory-bank/tech-stack.md`、`memory-bank/2026-04-24-meeting-mvp-design.md`、`deploy/README.md` 和 `AGENTS.md`，统一将 M1-A 英文 ASR 主路径改为 Qwen realtime ASR，并记录 Google STT 作为历史失败背景/后续备用候选。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 16 后端目标 GREEN | `uv run pytest tests/test_qwen_realtime_asr_provider.py tests/test_ws_messages.py tests/test_config.py tests/test_websocket_sessions.py -q` | 37 passed |
+| Step 16 前端目标 GREEN | `npm run test -- --run src/protocol/websocket-messages.test.ts src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts` | 3 个测试文件、29 个测试通过 |
+| Qwen smoke hook 本地 gated 检查 | `uv run pytest tests/integration/test_qwen_realtime_asr_smoke.py -m integration -q` | 6 skipped，因未设置 `RUN_QWEN_ASR_SMOKE=1` 和真实 smoke 环境 |
+| 真实 Qwen latency/resume smoke | 使用 `D:\meeting_mvp_secrets\provider.env`、`RUN_QWEN_ASR_SMOKE=1` 和公开样本 manifest 运行 `test_qwen_realtime_asr_smoke_ws_latency_and_resume` | 1 passed；覆盖 `/ws` 建连、首个 interim、首个 final 和断线恢复 |
+| 真实 Qwen 完整 smoke | 使用同一 provider env 和公开样本 manifest 运行 `tests/integration/test_qwen_realtime_asr_smoke.py` | 5 passed，1 skipped，耗时 13:51；30 秒/3 分钟/10 分钟连续流、术语、自动标点通过；中英混杂因 manifest 未配置样本跳过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 28 source files` |
+| 后端 pytest | `uv run pytest` | 58 passed，11 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、64 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过；仍有 Vite `vite:css` plugin timing warning，不影响退出码 |
+| 前端 E2E | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+| Step 17 边界检查 | 搜索新增 Qwen 文本翻译、中文 interim/final、导出/COS/归档页相关实现 | 未发现新增 Step 17 生产逻辑；仅保留既有 mock、配置和 `segment_final` 协议/测试 |
+
+### 后续注意
+
+- Step 17 必须等待用户明确允许后再开始；当前只提供英文 ASR 的 `asr_interim` / `asr_final` 和浏览器断线恢复。
+- `asr_final` 仍不写数据库；后续 Step 18 需要决定如何把英文 final 与中文 final 组合写入 `transcript_segment`。
+- `session_resume` 只保证浏览器重连后继续同一业务 session，不补传断线期间音频；Provider 到 Qwen 的自动重连和音频补偿可在后续稳定性增强中单独设计。
+- 真实 Qwen smoke 不得打印 `QWEN_API_KEY`、完整生产 `.env` 或任何密钥值；测试音频 manifest 只记录测试文件路径和质量断言。
+- 当前公开 manifest 未包含中英混杂样本；后续补充真实中英混杂音频后，`mixed` smoke 用例会从 skipped 变为实际验收。

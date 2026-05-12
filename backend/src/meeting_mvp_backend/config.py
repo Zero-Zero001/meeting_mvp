@@ -21,6 +21,7 @@ class AppEnv(StrEnum):
 
 
 StatusValue = Literal["set", "unset"]
+AsrProvider = Literal["qwen_realtime"]
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = BACKEND_ROOT.parent
@@ -45,12 +46,15 @@ ENV_FIELD_MAP = {
     "BUDGET_FUSE_RMB": "budget_fuse_rmb",
     "ARCHIVE_RETENTION_DAYS": "archive_retention_days",
     "COS_SIGNED_URL_TTL_SECONDS": "cos_signed_url_ttl_seconds",
-    "GOOGLE_APPLICATION_CREDENTIALS": "google_application_credentials",
-    "GOOGLE_CLOUD_PROJECT": "google_cloud_project",
-    "GOOGLE_STT_LOCATION": "google_stt_location",
-    "GOOGLE_STT_RECOGNIZER": "google_stt_recognizer",
+    "SESSION_RESUME_GRACE_SECONDS": "session_resume_grace_seconds",
+    "ASR_PROVIDER": "asr_provider",
     "QWEN_API_KEY": "qwen_api_key",
     "QWEN_BASE_URL": "qwen_base_url",
+    "QWEN_ASR_MODEL": "qwen_asr_model",
+    "QWEN_ASR_BASE_URL": "qwen_asr_base_url",
+    "QWEN_ASR_SAMPLE_RATE_HZ": "qwen_asr_sample_rate_hz",
+    "QWEN_ASR_AUDIO_FORMAT": "qwen_asr_audio_format",
+    "QWEN_ASR_LANGUAGE": "qwen_asr_language",
     "QWEN_INTERIM_MODEL": "qwen_interim_model",
     "QWEN_INTERIM_ENABLED": "qwen_interim_enabled",
     "QWEN_FINAL_MODEL": "qwen_final_model",
@@ -72,12 +76,10 @@ PRODUCTION_REQUIRED_ENV_NAMES = (
     "WS_BASE_URL",
     "DATABASE_URL",
     "REDIS_URL",
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    "GOOGLE_CLOUD_PROJECT",
-    "GOOGLE_STT_LOCATION",
-    "GOOGLE_STT_RECOGNIZER",
     "QWEN_API_KEY",
     "QWEN_BASE_URL",
+    "QWEN_ASR_MODEL",
+    "QWEN_ASR_BASE_URL",
     "QWEN_INTERIM_MODEL",
     "QWEN_FINAL_MODEL",
     "TENCENT_COS_SECRET_ID",
@@ -141,26 +143,37 @@ class Settings(BaseSettings):
         default=3600,
         validation_alias="COS_SIGNED_URL_TTL_SECONDS",
     )
-
-    google_application_credentials: str | None = Field(
-        default=None,
-        validation_alias="GOOGLE_APPLICATION_CREDENTIALS",
-    )
-    google_cloud_project: str | None = Field(
-        default=None,
-        validation_alias="GOOGLE_CLOUD_PROJECT",
-    )
-    google_stt_location: str | None = Field(
-        default=None,
-        validation_alias="GOOGLE_STT_LOCATION",
-    )
-    google_stt_recognizer: str | None = Field(
-        default=None,
-        validation_alias="GOOGLE_STT_RECOGNIZER",
+    session_resume_grace_seconds: int = Field(
+        default=30,
+        validation_alias="SESSION_RESUME_GRACE_SECONDS",
     )
 
+    asr_provider: AsrProvider = Field(
+        default="qwen_realtime",
+        validation_alias="ASR_PROVIDER",
+    )
     qwen_api_key: str | None = Field(default=None, validation_alias="QWEN_API_KEY")
     qwen_base_url: str | None = Field(default=None, validation_alias="QWEN_BASE_URL")
+    qwen_asr_model: str | None = Field(
+        default=None,
+        validation_alias="QWEN_ASR_MODEL",
+    )
+    qwen_asr_base_url: str | None = Field(
+        default=None,
+        validation_alias="QWEN_ASR_BASE_URL",
+    )
+    qwen_asr_sample_rate_hz: int = Field(
+        default=16000,
+        validation_alias="QWEN_ASR_SAMPLE_RATE_HZ",
+    )
+    qwen_asr_audio_format: Literal["pcm", "pcm16"] = Field(
+        default="pcm",
+        validation_alias="QWEN_ASR_AUDIO_FORMAT",
+    )
+    qwen_asr_language: str = Field(
+        default="auto",
+        validation_alias="QWEN_ASR_LANGUAGE",
+    )
     qwen_interim_model: str | None = Field(
         default=None,
         validation_alias="QWEN_INTERIM_MODEL",

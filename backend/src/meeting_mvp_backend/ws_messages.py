@@ -34,6 +34,14 @@ class SessionStartMessage(WireMessage):
     audio_format: AudioFormat
 
 
+class SessionResumeMessage(WireMessage):
+    type: Literal["session_resume"]
+    client_id: str
+    session_id: str
+    archive_token: str
+    audio_format: AudioFormat
+
+
 class HeartbeatMessage(WireMessage):
     type: Literal["heartbeat"]
     session_id: str
@@ -48,6 +56,13 @@ class SessionStartedMessage(WireMessage):
     type: Literal["session_started"]
     session_id: str
     archive_token: str
+    archive_url: str
+    remaining_seconds_today: NonNegativeInt
+
+
+class SessionResumedMessage(WireMessage):
+    type: Literal["session_resumed"]
+    session_id: str
     archive_url: str
     remaining_seconds_today: NonNegativeInt
 
@@ -128,12 +143,13 @@ class SessionClosedMessage(WireMessage):
 
 
 type ClientMessage = Annotated[
-    SessionStartMessage | HeartbeatMessage | SessionStopMessage,
+    SessionStartMessage | SessionResumeMessage | HeartbeatMessage | SessionStopMessage,
     Field(discriminator="type"),
 ]
 
 type ServerMessage = Annotated[
     SessionStartedMessage
+    | SessionResumedMessage
     | QuotaUpdateMessage
     | AudioStatusMessage
     | AsrInterimMessage

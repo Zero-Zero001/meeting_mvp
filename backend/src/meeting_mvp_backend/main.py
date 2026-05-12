@@ -14,7 +14,9 @@ from meeting_mvp_backend.anonymous_clients import (
 from meeting_mvp_backend.config import AppEnv, Settings, load_settings, settings_status
 from meeting_mvp_backend.db.session import create_engine, create_session_factory
 from meeting_mvp_backend.quota import create_quota_service_from_settings
-from meeting_mvp_backend.stt_providers import create_google_stt_provider_from_settings
+from meeting_mvp_backend.stt_providers import (
+    create_qwen_realtime_asr_provider_from_settings,
+)
 from meeting_mvp_backend.ws_sessions import (
     SQLAlchemyMeetingSessionRepository,
     WebSocketSessionOrchestrator,
@@ -134,7 +136,7 @@ def get_websocket_session_orchestrator(
         stt_provider_factory=(
             None
             if settings.app_env is AppEnv.LOCAL
-            else lambda: create_google_stt_provider_from_settings(settings)
+            else lambda: create_qwen_realtime_asr_provider_from_settings(settings)
         ),
     )
 

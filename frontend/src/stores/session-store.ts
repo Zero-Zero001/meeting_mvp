@@ -114,6 +114,7 @@ type BeginCaptureOptions = {
 type SessionState = {
   anonymousClientError: string | null
   anonymousClientStatus: AnonymousClientStatus
+  archiveToken: string | null
   archiveUrl: string | null
   audioLevel: number
   audioPipelineErrorCode: AudioPipelineErrorCode | null
@@ -154,6 +155,7 @@ type SessionState = {
 export const initialSessionState = {
   anonymousClientError: null,
   anonymousClientStatus: 'idle' as AnonymousClientStatus,
+  archiveToken: null as string | null,
   archiveUrl: null as string | null,
   audioLevel: 0,
   audioPipelineErrorCode: null as AudioPipelineErrorCode | null,
@@ -278,6 +280,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     stopMediaStream(currentState.mediaStream)
 
     set({
+      archiveToken: null,
       archiveUrl: null,
       audioLevel: 0,
       audioPipelineErrorCode: null,
@@ -408,6 +411,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
         onSessionStarted: (message) => {
           set({
+            archiveToken: message.archive_token,
             archiveUrl: message.archive_url,
             remainingSecondsToday: message.remaining_seconds_today,
             sessionId: message.session_id,
@@ -445,6 +449,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     set({
+      archiveToken: meetingWebSocket.archiveToken,
       archiveUrl: meetingWebSocket.archiveUrl,
       audioProcessingStatus: 'starting',
       meetingWebSocket,
@@ -522,6 +527,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     set({
       archiveUrl: null,
+      archiveToken: null,
       audioLevel: 0,
       audioPipelineErrorCode: null,
       audioProcessingStatus: 'idle',
