@@ -37,6 +37,7 @@ from meeting_mvp_backend.stt_providers import (
     SttFinalEvent,
     SttInterimEvent,
 )
+from meeting_mvp_backend.translation_providers import InterimTranslationProvider
 from meeting_mvp_backend.ws_messages import (
     AsrFinalMessage,
     AsrInterimMessage,
@@ -64,6 +65,7 @@ logger = structlog.get_logger(__name__)
 
 Clock = Callable[[], datetime]
 SttProviderFactory = Callable[[], StreamingSttProvider]
+TranslationProviderFactory = Callable[[], InterimTranslationProvider]
 USER_STOPPED_REASON = "user_stopped"
 BROWSER_DISCONNECTED_REASON = "browser_disconnected"
 INVALID_MESSAGE_REASON = "invalid_message"
@@ -74,6 +76,7 @@ INTERNAL_ERROR_REASON = "internal_error"
 QWEN_ASR_ERROR_REASON = "qwen_asr_error"
 SESSION_RESUME_FAILED_REASON = "session_resume_failed"
 MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
+INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS = 1.5
 
 
 class MeetingSessionRepository(Protocol):
@@ -150,6 +153,11 @@ class WebSocketSessionState:
     mock_provider_task: asyncio.Task[None] | None = None
     stt_provider: StreamingSttProvider | None = None
     stt_provider_task: asyncio.Task[None] | None = None
+    last_translation_request_at: datetime | None = None
+    last_translated_interim_text: str | None = None
+    pending_translation_text: str | None = None
+    translation_provider: InterimTranslationProvider | None = None
+    translation_task: asyncio.Task[None] | None = None
 
 
 @dataclass(slots=True)
@@ -320,6 +328,10 @@ class WebSocketSessionOrchestrator:
         configuration_error: str | None = None,
         resume_registry: InMemorySessionResumeRegistry | None = None,
         stt_provider_factory: SttProviderFactory | None = None,
+        translation_min_interval_seconds: float = (
+            INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS
+        ),
+        translation_provider_factory: TranslationProviderFactory | None = None,
     ) -> None:
         self._repository = repository
         self._quota_service = quota_service
@@ -328,6 +340,8 @@ class WebSocketSessionOrchestrator:
         self._configuration_error = configuration_error
         self._resume_registry = resume_registry or DEFAULT_SESSION_RESUME_REGISTRY
         self._stt_provider_factory = stt_provider_factory
+        self._translation_min_interval_seconds = translation_min_interval_seconds
+        self._translation_provider_factory = translation_provider_factory
 
     async def handle(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -560,6 +574,9 @@ class WebSocketSessionOrchestrator:
         state.mock_provider_task = None
         state.stt_provider = None
         state.stt_provider_task = None
+        state.pending_translation_text = None
+        state.translation_provider = None
+        state.translation_task = None
         await _send_server_message(
             websocket,
             SessionResumedMessage(
@@ -655,6 +672,7 @@ class WebSocketSessionOrchestrator:
                         websocket,
                         AsrInterimMessage(type="asr_interim", text=event.text),
                     )
+                    self._schedule_interim_translation(websocket, state, event.text)
                 elif isinstance(event, SttFinalEvent):
                     await _send_server_message(
                         websocket,
@@ -680,6 +698,90 @@ class WebSocketSessionOrchestrator:
                 reason=QWEN_ASR_ERROR_REASON,
                 message=exc.__class__.__name__,
             )
+
+    def _schedule_interim_translation(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+        text: str,
+    ) -> None:
+        if self._translation_provider_factory is None:
+            return
+
+        normalized_text = " ".join(text.split())
+        if normalized_text == "":
+            return
+        if normalized_text == state.last_translated_interim_text:
+            return
+        if normalized_text == state.pending_translation_text:
+            return
+
+        state.pending_translation_text = normalized_text
+        task = state.translation_task
+        if task is None or task.done():
+            state.translation_task = asyncio.create_task(
+                self._run_interim_translation_loop(websocket, state),
+            )
+
+    async def _run_interim_translation_loop(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+    ) -> None:
+        while state.pending_translation_text is not None and not state.closed:
+            text = state.pending_translation_text
+            state.pending_translation_text = None
+            if text == state.last_translated_interim_text:
+                continue
+
+            await self._wait_for_interim_translation_slot(state)
+            if state.closed:
+                return
+
+            provider = state.translation_provider
+            if provider is None:
+                provider_factory = self._translation_provider_factory
+                if provider_factory is None:
+                    return
+                provider = provider_factory()
+                state.translation_provider = provider
+
+            state.last_translation_request_at = self._clock()
+            try:
+                translated_text = await provider.translate_interim(text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "qwen_interim_translation_failed",
+                    error_type=exc.__class__.__name__,
+                    session_id=str(state.session_id),
+                )
+                continue
+
+            translated_text = translated_text.strip()
+            if translated_text == "":
+                continue
+            state.last_translated_interim_text = text
+            await _send_server_message(
+                websocket,
+                TranslationInterimMessage(
+                    type="translation_interim",
+                    text=translated_text,
+                ),
+            )
+
+    async def _wait_for_interim_translation_slot(
+        self,
+        state: WebSocketSessionState,
+    ) -> None:
+        last_request_at = state.last_translation_request_at
+        if last_request_at is None:
+            return
+        elapsed_seconds = (self._clock() - last_request_at).total_seconds()
+        remaining_seconds = self._translation_min_interval_seconds - elapsed_seconds
+        if remaining_seconds > 0:
+            await asyncio.sleep(remaining_seconds)
 
     async def _run_mock_provider_pipeline(
         self,
@@ -771,6 +873,8 @@ class WebSocketSessionOrchestrator:
             return
 
         await _cancel_mock_provider_task(state)
+        await _cancel_translation_task(state)
+        await _close_translation_provider(state)
         await _close_stt_provider(state)
         await _cancel_stt_provider_task(state)
         repository = _require_repository(self._repository)
@@ -845,9 +949,14 @@ class WebSocketSessionOrchestrator:
         mock_provider_task = state.mock_provider_task
         stt_provider_task = state.stt_provider_task
         stt_provider = state.stt_provider
+        translation_provider = state.translation_provider
+        translation_task = state.translation_task
         state.mock_provider_task = None
         state.stt_provider = None
         state.stt_provider_task = None
+        state.pending_translation_text = None
+        state.translation_provider = None
+        state.translation_task = None
         state.closed = True
         expires_at = self._clock() + timedelta(
             seconds=self._settings.session_resume_grace_seconds,
@@ -858,6 +967,8 @@ class WebSocketSessionOrchestrator:
         )
         self._resume_registry.put(record)
         await _cancel_task(mock_provider_task)
+        await _cancel_task(translation_task)
+        await _close_provider(translation_provider)
         await _cancel_task(stt_provider_task)
         await _close_provider(stt_provider)
 
@@ -965,6 +1076,10 @@ async def _cancel_stt_provider_task(state: WebSocketSessionState) -> None:
     await _cancel_task(state.stt_provider_task)
 
 
+async def _cancel_translation_task(state: WebSocketSessionState) -> None:
+    await _cancel_task(state.translation_task)
+
+
 async def _cancel_task(task: asyncio.Task[None] | None) -> None:
     if task is None or task.done() or task is asyncio.current_task():
         return
@@ -979,7 +1094,13 @@ async def _close_stt_provider(state: WebSocketSessionState) -> None:
     await _close_provider(state.stt_provider)
 
 
-async def _close_provider(provider: StreamingSttProvider | None) -> None:
+async def _close_translation_provider(state: WebSocketSessionState) -> None:
+    await _close_provider(state.translation_provider)
+
+
+async def _close_provider(
+    provider: StreamingSttProvider | InterimTranslationProvider | None,
+) -> None:
     if provider is None:
         return
     await provider.close()

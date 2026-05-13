@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -221,6 +222,36 @@ class FakeSttProvider:
         self.closed = True
 
 
+class FakeInterimTranslationProvider:
+    def __init__(
+        self,
+        *,
+        delay_seconds: float = 0,
+        error: Exception | None = None,
+        translations: list[str] | None = None,
+    ) -> None:
+        self.closed = False
+        self.delay_seconds = delay_seconds
+        self.error = error
+        self.requested_texts: list[str] = []
+        self.started = threading.Event()
+        self.translations = translations or []
+
+    async def translate_interim(self, text: str) -> str:
+        self.started.set()
+        self.requested_texts.append(text)
+        if self.delay_seconds > 0:
+            await asyncio.sleep(self.delay_seconds)
+        if self.error is not None:
+            raise self.error
+        if self.translations:
+            return self.translations.pop(0)
+        return f"中文：{text}"
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class SequenceClock:
     def __init__(self, *values: datetime) -> None:
         self._values = list(values)
@@ -252,6 +283,8 @@ def make_client(
     clock: Callable[[], datetime] | None = None,
     resume_registry: InMemorySessionResumeRegistry | None = None,
     stt_provider: FakeSttProvider | None = None,
+    translation_min_interval_seconds: float = 0,
+    translation_provider: FakeInterimTranslationProvider | None = None,
 ) -> TestClient:
     settings = Settings()
     settings.public_base_url = "https://meeting.example.test"
@@ -265,6 +298,10 @@ def make_client(
             clock=clock or (lambda: FIXED_NOW),
             resume_registry=resume_registry,
             stt_provider_factory=(lambda: stt_provider) if stt_provider else None,
+            translation_provider_factory=(
+                (lambda: translation_provider) if translation_provider else None
+            ),
+            translation_min_interval_seconds=translation_min_interval_seconds,
         )
 
     app.dependency_overrides[get_websocket_session_orchestrator] = (
@@ -497,6 +534,196 @@ def test_binary_frames_stream_to_stt_provider_and_emit_english_results() -> None
     }
     assert repository.transcript_segments == []
     assert stt_provider.closed is True
+
+
+def test_stt_interim_triggers_translation_interim_without_archiving() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align on the launch timeline."),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(
+        translations=["我们需要对齐上线时间线。"],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            audio_status = websocket.receive_json()
+            asr_interim = websocket.receive_json()
+            translation_interim = websocket.receive_json()
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert audio_status == {"type": "audio_status", "has_audio": True, "level": None}
+    assert asr_interim == {
+        "type": "asr_interim",
+        "text": "We need to align on the launch timeline.",
+    }
+    assert translation_interim == {
+        "type": "translation_interim",
+        "text": "我们需要对齐上线时间线。",
+    }
+    assert translation_provider.requested_texts == [
+        "We need to align on the launch timeline.",
+    ]
+    assert repository.transcript_segments == []
+    assert translation_provider.closed is True
+
+
+def test_interim_translation_keeps_latest_text_while_request_is_in_flight() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We should align."),
+            SttInterimEvent(text="We should align."),
+            SttInterimEvent(text="The budget moved."),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(
+        delay_seconds=0.01,
+        translations=["我们应该对齐。", "预算调整了。"],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            assert receive_until_message_type(websocket, "asr_interim")["text"] == (
+                "We should align."
+            )
+            assert receive_until_message_type(websocket, "asr_interim")["text"] == (
+                "We should align."
+            )
+            assert receive_until_message_type(websocket, "asr_interim")["text"] == (
+                "The budget moved."
+            )
+            first_translation = receive_until_message_type(
+                websocket,
+                "translation_interim",
+            )
+            second_translation = receive_until_message_type(
+                websocket,
+                "translation_interim",
+            )
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert first_translation["text"] == "我们应该对齐。"
+    assert second_translation["text"] == "预算调整了。"
+    assert translation_provider.requested_texts == [
+        "We should align.",
+        "The budget moved.",
+    ]
+    assert repository.transcript_segments == []
+
+
+def test_interim_translation_failure_does_not_block_asr_final() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align."),
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=1200,
+                text="We need to align.",
+                confidence=None,
+            ),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(
+        error=RuntimeError("qwen text unavailable"),
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            asr_interim = receive_until_message_type(websocket, "asr_interim")
+            asr_final = receive_until_message_type(websocket, "asr_final")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            closed = receive_until_message_type(websocket, "session_closed")
+
+    assert asr_interim["text"] == "We need to align."
+    assert asr_final == {
+        "type": "asr_final",
+        "sequence": 1,
+        "start_ms": 0,
+        "end_ms": 1200,
+        "text": "We need to align.",
+        "confidence": None,
+    }
+    assert closed == {"type": "session_closed", "reason": "user_stopped"}
+    assert translation_provider.requested_texts == ["We need to align."]
+    assert translation_provider.closed is True
+    assert repository.transcript_segments == []
+
+
+def test_stopping_session_cancels_in_flight_interim_translation() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align."),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(delay_seconds=10)
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            receive_until_message_type(websocket, "asr_interim")
+            assert translation_provider.started.wait(timeout=1)
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert translation_provider.closed is True
 
 
 def test_qwen_asr_error_closes_session_and_releases_quota() -> None:

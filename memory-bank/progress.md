@@ -918,3 +918,61 @@
 - `session_resume` 只保证浏览器重连后继续同一业务 session，不补传断线期间音频；Provider 到 Qwen 的自动重连和音频补偿可在后续稳定性增强中单独设计。
 - 真实 Qwen smoke 不得打印 `QWEN_API_KEY`、完整生产 `.env` 或任何密钥值；测试音频 manifest 只记录测试文件路径和质量断言。
 - 当前公开 manifest 未包含中英混杂样本；后续补充真实中英混杂音频后，`mixed` smoke 用例会从 skipped 变为实际验收。
+
+## 2026-05-13 Step 17：中文 interim
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 17，未开始 Step 18；本步不做中文 final、不写 `transcript_segment`、不新增归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
+- 已重新阅读 `memory-bank/` 全部 7 份文档，并根据 `progress.md` 确认最新完成项为 Step 16 Qwen realtime ASR 替换。
+- 已按 TDD 先补后端 Step 17 目标测试并确认 RED：
+  - 新增 `backend/tests/test_translation_providers.py`，首次失败原因为缺少 `meeting_mvp_backend.translation_providers`。
+  - 扩展 `backend/tests/test_websocket_sessions.py`，首次随目标集一起失败，确认 WebSocket 编排尚未支持真实 interim 翻译 provider。
+  - 扩展 `frontend/src/App.test.tsx` 检查中文 interim/final 样式区分；该测试首次即通过，说明 Step 15/16 UI 已满足本步前端样式边界。
+- 新增 `backend/src/meeting_mvp_backend/translation_providers.py`：
+  - 定义 `InterimTranslationProvider` 协议、`InterimTranslationError` 和 `QwenInterimTranslationProvider`。
+  - 使用既有 `QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_INTERIM_MODEL` 调用 Qwen OpenAI-compatible `/chat/completions`。
+  - Prompt 固定要求简洁自然中文、不扩写、不添加原文没有的信息、只输出中文译文。
+  - HTTP 错误、网络错误、非法 JSON、空内容和缺失配置统一包装为可恢复 `InterimTranslationError`；错误信息只包含配置名或错误类型，不输出密钥值。
+- 扩展 `backend/src/meeting_mvp_backend/ws_sessions.py`：
+  - `SttInterimEvent` 仍立即发送 `asr_interim`，随后异步调度中文 `translation_interim`。
+  - 默认节流常量为 `INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS = 1.5`；空文本跳过、重复文本跳过、同一时间最多一个翻译请求，请求中收到的新 interim 只保留最新待处理文本。
+  - Qwen interim 失败只记录脱敏 `qwen_interim_translation_failed` warning，不发送 WebSocket `error`，不关闭会话，不影响英文 ASR 或 `asr_final`。
+  - `session_stop`、浏览器断开、resume pause 和错误关闭都会取消 pending translation task 并关闭 translation provider。
+- 扩展 `backend/src/meeting_mvp_backend/main.py`：
+  - `APP_ENV=local` 继续保留 Step 15 mock Provider 行为。
+  - 非 local 且 `QWEN_INTERIM_ENABLED=true` 时注入真实 Qwen interim translation provider factory。
+  - 未新增环境变量、数据库 migration 或 WebSocket wire schema。
+- 新增 `backend/tests/integration/test_qwen_interim_translation_smoke.py`：
+  - gated smoke 默认跳过；只有 `RUN_QWEN_INTERIM_SMOKE=1` 且提供真实 Qwen 文本模型环境变量时才访问真实服务。
+  - smoke 只断言返回非空中文文本，不打印 Qwen API key、完整 env 或模型响应正文。
+- Lighthouse 真实 Qwen interim smoke：
+  - 远端 `/opt/meeting_mvp/app` 不是 Git 工作树；为运行容器 smoke，已同步本地后端包目录到远端 app 目录并用 `deploy/.env.example` 重建 backend 镜像。
+  - 直接使用 `.env.production` 做 Compose build 会因缺少 `POSTGRES_USER` 被 Compose 插值拒绝；该远端配置缺口仍需正式部署前补齐。
+  - 容器运行时通过 `--env-file .env.production` 注入 Qwen 配置，执行脱敏 smoke 脚本，结果输出 `qwen-interim-smoke-passed`；临时 `/tmp/qwen_interim_smoke.py` 已删除。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 17 后端 RED | `uv run pytest tests/test_translation_providers.py tests/test_websocket_sessions.py -q` | 首次失败：`ModuleNotFoundError: No module named 'meeting_mvp_backend.translation_providers'` |
+| Step 17 前端样式测试 | `npm run test -- --run src/App.test.tsx` | 10 passed；新增样式测试首次通过，确认现有 UI 已区分 interim/final |
+| Step 17 后端目标 GREEN | `uv run pytest tests/test_translation_providers.py tests/test_websocket_sessions.py -q` | 24 passed |
+| Qwen interim smoke hook 本地 gated 检查 | `uv run pytest tests/integration/test_qwen_interim_translation_smoke.py -m integration -q` | 1 skipped，因未设置 `RUN_QWEN_INTERIM_SMOKE=1` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 31 source files` |
+| 后端 pytest | `uv run pytest` | 69 passed，12 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、65 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过；仍有 Vite `vite:css` plugin timing warning，不影响退出码 |
+| 前端 E2E | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+| Lighthouse backend build | `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml build backend` | 通过，生成 `meeting_mvp-backend:latest` |
+| Lighthouse Qwen interim container smoke | `docker run --rm --env-file .env.production ... meeting_mvp-backend:latest python /tmp/qwen_interim_smoke.py` | 通过，输出 `qwen-interim-smoke-passed` |
+
+### 后续注意
+
+- Step 18 必须等待用户明确允许后再开始；当前没有中文 final、没有 final 上下文窗口、没有 `QWEN_FINAL_MODEL` 调用，也没有正式双语片段入库。
+- `translation_interim` 仍是临时 UI 消息，只替换当前中文临时理解，不进入 PostgreSQL。
+- Qwen interim provider 失败是可恢复降级：英文 `asr_interim` / `asr_final` 主链路继续运行。
+- 远端 `.env.production` 当前仍缺少 Compose 所需数据库变量名；后续正式部署前必须补齐，不能用 `deploy/.env.example` 占位值初始化正式数据目录。

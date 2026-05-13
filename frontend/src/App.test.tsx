@@ -363,6 +363,37 @@ describe('App', () => {
     ).toBeInTheDocument()
   })
 
+  it('keeps Chinese interim visually distinct from final translation text', () => {
+    useSessionStore.setState({
+      ...useSessionStore.getState(),
+      finalSegments: [
+        {
+          chinese_text_final: '我们需要在周五前对齐上线时间线。',
+          end_ms: 3200,
+          english_text_final: 'We need to align on the launch timeline before Friday.',
+          segment_id: 'segment-1',
+          sequence: 1,
+          start_ms: 0,
+          type: 'segment_final',
+        },
+      ],
+      translationInterimText: '我们需要对齐上线时间线。',
+    })
+
+    render(<App />)
+
+    const translationRegion = within(
+      screen.getByRole('region', { name: '中文翻译区' }),
+    )
+    const interimText = translationRegion.getByText('我们需要对齐上线时间线。')
+    const finalText = translationRegion.getByText(
+      '我们需要在周五前对齐上线时间线。',
+    )
+
+    expect(interimText).toHaveClass('text-muted-foreground')
+    expect(finalText).toHaveClass('text-zinc-950')
+  })
+
   it('shows a retry entry when capture permission is denied', async () => {
     const user = userEvent.setup()
     mockDisplayMediaWithError(

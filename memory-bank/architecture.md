@@ -680,3 +680,41 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 已通过的目标验证：后端 Step 16 目标集 `uv run pytest tests/test_qwen_realtime_asr_provider.py tests/test_ws_messages.py tests/test_config.py tests/test_websocket_sessions.py -q` 为 37 passed；前端协议/WebSocket/store 目标集为 29 passed；真实 Qwen smoke 使用 `D:\meeting_mvp_secrets\provider.env` 和公开样本 manifest 跑通，结果为 5 passed、1 skipped，中英混杂用例因 manifest 未配置样本跳过。
 - 完整本地验证结果记录在 `memory-bank/progress.md` 的最新 Step 16 替换进度中。
 - Step 17 尚未开始；Qwen interim/final 文本翻译、中文 final 入库、会后归档页/API、导出和 COS 仍等待后续明确步骤。
+
+## 2026-05-13 Step 17 中文 interim
+
+### 架构状态
+- Step 17 已接入中文 interim 生产链路：非 local 环境下，后端对节流后的英文 `asr_interim` 异步请求 Qwen Flash/Turbo，并通过既有 `translation_interim` WebSocket 消息推送给前端。
+- WebSocket wire schema 未变化；`translation_interim` 仍只有 `type` 和 `text`，前后端沿用 Step 10/15 已建立的协议和消费链路。
+- 中文 interim 只用于实时临时理解，不写 PostgreSQL，不生成正式 `segment_final`，不进入归档；正式中文 final 仍等待 Step 18。
+- Qwen interim 请求走 OpenAI-compatible `/chat/completions`，复用 `QWEN_API_KEY`、`QWEN_BASE_URL` 和 `QWEN_INTERIM_MODEL`；本步未新增环境变量，也未新增前端 `VITE_QWEN_*`。
+- WebSocket 编排层新增独立 translation task：英文 interim 先立即发给浏览器，再异步翻译；翻译失败只记录脱敏 warning，不发送 WebSocket `error`，不关闭会话，也不影响英文 ASR 或后续 final。
+- 默认节流策略固定为 1.5 秒最小间隔；空文本跳过、重复文本跳过、同一时间最多一个翻译请求，请求期间只保留最新待翻译 interim。
+- `session_stop`、浏览器断开、resume pause 和错误关闭都会取消 pending translation task 并关闭 translation provider，避免后台请求泄漏。
+- `APP_ENV=local` 继续使用 Step 15 mock Provider，确保本地无真实 Qwen 凭证时仍能看到 mock 中文 interim/final；非 local 且 `QWEN_INTERIM_ENABLED=true` 时才注入真实 Qwen interim provider。
+- Lighthouse 真实 Qwen interim smoke 已在后端容器镜像内通过；远端 `.env.production` 仍缺少 Compose 所需数据库变量名，后续正式部署前仍需补齐。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/translation_providers.py` | 中文 interim translation provider 模块。定义 `InterimTranslationProvider` 协议、可恢复 `InterimTranslationError` 和 `QwenInterimTranslationProvider`；负责构造 Qwen OpenAI-compatible chat completions 请求、固定 interim prompt、解析 assistant content，并把 HTTP/JSON/空响应/缺失配置包装为脱敏错误。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 17 在 STT interim 分支中调度中文 interim 翻译 task，维护 pending/latest/last request 状态和 1.5 秒节流，发送 `translation_interim`，并在 stop/disconnect/resume/error 路径取消和关闭 translation provider。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口与依赖组装。非 local 且 `QWEN_INTERIM_ENABLED=true` 时向 `WebSocketSessionOrchestrator` 注入 Qwen interim translation provider factory；local 模式保持 mock provider 路径。 |
+| `backend/tests/test_translation_providers.py` | Qwen interim provider 单元测试。使用 `httpx.MockTransport` 覆盖 OpenAI-compatible 请求 URL/header/body、成功解析、缺失配置只报变量名、HTTP 错误、空内容和非法 JSON。 |
+| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 行为测试。新增 fake interim translation provider，覆盖 `asr_interim` 后发送 `translation_interim`、请求中只保留最新文本、重复文本跳过、provider 失败不阻塞 `asr_final`、停止时取消 in-flight 翻译、且不写 `transcript_segment`。 |
+| `backend/tests/integration/test_qwen_interim_translation_smoke.py` | 真实 Qwen interim gated smoke hook。只有显式设置 `RUN_QWEN_INTERIM_SMOKE=1` 且提供真实 Qwen 文本环境变量时运行；断言返回非空中文文本，不打印密钥或模型响应正文。 |
+| `frontend/src/App.test.tsx` | 前端 UI 回归测试。新增中文 interim 与 final 同屏时的样式区分断言，确认 interim 使用 muted 文本，final 使用正式文本样式。 |
+
+### 状态与边界
+- `translation_interim` 是可替换的临时状态；前端 `translationInterimText` 继续只保存当前临时理解文本。
+- `segment_final`、`TranscriptSegment` 和 `TranslationStatus` 未因 Step 17 变化；中文 final 入库仍必须等 Step 18。
+- 真实 Qwen interim provider 不进入前端构建产物；前端仍只读取 `VITE_*` 公开配置。
+- Provider prompt 不扩写、不补充原文没有的信息，适合实时理解但不作为正式会议档案。
+- 失败隔离边界固定：Qwen interim 失败不会阻塞英文 ASR，也不会阻塞后续 Step 18 的中文 final 设计。
+
+### 验证结论
+- Step 17 已先跑 RED 测试确认后端缺口，再实现 Qwen interim provider、WebSocket 调度/节流/失败隔离到 GREEN。
+- 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
+- Lighthouse backend 镜像构建通过，容器内真实 Qwen interim smoke 输出 `qwen-interim-smoke-passed`。
+- Step 18 未开始；当前不会生成中文 final、不会携带最近 5 个 final 上下文、不会写正式双语归档。

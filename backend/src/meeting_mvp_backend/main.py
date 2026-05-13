@@ -17,6 +17,9 @@ from meeting_mvp_backend.quota import create_quota_service_from_settings
 from meeting_mvp_backend.stt_providers import (
     create_qwen_realtime_asr_provider_from_settings,
 )
+from meeting_mvp_backend.translation_providers import (
+    create_qwen_interim_translation_provider_from_settings,
+)
 from meeting_mvp_backend.ws_sessions import (
     SQLAlchemyMeetingSessionRepository,
     WebSocketSessionOrchestrator,
@@ -137,6 +140,11 @@ def get_websocket_session_orchestrator(
             None
             if settings.app_env is AppEnv.LOCAL
             else lambda: create_qwen_realtime_asr_provider_from_settings(settings)
+        ),
+        translation_provider_factory=(
+            (lambda: create_qwen_interim_translation_provider_from_settings(settings))
+            if settings.app_env is not AppEnv.LOCAL and settings.qwen_interim_enabled
+            else None
         ),
     )
 
