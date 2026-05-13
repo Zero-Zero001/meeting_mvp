@@ -310,7 +310,7 @@ test('uploads only effective PCM16 audio frames after session_started', async ({
     page.getByRole('region', { name: '英文原文区' }).getByText(
       'We need to align before Friday.',
     ),
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect(
     page.getByRole('region', { name: '英文原文区' }).getByText(
       'We need to align on the launch timeline before Friday.',

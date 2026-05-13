@@ -22,6 +22,7 @@ from meeting_mvp_backend.db.models import (
     CaptureMode,
     MeetingSessionStatus,
     SourcePlatform,
+    TranslationStatus,
 )
 from meeting_mvp_backend.quota import QuotaDecision
 from meeting_mvp_backend.stt_providers import QwenRealtimeAsrProvider
@@ -143,6 +144,8 @@ class SmokeSessionRepository:
         english_text_final: str,
         chinese_text_final: str,
         is_key_sentence: bool,
+        translation_status: TranslationStatus = TranslationStatus.COMPLETED,
+        asr_confidence: float | None = None,
     ) -> uuid.UUID:
         _ = (
             session_id,
@@ -152,6 +155,8 @@ class SmokeSessionRepository:
             english_text_final,
             chinese_text_final,
             is_key_sentence,
+            translation_status,
+            asr_confidence,
         )
         raise AssertionError("asr_final must not be persisted in Step 16")
 

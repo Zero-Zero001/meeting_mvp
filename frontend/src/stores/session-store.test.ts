@@ -281,12 +281,7 @@ describe('useSessionStore', () => {
       keySentenceText: '我们需要在周五前对齐上线时间线。',
       translationInterimText: '我们需要对齐上线时间线。',
     })
-    expect(useSessionStore.getState().englishFinalSegments).toEqual([
-      expect.objectContaining({
-        text: 'We need to align on the launch timeline before Friday.',
-        type: 'asr_final',
-      }),
-    ])
+    expect(useSessionStore.getState().englishFinalSegments).toEqual([])
     expect(useSessionStore.getState().finalSegments).toHaveLength(1)
     expect(useSessionStore.getState().finalSegments[0]).toMatchObject({
       chinese_text_final: '我们需要在周五前对齐上线时间线。',

@@ -6,8 +6,9 @@ import json
 import secrets
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Protocol
 from urllib.parse import quote
 
@@ -37,7 +38,12 @@ from meeting_mvp_backend.stt_providers import (
     SttFinalEvent,
     SttInterimEvent,
 )
-from meeting_mvp_backend.translation_providers import InterimTranslationProvider
+from meeting_mvp_backend.translation_providers import (
+    FinalTranslationContextSegment,
+    FinalTranslationProvider,
+    FinalTranslationRequest,
+    InterimTranslationProvider,
+)
 from meeting_mvp_backend.ws_messages import (
     AsrFinalMessage,
     AsrInterimMessage,
@@ -66,6 +72,7 @@ logger = structlog.get_logger(__name__)
 Clock = Callable[[], datetime]
 SttProviderFactory = Callable[[], StreamingSttProvider]
 TranslationProviderFactory = Callable[[], InterimTranslationProvider]
+FinalTranslationProviderFactory = Callable[[], FinalTranslationProvider]
 USER_STOPPED_REASON = "user_stopped"
 BROWSER_DISCONNECTED_REASON = "browser_disconnected"
 INVALID_MESSAGE_REASON = "invalid_message"
@@ -75,8 +82,10 @@ CONFIGURATION_ERROR_REASON = "configuration_error"
 INTERNAL_ERROR_REASON = "internal_error"
 QWEN_ASR_ERROR_REASON = "qwen_asr_error"
 SESSION_RESUME_FAILED_REASON = "session_resume_failed"
+QWEN_FINAL_TRANSLATION_FAILED_CODE = "qwen_final_translation_failed"
 MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
 INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS = 1.5
+FINAL_TRANSLATION_CONTEXT_SEGMENT_LIMIT = 5
 
 
 class MeetingSessionRepository(Protocol):
@@ -120,6 +129,8 @@ class MeetingSessionRepository(Protocol):
         english_text_final: str,
         chinese_text_final: str,
         is_key_sentence: bool,
+        translation_status: TranslationStatus = TranslationStatus.COMPLETED,
+        asr_confidence: float | None = None,
     ) -> uuid.UUID: ...
 
 
@@ -158,6 +169,14 @@ class WebSocketSessionState:
     pending_translation_text: str | None = None
     translation_provider: InterimTranslationProvider | None = None
     translation_task: asyncio.Task[None] | None = None
+    final_translation_context: list[FinalTranslationContextSegment] = field(
+        default_factory=list,
+    )
+    final_translation_provider: FinalTranslationProvider | None = None
+    final_translation_task: asyncio.Task[None] | None = None
+    pending_final_translations: list[SttFinalEvent] = field(default_factory=list)
+    current_final_translation: SttFinalEvent | None = None
+    archived_final_sequences: set[int] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -297,6 +316,8 @@ class SQLAlchemyMeetingSessionRepository:
         english_text_final: str,
         chinese_text_final: str,
         is_key_sentence: bool,
+        translation_status: TranslationStatus = TranslationStatus.COMPLETED,
+        asr_confidence: float | None = None,
     ) -> uuid.UUID:
         segment_id = uuid.uuid4()
         async with self._session_factory() as session:
@@ -310,7 +331,8 @@ class SQLAlchemyMeetingSessionRepository:
                     english_text_final=english_text_final,
                     chinese_text_final=chinese_text_final,
                     is_key_sentence=is_key_sentence,
-                    translation_status=TranslationStatus.COMPLETED,
+                    asr_confidence=_decimal_confidence(asr_confidence),
+                    translation_status=translation_status,
                 ),
             )
             await session.commit()
@@ -332,6 +354,9 @@ class WebSocketSessionOrchestrator:
             INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS
         ),
         translation_provider_factory: TranslationProviderFactory | None = None,
+        final_translation_provider_factory: (
+            FinalTranslationProviderFactory | None
+        ) = None,
     ) -> None:
         self._repository = repository
         self._quota_service = quota_service
@@ -342,6 +367,7 @@ class WebSocketSessionOrchestrator:
         self._stt_provider_factory = stt_provider_factory
         self._translation_min_interval_seconds = translation_min_interval_seconds
         self._translation_provider_factory = translation_provider_factory
+        self._final_translation_provider_factory = final_translation_provider_factory
 
     async def handle(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -577,6 +603,10 @@ class WebSocketSessionOrchestrator:
         state.pending_translation_text = None
         state.translation_provider = None
         state.translation_task = None
+        state.pending_final_translations.clear()
+        state.current_final_translation = None
+        state.final_translation_provider = None
+        state.final_translation_task = None
         await _send_server_message(
             websocket,
             SessionResumedMessage(
@@ -685,6 +715,7 @@ class WebSocketSessionOrchestrator:
                             confidence=event.confidence,
                         ),
                     )
+                    self._schedule_final_translation(websocket, state, event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -697,6 +728,170 @@ class WebSocketSessionOrchestrator:
                 state=state,
                 reason=QWEN_ASR_ERROR_REASON,
                 message=exc.__class__.__name__,
+            )
+
+    def _schedule_final_translation(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+        event: SttFinalEvent,
+    ) -> None:
+        if self._final_translation_provider_factory is None:
+            return
+        if " ".join(event.text.split()) == "":
+            return
+
+        state.pending_final_translations.append(event)
+        task = state.final_translation_task
+        if task is None or task.done():
+            state.final_translation_task = asyncio.create_task(
+                self._run_final_translation_loop(websocket, state),
+            )
+
+    async def _run_final_translation_loop(
+        self,
+        websocket: WebSocket,
+        state: WebSocketSessionState,
+    ) -> None:
+        while state.pending_final_translations and not state.closed:
+            event = state.pending_final_translations.pop(0)
+            if event.sequence in state.archived_final_sequences:
+                continue
+
+            state.current_final_translation = event
+            try:
+                provider = state.final_translation_provider
+                if provider is None:
+                    provider_factory = self._final_translation_provider_factory
+                    if provider_factory is None:
+                        return
+                    provider = provider_factory()
+                    state.final_translation_provider = provider
+
+                translated_text = await provider.translate_final(
+                    FinalTranslationRequest(
+                        sequence=event.sequence,
+                        text=event.text,
+                        context=tuple(
+                            state.final_translation_context[
+                                -FINAL_TRANSLATION_CONTEXT_SEGMENT_LIMIT:
+                            ],
+                        ),
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "qwen_final_translation_failed",
+                    error_type=exc.__class__.__name__,
+                    session_id=str(state.session_id),
+                    sequence=event.sequence,
+                )
+                await self._archive_failed_final_translation(
+                    websocket=websocket,
+                    state=state,
+                    event=event,
+                    send_warning=True,
+                )
+                state.current_final_translation = None
+                continue
+
+            translated_text = translated_text.strip()
+            if translated_text == "":
+                await self._archive_failed_final_translation(
+                    websocket=websocket,
+                    state=state,
+                    event=event,
+                    send_warning=True,
+                )
+                state.current_final_translation = None
+                continue
+
+            await self._archive_completed_final_translation(
+                websocket=websocket,
+                state=state,
+                event=event,
+                translated_text=translated_text,
+            )
+            state.current_final_translation = None
+
+    async def _archive_completed_final_translation(
+        self,
+        *,
+        websocket: WebSocket | None,
+        state: WebSocketSessionState,
+        event: SttFinalEvent,
+        translated_text: str,
+    ) -> None:
+        if event.sequence in state.archived_final_sequences:
+            return
+
+        repository = _require_repository(self._repository)
+        segment_id = await repository.create_transcript_segment(
+            session_id=state.session_id,
+            sequence=event.sequence,
+            start_ms=event.start_ms,
+            end_ms=event.end_ms,
+            english_text_final=event.text,
+            chinese_text_final=translated_text,
+            is_key_sentence=False,
+            translation_status=TranslationStatus.COMPLETED,
+            asr_confidence=event.confidence,
+        )
+        state.archived_final_sequences.add(event.sequence)
+        state.final_translation_context.append(
+            FinalTranslationContextSegment(
+                sequence=event.sequence,
+                english_text_final=event.text,
+                chinese_text_final=translated_text,
+            ),
+        )
+        await _send_server_message(
+            websocket,
+            SegmentFinalMessage(
+                type="segment_final",
+                segment_id=str(segment_id),
+                sequence=event.sequence,
+                start_ms=event.start_ms,
+                end_ms=event.end_ms,
+                english_text_final=event.text,
+                chinese_text_final=translated_text,
+            ),
+        )
+
+    async def _archive_failed_final_translation(
+        self,
+        *,
+        websocket: WebSocket | None,
+        state: WebSocketSessionState,
+        event: SttFinalEvent,
+        send_warning: bool,
+    ) -> None:
+        if event.sequence in state.archived_final_sequences:
+            return
+
+        repository = _require_repository(self._repository)
+        await repository.create_transcript_segment(
+            session_id=state.session_id,
+            sequence=event.sequence,
+            start_ms=event.start_ms,
+            end_ms=event.end_ms,
+            english_text_final=event.text,
+            chinese_text_final="",
+            is_key_sentence=False,
+            translation_status=TranslationStatus.FAILED,
+            asr_confidence=event.confidence,
+        )
+        state.archived_final_sequences.add(event.sequence)
+        if send_warning:
+            await _send_server_message(
+                websocket,
+                WarningMessage(
+                    type="warning",
+                    code=QWEN_FINAL_TRANSLATION_FAILED_CODE,
+                    message="中文正式翻译失败，英文 final 已归档待重试。",
+                ),
             )
 
     def _schedule_interim_translation(
@@ -877,6 +1072,11 @@ class WebSocketSessionOrchestrator:
         await _close_translation_provider(state)
         await _close_stt_provider(state)
         await _cancel_stt_provider_task(state)
+        await self._cancel_final_translation_task(
+            state,
+            archive_pending_as_failed=True,
+        )
+        await _close_final_translation_provider(state)
         repository = _require_repository(self._repository)
         quota_service = _require_quota_service(self._quota_service)
         ended_at = self._clock()
@@ -946,6 +1146,11 @@ class WebSocketSessionOrchestrator:
         self,
         state: WebSocketSessionState,
     ) -> None:
+        await self._cancel_final_translation_task(
+            state,
+            archive_pending_as_failed=True,
+        )
+        await _close_final_translation_provider(state)
         mock_provider_task = state.mock_provider_task
         stt_provider_task = state.stt_provider_task
         stt_provider = state.stt_provider
@@ -957,6 +1162,10 @@ class WebSocketSessionOrchestrator:
         state.pending_translation_text = None
         state.translation_provider = None
         state.translation_task = None
+        state.final_translation_provider = None
+        state.final_translation_task = None
+        state.current_final_translation = None
+        state.pending_final_translations.clear()
         state.closed = True
         expires_at = self._clock() + timedelta(
             seconds=self._settings.session_resume_grace_seconds,
@@ -971,6 +1180,31 @@ class WebSocketSessionOrchestrator:
         await _close_provider(translation_provider)
         await _cancel_task(stt_provider_task)
         await _close_provider(stt_provider)
+
+    async def _cancel_final_translation_task(
+        self,
+        state: WebSocketSessionState,
+        *,
+        archive_pending_as_failed: bool,
+    ) -> None:
+        pending_events: list[SttFinalEvent] = []
+        if archive_pending_as_failed and state.current_final_translation is not None:
+            pending_events.append(state.current_final_translation)
+        if archive_pending_as_failed:
+            pending_events.extend(state.pending_final_translations)
+        state.pending_final_translations.clear()
+
+        await _cancel_task(state.final_translation_task)
+        state.final_translation_task = None
+        state.current_final_translation = None
+
+        for event in pending_events:
+            await self._archive_failed_final_translation(
+                websocket=None,
+                state=state,
+                event=event,
+                send_warning=False,
+            )
 
     async def _expire_resumable_session(
         self,
@@ -1019,6 +1253,12 @@ def _elapsed_seconds(started_at: datetime | None, ended_at: datetime) -> int:
     if started_at is None:
         return 0
     return max(int((ended_at - started_at).total_seconds()), 0)
+
+
+def _decimal_confidence(value: float | None) -> Decimal | None:
+    if value is None:
+        return None
+    return Decimal(str(value))
 
 
 def _matches_session(state: WebSocketSessionState, session_id: str) -> bool:
@@ -1098,8 +1338,17 @@ async def _close_translation_provider(state: WebSocketSessionState) -> None:
     await _close_provider(state.translation_provider)
 
 
+async def _close_final_translation_provider(state: WebSocketSessionState) -> None:
+    await _close_provider(state.final_translation_provider)
+
+
 async def _close_provider(
-    provider: StreamingSttProvider | InterimTranslationProvider | None,
+    provider: (
+        StreamingSttProvider
+        | InterimTranslationProvider
+        | FinalTranslationProvider
+        | None
+    ),
 ) -> None:
     if provider is None:
         return

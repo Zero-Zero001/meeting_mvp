@@ -18,6 +18,7 @@ from meeting_mvp_backend.stt_providers import (
     create_qwen_realtime_asr_provider_from_settings,
 )
 from meeting_mvp_backend.translation_providers import (
+    create_qwen_final_translation_provider_from_settings,
     create_qwen_interim_translation_provider_from_settings,
 )
 from meeting_mvp_backend.ws_sessions import (
@@ -140,6 +141,11 @@ def get_websocket_session_orchestrator(
             None
             if settings.app_env is AppEnv.LOCAL
             else lambda: create_qwen_realtime_asr_provider_from_settings(settings)
+        ),
+        final_translation_provider_factory=(
+            None
+            if settings.app_env is AppEnv.LOCAL
+            else lambda: create_qwen_final_translation_provider_from_settings(settings)
         ),
         translation_provider_factory=(
             (lambda: create_qwen_interim_translation_provider_from_settings(settings))

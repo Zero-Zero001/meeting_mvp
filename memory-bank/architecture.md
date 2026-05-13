@@ -692,7 +692,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 默认节流策略固定为 1.5 秒最小间隔；空文本跳过、重复文本跳过、同一时间最多一个翻译请求，请求期间只保留最新待翻译 interim。
 - `session_stop`、浏览器断开、resume pause 和错误关闭都会取消 pending translation task 并关闭 translation provider，避免后台请求泄漏。
 - `APP_ENV=local` 继续使用 Step 15 mock Provider，确保本地无真实 Qwen 凭证时仍能看到 mock 中文 interim/final；非 local 且 `QWEN_INTERIM_ENABLED=true` 时才注入真实 Qwen interim provider。
-- Lighthouse 真实 Qwen interim smoke 已在后端容器镜像内通过；远端 `.env.production` 仍缺少 Compose 所需数据库变量名，后续正式部署前仍需补齐。
+- Lighthouse 真实 Qwen interim smoke 已在后端容器镜像内通过；当时远端 `.env.production` 仍缺少 Compose 所需数据库变量名，Step 18 前后已补齐到可完成 backend build 的状态，正式部署前仍需确认变量均为真实生产值。
 
 ### 文件作用
 
@@ -717,4 +717,48 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Step 17 已先跑 RED 测试确认后端缺口，再实现 Qwen interim provider、WebSocket 调度/节流/失败隔离到 GREEN。
 - 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
 - Lighthouse backend 镜像构建通过，容器内真实 Qwen interim smoke 输出 `qwen-interim-smoke-passed`。
-- Step 18 未开始；当前不会生成中文 final、不会携带最近 5 个 final 上下文、不会写正式双语归档。
+- 截至 Step 17 完成时，Step 18 尚未开始；中文 final、最近 5 个 final 上下文和正式双语归档已在后续 Step 18 补齐。
+
+## 2026-05-13 Step 18 中文 final
+
+### 架构状态
+- Step 18 已接入中文 final 生产链路：非 local 环境下，后端在 `SttFinalEvent` 后立即发送英文 `asr_final`，再异步请求 Qwen final 翻译，成功后写入 `transcript_segment` 并推送既有 `segment_final`。
+- WebSocket wire schema 未变化；前后端继续复用 Step 10/15/16 已建立的 `asr_final` 与 `segment_final` 消息。
+- Qwen final 请求走 OpenAI-compatible `/chat/completions`，复用 `QWEN_API_KEY`、`QWEN_BASE_URL` 和 `QWEN_FINAL_MODEL`；本步未新增环境变量，也未新增前端 `VITE_QWEN_*`。
+- final prompt 面向正式会议归档：中文表达准确自然，保留人名、产品名、公司名、数字、日期、金额和业务术语，不总结、不扩写，只输出当前片段中文译文。
+- final 请求显式关闭 thinking：`enable_thinking=false`，并限制 `max_tokens=512`、`temperature=0.1`；默认请求超时为 60 秒，避免 `qwen3.6-max-preview` 在会议翻译低推理场景下因思考输出导致延迟过高。
+- WebSocket 编排层维护最近 5 个已成功双语 final 片段作为内存上下文窗口；上下文只用于术语和指代一致性，不改变当前片段的 wire schema 或数据库 schema。
+- Qwen final 失败隔离边界：失败时仍保存英文 final，`chinese_text_final=""`，`translation_status=failed`，发送可恢复 `warning(code="qwen_final_translation_failed")`；WebSocket 不关闭，后续英文 ASR 和后续 final 继续运行。
+- `session_stop`、浏览器断开、resume pause 和错误关闭都会取消 pending final translation task、关闭 final provider，并把当前/排队未完成 final 片段按 failed 状态归档，供后续 Step 25 重试。
+- `APP_ENV=local` 继续使用 Step 15 mock provider；非 local 才注入真实 Qwen realtime ASR、Qwen interim 和 Qwen final provider。
+- 本步不新增数据库 migration：`transcript_segment` 已有 `translation_status`、`asr_confidence`、英文 final、中文 final、时间戳和 sequence 字段。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/translation_providers.py` | Qwen 文本翻译 provider 模块。Step 18 在既有 interim provider 基础上新增 `FinalTranslationProvider`、`FinalTranslationRequest`、`FinalTranslationContextSegment`、`FinalTranslationError` 和 `QwenFinalTranslationProvider`；负责构造 final `/chat/completions` 请求、关闭 thinking、限制输出长度、解析 assistant content，并把 HTTP/JSON/空响应/缺失配置包装为脱敏错误。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 18 在 STT final 分支中调度 final translation queue，维护最近 5 个成功 final 上下文，成功时创建 `TranscriptSegment` 并发送 `segment_final`，失败或取消时写入 failed 片段并发送 warning/保留可重试状态。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口与依赖组装。非 local WebSocket orchestrator 注入 Qwen final translation provider factory；local 模式保持 mock provider。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 数据库模型。Step 18 复用既有 `TranscriptSegment.translation_status`、`asr_confidence`、`english_text_final`、`chinese_text_final`、`sequence`、`start_ms` 和 `end_ms` 字段，不新增 migration。 |
+| `backend/tests/test_translation_providers.py` | Qwen 文本 provider 单元测试。Step 18 新增 final 请求体、模型名、上下文、`enable_thinking=false`、`max_tokens=512`、成功解析、缺失配置脱敏、HTTP 错误、空内容和非法 JSON 覆盖。 |
+| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 行为测试。Step 18 新增 fake final translation provider，覆盖 `asr_final` 后翻译归档、按顺序发送 `segment_final`、最近 5 个上下文、失败入库为 `translation_status=failed`、后续 final 不阻塞、停止时取消 in-flight final 并按 failed 归档。 |
+| `backend/tests/integration/test_qwen_final_translation_smoke.py` | 真实 Qwen final gated smoke hook。只有显式设置 `RUN_QWEN_FINAL_SMOKE=1` 且提供真实 Qwen 文本配置时运行；断言返回非空中文、不泄漏英文原句前缀并保留术语，不打印密钥或完整 env。 |
+| `backend/tests/integration/test_qwen_realtime_asr_smoke.py` | Qwen ASR smoke fake repository 兼容 Step 18 扩展后的 `create_transcript_segment()` 签名；ASR smoke 本身仍验证 Step 16 英文 final 不入库。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。收到正式 `segment_final` 后按 `sequence` 移除匹配的临时 `englishFinalSegments`，避免英文区重复展示同一 final；其余四区状态逻辑不扩展到 Step 19。 |
+| `frontend/src/stores/session-store.test.ts` | store 单元测试。更新实时消息用例，确认 `segment_final` 到达后匹配 `asr_final` 被去重。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。更新实时文本流 smoke，确认正式双语 final 到达后英文区展示 `segment_final.english_text_final`，不再保留对应临时 `asr_final` 文本。 |
+
+### 状态与边界
+- `asr_final` 是英文 final 的实时展示消息；`segment_final` 是中文 final 成功后的正式双语片段消息。
+- 成功中文 final 才会发送 `segment_final`；失败片段不伪造中文 final，只写数据库 failed 状态和 warning。
+- `translation_interim` 仍是临时 UI 状态，不进入 PostgreSQL，不参与 final 上下文。
+- `final_translation_context` 是单 WebSocket 会话内存状态；服务重启后不恢复上下文，后续会后归档 API/重试由后续步骤处理。
+- 当前重点句和会议时间线仍沿用 Step 15 mock/既有前端消费，不在生产 Qwen final 成功后新增 Step 19/F17/F18 行为。
+- 真实 Qwen final provider 不进入前端构建产物；前端仍只读取 `VITE_*` 公开配置。
+
+### 验证结论
+- Step 18 已先跑 RED 测试确认后端 final provider/编排缺口和前端去重缺口，再实现到 GREEN。
+- 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
+- Lighthouse backend 镜像使用 `.env.production` 构建通过，容器内真实 Qwen final smoke 最终通过 `1 passed in 3.18s`；首次超时失败后通过关闭 thinking 和限制输出长度修复。
+- Step 19 未开始；当前没有新增四区实时 UI 改造、归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。

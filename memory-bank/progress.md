@@ -948,7 +948,7 @@
   - smoke 只断言返回非空中文文本，不打印 Qwen API key、完整 env 或模型响应正文。
 - Lighthouse 真实 Qwen interim smoke：
   - 远端 `/opt/meeting_mvp/app` 不是 Git 工作树；为运行容器 smoke，已同步本地后端包目录到远端 app 目录并用 `deploy/.env.example` 重建 backend 镜像。
-  - 直接使用 `.env.production` 做 Compose build 会因缺少 `POSTGRES_USER` 被 Compose 插值拒绝；该远端配置缺口仍需正式部署前补齐。
+  - 直接使用 `.env.production` 做 Compose build 当时会因缺少 `POSTGRES_USER` 被 Compose 插值拒绝；该远端配置缺口已在 Step 18 前后补齐到可完成 backend build 的状态，正式部署前仍需确认变量均为真实生产值。
   - 容器运行时通过 `--env-file .env.production` 注入 Qwen 配置，执行脱敏 smoke 脚本，结果输出 `qwen-interim-smoke-passed`；临时 `/tmp/qwen_interim_smoke.py` 已删除。
 
 ### 验证命令与结果
@@ -972,7 +972,69 @@
 
 ### 后续注意
 
-- Step 18 必须等待用户明确允许后再开始；当前没有中文 final、没有 final 上下文窗口、没有 `QWEN_FINAL_MODEL` 调用，也没有正式双语片段入库。
+- 截至 Step 17 完成时，Step 18 必须等待用户明确允许后再开始；当时没有中文 final、没有 final 上下文窗口、没有 `QWEN_FINAL_MODEL` 调用，也没有正式双语片段入库。上述能力已在后续 Step 18 补齐。
 - `translation_interim` 仍是临时 UI 消息，只替换当前中文临时理解，不进入 PostgreSQL。
 - Qwen interim provider 失败是可恢复降级：英文 `asr_interim` / `asr_final` 主链路继续运行。
-- 远端 `.env.production` 当前仍缺少 Compose 所需数据库变量名；后续正式部署前必须补齐，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
+- 远端 `.env.production` 曾缺少 Compose 所需数据库变量名；Step 18 前后已补齐到可完成 backend build 的状态，正式部署前仍需确认变量均为真实生产值，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
+
+## 2026-05-13 Step 18：中文 final
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 18，未开始 Step 19；本步不新增归档 API/页面、搜索、复制、导出、COS、完整 `usage_event`、重点句或时间线增强。
+- 已在 Step 17 基础上扩展 `backend/src/meeting_mvp_backend/translation_providers.py`：
+  - 新增 `FinalTranslationProvider` 协议、`FinalTranslationRequest`、`FinalTranslationContextSegment`、`FinalTranslationError` 和 `QwenFinalTranslationProvider`。
+  - 使用既有 `QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_FINAL_MODEL` 调用 Qwen OpenAI-compatible `/chat/completions`，不新增环境变量。
+  - final prompt 固定为正式会议中文翻译：准确自然、适合中国职场归档阅读，保留人名/产品名/数字/日期/业务术语，只输出当前片段中文译文。
+  - final 请求显式设置 `enable_thinking=false`、`max_tokens=512`、`temperature=0.1`，并将默认请求超时提高到 60 秒；真实 smoke 首次 20 秒和 60 秒超时后，通过关闭 thinking 后恢复通过。
+  - HTTP 错误、网络错误、非法 JSON、空内容和缺失配置统一包装为可恢复 `FinalTranslationError`，错误信息只包含配置名、HTTP 状态或错误类型，不输出密钥。
+- 扩展 `backend/src/meeting_mvp_backend/ws_sessions.py`：
+  - `SttFinalEvent` 仍立即发送英文 `asr_final`，保证英文 final 实时可见。
+  - 配置 final provider 时，按 `sequence` 排队翻译英文 final；成功后写入 `transcript_segment(translation_status=completed)` 并发送既有 `segment_final`。
+  - 成功 final 会进入内存上下文窗口，后续请求最多携带最近 5 个已成功双语 final 片段，供术语和指代一致性使用。
+  - Qwen final 失败时写入英文 final、空中文 final、`translation_status=failed` 和 `asr_confidence`，发送可恢复 `warning(code="qwen_final_translation_failed")`，不关闭 WebSocket，不阻塞后续 ASR/final。
+  - `session_stop`、浏览器断开、resume pause 和错误关闭会取消 in-flight final translation task、关闭 final provider，并把当前/排队未完成 final 片段按 failed 状态归档，供后续 Step 25 重试。
+  - 扩展 SQLAlchemy 仓储写入 `translation_status` 和 `asr_confidence`；现有数据库模型已有字段，因此未新增 migration。
+- 扩展 `backend/src/meeting_mvp_backend/main.py`：
+  - `APP_ENV=local` 保持 Step 15 mock provider 行为。
+  - 非 local WebSocket 会话注入真实 Qwen final provider factory；Qwen interim provider 仍由 `QWEN_INTERIM_ENABLED` 控制。
+- 前端只做必要状态修正：
+  - `frontend/src/stores/session-store.ts` 在收到匹配 `sequence` 的 `segment_final` 后移除对应 `englishFinalSegments` 临时英文 final，避免英文区重复展示同一 final。
+  - `frontend/e2e/app.spec.ts` 同步断言：正式双语 `segment_final` 到达后，匹配的英文 `asr_final` 不再重复保留。
+  - WebSocket wire schema 未变化，仍复用既有 `asr_final`、`translation_interim` 和 `segment_final`。
+- 新增 `backend/tests/integration/test_qwen_final_translation_smoke.py`：
+  - gated smoke 默认跳过；只有 `RUN_QWEN_FINAL_SMOKE=1` 且提供真实 Qwen 文本配置时才访问真实服务。
+  - smoke 使用上下文样例断言返回非空中文、不泄漏英文原句前缀，并保留 `Acme` 术语；不打印 API key、完整 env 或模型响应正文。
+- Lighthouse 真实 Qwen final smoke：
+  - 已同步 Step 18 相关文件到远端 `/opt/meeting_mvp/app`；该目录不是 Git 工作树。
+  - 使用远端 `.env.production` 完成 `docker compose --env-file .env.production -f deploy/docker-compose.yml build backend`，说明先前 Compose 所需数据库/站点变量缺口已补齐；本次未输出任何密钥值。
+  - 首次 smoke 因 Qwen final 读超时失败，随后通过 `enable_thinking=false`、`max_tokens=512` 和 60 秒超时调整后，后端容器内真实 Qwen final smoke 通过。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 18 后端 RED | `uv run pytest tests/test_translation_providers.py tests/test_websocket_sessions.py -q` | 首次失败：缺少 `FinalTranslationRequest`、`FinalTranslationContextSegment` 等 final provider 类型 |
+| Step 18 前端 RED | `npm run test -- --run src/stores/session-store.test.ts` | 1 failed，`segment_final` 到达后仍保留匹配 `asr_final` |
+| Step 18 后端目标 GREEN | `uv run pytest tests/test_translation_providers.py tests/test_websocket_sessions.py -q` | 35 passed |
+| Step 18 前端目标 GREEN | `npm run test -- --run src/stores/session-store.test.ts` | 8 passed |
+| Qwen final smoke hook 本地 gated 检查 | `uv run pytest tests/integration/test_qwen_final_translation_smoke.py -m integration -q` | 1 skipped，因未设置 `RUN_QWEN_FINAL_SMOKE=1` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 32 source files` |
+| 后端 pytest | `uv run pytest` | 80 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、65 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E 首次完整验证 | `npm run test:e2e` | 首次 1 failed，旧断言仍期待已去重的英文 `asr_final`；更新断言后通过 |
+| 前端 E2E 最终验证 | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+| Lighthouse backend build | `docker compose --env-file .env.production -f deploy/docker-compose.yml build backend` | 通过，生成 `meeting_mvp-backend:latest` |
+| Lighthouse Qwen final container smoke 首次 | `docker compose --env-file .env.production -f deploy/docker-compose.yml run --rm --no-deps -e RUN_QWEN_FINAL_SMOKE=1 backend uv run pytest -o addopts= -m integration tests/integration/test_qwen_final_translation_smoke.py -q` | 先后因 `ReadTimeout` 失败；无密钥输出 |
+| Lighthouse Qwen final container smoke 最终 | 同上 | 通过，`1 passed in 3.18s` |
+
+### 后续注意
+
+- Step 19 必须等待用户明确允许后再开始；当前只复用既有前端消费链路，不新增四区实时 UI 功能。
+- `translation_interim` 仍不入库；正式归档只来自英文 final + 中文 final 的 `transcript_segment`。
+- Qwen final 失败片段当前只保存 `translation_status=failed` 和空中文 final，自动/手动重试仍属于 Step 25。
+- 本步没有新增公开 REST API、数据库 migration、COS、搜索/复制/导出或完整 `usage_event` 链路。

@@ -406,6 +406,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
         onSegmentFinal: (message) => {
           set((state) => ({
+            englishFinalSegments: state.englishFinalSegments.filter(
+              (segment) => segment.sequence !== message.sequence,
+            ),
             finalSegments: [...state.finalSegments, message],
           }))
         },

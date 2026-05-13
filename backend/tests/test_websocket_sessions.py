@@ -16,10 +16,12 @@ from meeting_mvp_backend.db.models import (
     CaptureMode,
     MeetingSessionStatus,
     SourcePlatform,
+    TranslationStatus,
 )
 from meeting_mvp_backend.main import app, get_websocket_session_orchestrator
 from meeting_mvp_backend.quota import QuotaDecision, QuotaDenialReason
 from meeting_mvp_backend.stt_providers import SttEvent, SttFinalEvent, SttInterimEvent
+from meeting_mvp_backend.translation_providers import FinalTranslationRequest
 from meeting_mvp_backend.ws_sessions import (
     InMemorySessionResumeRegistry,
     WebSocketSessionOrchestrator,
@@ -59,6 +61,8 @@ class StoredTranscriptSegment:
     english_text_final: str
     chinese_text_final: str
     is_key_sentence: bool
+    translation_status: TranslationStatus = TranslationStatus.COMPLETED
+    asr_confidence: float | None = None
 
 
 class FakeSessionRepository:
@@ -124,6 +128,8 @@ class FakeSessionRepository:
         english_text_final: str,
         chinese_text_final: str,
         is_key_sentence: bool,
+        translation_status: TranslationStatus = TranslationStatus.COMPLETED,
+        asr_confidence: float | None = None,
     ) -> uuid.UUID:
         segment_id = uuid.uuid4()
         self.transcript_segments.append(
@@ -136,6 +142,8 @@ class FakeSessionRepository:
                 english_text_final=english_text_final,
                 chinese_text_final=chinese_text_final,
                 is_key_sentence=is_key_sentence,
+                translation_status=translation_status,
+                asr_confidence=asr_confidence,
             ),
         )
         return segment_id
@@ -252,6 +260,35 @@ class FakeInterimTranslationProvider:
         self.closed = True
 
 
+class FakeFinalTranslationProvider:
+    def __init__(
+        self,
+        *,
+        delay_seconds: float = 0,
+        outcomes: list[str | Exception] | None = None,
+    ) -> None:
+        self.closed = False
+        self.delay_seconds = delay_seconds
+        self.outcomes = outcomes or []
+        self.requested_translations: list[FinalTranslationRequest] = []
+        self.started = threading.Event()
+
+    async def translate_final(self, request: FinalTranslationRequest) -> str:
+        self.started.set()
+        self.requested_translations.append(request)
+        if self.delay_seconds > 0:
+            await asyncio.sleep(self.delay_seconds)
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return f"正式中文：{request.text}"
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class SequenceClock:
     def __init__(self, *values: datetime) -> None:
         self._values = list(values)
@@ -285,6 +322,7 @@ def make_client(
     stt_provider: FakeSttProvider | None = None,
     translation_min_interval_seconds: float = 0,
     translation_provider: FakeInterimTranslationProvider | None = None,
+    final_translation_provider: FakeFinalTranslationProvider | None = None,
 ) -> TestClient:
     settings = Settings()
     settings.public_base_url = "https://meeting.example.test"
@@ -298,6 +336,11 @@ def make_client(
             clock=clock or (lambda: FIXED_NOW),
             resume_registry=resume_registry,
             stt_provider_factory=(lambda: stt_provider) if stt_provider else None,
+            final_translation_provider_factory=(
+                (lambda: final_translation_provider)
+                if final_translation_provider
+                else None
+            ),
             translation_provider_factory=(
                 (lambda: translation_provider) if translation_provider else None
             ),
@@ -534,6 +577,231 @@ def test_binary_frames_stream_to_stt_provider_and_emit_english_results() -> None
     }
     assert repository.transcript_segments == []
     assert stt_provider.closed is True
+
+
+def test_stt_final_triggers_final_translation_and_archives_segment() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=3200,
+                text="We need to align on the launch timeline before Friday.",
+                confidence=0.91,
+            ),
+        ],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(
+        outcomes=["我们需要在周五前对齐上线时间线。"],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        final_translation_provider=final_translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            audio_status = websocket.receive_json()
+            asr_final = receive_until_message_type(websocket, "asr_final")
+            segment_final = receive_until_message_type(websocket, "segment_final")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert audio_status == {"type": "audio_status", "has_audio": True, "level": None}
+    assert asr_final == {
+        "type": "asr_final",
+        "sequence": 1,
+        "start_ms": 0,
+        "end_ms": 3200,
+        "text": "We need to align on the launch timeline before Friday.",
+        "confidence": 0.91,
+    }
+    assert segment_final["type"] == "segment_final"
+    assert segment_final["sequence"] == 1
+    assert segment_final["english_text_final"] == (
+        "We need to align on the launch timeline before Friday."
+    )
+    assert segment_final["chinese_text_final"] == "我们需要在周五前对齐上线时间线。"
+    assert len(repository.transcript_segments) == 1
+    stored_segment = repository.transcript_segments[0]
+    assert stored_segment.segment_id == segment_final["segment_id"]
+    assert stored_segment.translation_status is TranslationStatus.COMPLETED
+    assert stored_segment.asr_confidence == 0.91
+    assert final_translation_provider.requested_translations == [
+        FinalTranslationRequest(
+            sequence=1,
+            text="We need to align on the launch timeline before Friday.",
+        ),
+    ]
+    assert final_translation_provider.closed is True
+
+
+def test_final_translation_uses_recent_five_successful_segments_as_context() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttFinalEvent(
+                sequence=sequence,
+                start_ms=(sequence - 1) * 1000,
+                end_ms=sequence * 1000,
+                text=f"Final English segment {sequence}.",
+                confidence=None,
+            )
+            for sequence in range(1, 8)
+        ],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(
+        outcomes=[f"正式中文片段 {sequence}。" for sequence in range(1, 8)],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        final_translation_provider=final_translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            segment_finals = [
+                receive_until_message_type(websocket, "segment_final")
+                for _ in range(7)
+            ]
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert [segment["sequence"] for segment in segment_finals] == list(range(1, 8))
+    assert len(repository.transcript_segments) == 7
+    requests = final_translation_provider.requested_translations
+    assert len(requests) == 7
+    assert [segment.sequence for segment in requests[5].context] == [1, 2, 3, 4, 5]
+    assert [segment.sequence for segment in requests[6].context] == [2, 3, 4, 5, 6]
+    assert requests[6].context[-1].chinese_text_final == "正式中文片段 6。"
+
+
+def test_final_translation_failure_archives_failed_segment_and_continues() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=1200,
+                text="We need to align.",
+                confidence=None,
+            ),
+            SttFinalEvent(
+                sequence=2,
+                start_ms=1200,
+                end_ms=2400,
+                text="The budget review moved to Friday.",
+                confidence=None,
+            ),
+        ],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(
+        outcomes=[
+            RuntimeError("qwen final unavailable"),
+            "预算审查调整到周五。",
+        ],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        final_translation_provider=final_translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            warning = receive_until_message_type(websocket, "warning")
+            segment_final = receive_until_message_type(websocket, "segment_final")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            closed = receive_until_message_type(websocket, "session_closed")
+
+    assert warning["code"] == "qwen_final_translation_failed"
+    assert segment_final["sequence"] == 2
+    assert segment_final["chinese_text_final"] == "预算审查调整到周五。"
+    assert closed == {"type": "session_closed", "reason": "user_stopped"}
+    assert len(repository.transcript_segments) == 2
+    assert repository.transcript_segments[0].sequence == 1
+    assert repository.transcript_segments[0].chinese_text_final == ""
+    assert (
+        repository.transcript_segments[0].translation_status
+        is TranslationStatus.FAILED
+    )
+    assert repository.transcript_segments[1].sequence == 2
+    assert (
+        repository.transcript_segments[1].translation_status
+        is TranslationStatus.COMPLETED
+    )
+
+
+def test_stopping_session_cancels_in_flight_final_translation_as_failed() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=1200,
+                text="We need to align.",
+                confidence=None,
+            ),
+        ],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(delay_seconds=10)
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        final_translation_provider=final_translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            receive_until_message_type(websocket, "asr_final")
+            assert final_translation_provider.started.wait(timeout=1)
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert final_translation_provider.closed is True
+    assert len(repository.transcript_segments) == 1
+    assert repository.transcript_segments[0].sequence == 1
+    assert repository.transcript_segments[0].chinese_text_final == ""
+    assert (
+        repository.transcript_segments[0].translation_status
+        is TranslationStatus.FAILED
+    )
 
 
 def test_stt_interim_triggers_translation_interim_without_archiving() -> None:

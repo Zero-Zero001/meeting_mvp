@@ -24,7 +24,8 @@
 - Step 14 已实现前端音频前处理与 binary 上传：新增 `frontend/src/lib/audio-frames.ts`、`frontend/src/lib/audio-processing.ts`、`frontend/src/lib/meeting-websocket.ts` 和 `frontend/public/audio-worklet/pcm16-processor.js`，将捕获到的 `MediaStream` 转为 16 kHz mono PCM16 100ms frame，仅上传超过 RMS 阈值的非静音 binary frame，并通过前端 WebSocket client 发送 `session_start`/`session_stop`；本地前端 lint/test/build/e2e 均已通过。
 - Step 15 已实现本地 mock Provider 链路：后端新增 `meeting_mvp_backend.mock_providers` 固定脚本，并在首个有效 binary frame 激活会话后推送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`，同时写入 `transcript_segment`；前端 WebSocket client、Zustand store 和四区 UI 已消费实时文本；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 16 已将 F06 英文实时转写生产主路径替换为 Qwen3-ASR-Flash-Realtime：后端 `meeting_mvp_backend.stt_providers` 接入 Qwen realtime ASR WebSocket，非 local 环境 WebSocket 会话会把首帧和后续非空 PCM16 binary frame 以 Base64 `input_audio_buffer.append` 持续转发给 Qwen，并发送 `asr_interim` 与 `asr_final`；local 环境继续保留 Step 15 mock Provider；前端 WebSocket client、Zustand store 和英文原文区已消费 `asr_final`，并支持 `session_resume` / `session_resumed` 浏览器断线恢复；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 17 已实现 F07 中文 interim：后端新增 `meeting_mvp_backend.translation_providers`，非 local 且 `QWEN_INTERIM_ENABLED=true` 时对节流后的英文 `asr_interim` 异步调用 Qwen OpenAI-compatible `/chat/completions` 并推送 `translation_interim`；默认 1.5 秒最小间隔，空文本/重复文本跳过，请求中只保留最新待翻译文本；Qwen interim 失败只记录脱敏 warning，不阻塞英文 ASR 或后续 final；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen interim smoke 均已通过；未进入 Step 18。
+- Step 17 已实现 F07 中文 interim：后端新增 `meeting_mvp_backend.translation_providers`，非 local 且 `QWEN_INTERIM_ENABLED=true` 时对节流后的英文 `asr_interim` 异步调用 Qwen OpenAI-compatible `/chat/completions` 并推送 `translation_interim`；默认 1.5 秒最小间隔，空文本/重复文本跳过，请求中只保留最新待翻译文本；Qwen interim 失败只记录脱敏 warning，不阻塞英文 ASR 或后续 final；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen interim smoke 均已通过。
+- Step 18 已实现 F08 中文 final：后端 `meeting_mvp_backend.translation_providers` 新增 Qwen final provider，非 local WebSocket 会话在英文 `asr_final` 后用 `QWEN_FINAL_MODEL` 调用 Qwen OpenAI-compatible `/chat/completions` 生成正式中文 final，成功写入 `transcript_segment(translation_status=completed)` 并发送 `segment_final`；请求携带最近 5 个成功双语 final 上下文，显式 `enable_thinking=false`、`max_tokens=512`；Qwen final 失败会保存英文 final、空中文 final、`translation_status=failed` 并发送 warning，不关闭 WebSocket；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen final smoke 均已通过；未进入 Step 19。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -33,7 +34,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 17 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim 和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 18 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final 和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -175,10 +176,11 @@
 - Step 06 Compose 骨架中 Caddy 是唯一公网入口，只映射 80/443；PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`，Redis 挂载 `/opt/meeting_mvp/data/redis`。
 - Step 16 替换后，Compose 后端容器不再只读挂载 Google STT 服务账号 JSON；Qwen API key 只通过后端安全环境变量提供，不进入镜像或 Git。
 - Step 17 远端真实 Qwen interim smoke 已在 Lighthouse 后端容器镜像内通过：使用 `deploy/.env.example` 完成 backend 镜像构建，容器运行时通过 `.env.production` 注入 Qwen 配置，脱敏 smoke 输出 `qwen-interim-smoke-passed`；临时 `/tmp/qwen_interim_smoke.py` 已删除。
+- Step 18 远端真实 Qwen final smoke 已在 Lighthouse 后端容器镜像内通过：已同步 Step 18 文件到 `/opt/meeting_mvp/app`，使用 `.env.production` 完成 backend 镜像构建，并通过 `RUN_QWEN_FINAL_SMOKE=1` 在容器内运行 `tests/integration/test_qwen_final_translation_smoke.py`，最终结果为 `1 passed`；未输出 Qwen API key、完整生产 env 或任何密钥值。
 - 远端配置检查命令为：`cd /opt/meeting_mvp/app && docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`；Step 06 已执行通过，但未执行 `docker compose up -d`、`docker compose ps` 或 Alembic migration。
 - Step 07 远端 migration 和 PostgreSQL 集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step07` 完成，验收后已清理临时容器、临时数据目录、远端临时脚本和测试缓存。
 - Step 07 backend build 曾卡在 Lighthouse Docker build 的 `uv sync` 依赖下载阶段；`backend/Dockerfile` 已增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120`，后续 Compose backend build 已通过。
-- Step 07 发现远端 `.env.production` 当前未包含 Compose 所需的数据库、Redis 和站点变量名；Step 17 再次确认其缺少 `POSTGRES_USER` 会导致 `docker compose --env-file .env.production ... build` 插值失败；后续正式部署前需要补齐这些变量，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
+- Step 07/17 曾发现远端 `.env.production` 缺少 Compose 所需数据库/Redis/站点变量，尤其 `POSTGRES_USER` 会拦截 `docker compose --env-file .env.production ... build`；Step 18 前后已补齐到可用于 backend build 的状态，本次 `docker compose --env-file .env.production -f deploy/docker-compose.yml build backend` 通过。正式部署前仍需确认这些变量使用真实生产值，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
 - Step 08 远端匿名接口集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step08` 和临时 env 文件 `.env.step08` 完成；验收后已删除临时 PostgreSQL 容器、临时 env、临时数据目录和测试缓存。
 - Step 09 远端 Redis 集成测试使用独立 Compose project `meeting_mvp_step09`、临时数据目录 `/opt/meeting_mvp/data/redis_step09`、临时 env 文件 `.env.step09` 和非真实 Google 凭据占位文件完成；验收后已删除临时 Redis 容器、临时网络、临时 backend 镜像、临时 env、占位凭据、临时 Redis 数据目录和测试缓存。
 - 2026-05-09 真实 Google STT smoke 曾在 Lighthouse 使用 Google 官方公开 `brooklyn_bridge.raw` 英文样本尝试执行：样本下载成功，Google 凭证文件和必需环境变量存在性检查通过，未输出任何密钥或生产 env 内容。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`，未返回 interim/final。该结果已作为历史背景记录，Google STT 不再是 M1-A 生产主路径。
@@ -239,7 +241,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 17 Qwen 中文 interim 已完成；Step 18 必须等用户明确允许后再开始。
+- Step 18 Qwen 中文 final 已完成；Step 19 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -327,7 +329,19 @@ Step 17 Qwen 中文 interim 已落地：
 - `backend/src/meeting_mvp_backend/main.py` 仅在非 local 且 `QWEN_INTERIM_ENABLED=true` 时注入真实 Qwen interim provider；`APP_ENV=local` 继续使用 Step 15 mock Provider。
 - 前端不需要修改 WebSocket schema；既有 `translation_interim` callback、Zustand `translationInterimText` 和中文翻译区继续消费临时中文。`frontend/src/App.test.tsx` 已新增 interim/final 样式区分断言。
 - 新增 `backend/tests/integration/test_qwen_interim_translation_smoke.py` 作为真实 Qwen interim gated smoke hook；默认跳过，显式设置 `RUN_QWEN_INTERIM_SMOKE=1` 并提供真实 Qwen 文本配置时才访问真实服务。
-- 中文 interim 不写 PostgreSQL、不生成 `segment_final`、不进入归档；Step 18 中文 final、最近 5 个 final 上下文、`transcript_segment` 入库仍未开始。
+- 中文 interim 不写 PostgreSQL、不生成 `segment_final`、不进入归档；Step 18 已补齐中文 final、最近 5 个 final 上下文和 `transcript_segment` 入库。
+
+Step 18 Qwen 中文 final 已落地：
+
+- 后端 `backend/src/meeting_mvp_backend/translation_providers.py` 新增 `FinalTranslationProvider` 协议、`FinalTranslationRequest`、`FinalTranslationContextSegment`、`FinalTranslationError` 和 `QwenFinalTranslationProvider`，负责调用 Qwen OpenAI-compatible `/chat/completions` 生成正式中文 final。
+- Qwen final 复用 `QWEN_API_KEY`、`QWEN_BASE_URL` 和 `QWEN_FINAL_MODEL`，不新增环境变量；请求体显式 `enable_thinking=false`、`max_tokens=512`、`temperature=0.1`，默认超时 60 秒。
+- 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 在 `SttFinalEvent` 后仍先发送英文 `asr_final`，再按 sequence 排队翻译；成功后写入 `transcript_segment(translation_status=completed)` 并发送既有 `segment_final`。
+- 成功 final 会进入单 WebSocket 会话内存上下文窗口；后续 final 请求最多携带最近 5 个成功双语 final 片段，仅用于术语和指代一致性。
+- Qwen final 失败不会关闭 WebSocket：后端写入英文 final、空中文 final、`translation_status=failed` 和 `asr_confidence`，发送 `warning(code="qwen_final_translation_failed")`，后续 Step 25 再处理重试。
+- `session_stop`、浏览器断开、resume pause 和错误关闭会取消 pending final translation task、关闭 final provider，并将当前/排队未完成 final 片段按 failed 状态归档，避免丢失英文 final。
+- 前端 `frontend/src/stores/session-store.ts` 只做必要去重：收到 `segment_final` 后按 `sequence` 移除匹配的 `englishFinalSegments`，避免英文区重复展示同一 final；不新增 Step 19 四区 UI 功能。
+- 新增 `backend/tests/integration/test_qwen_final_translation_smoke.py` 作为真实 Qwen final gated smoke hook；默认跳过，显式设置 `RUN_QWEN_FINAL_SMOKE=1` 并提供真实 Qwen 文本配置时才访问真实服务。
+- Step 18 不新增公开 REST API、不修改 WebSocket wire schema、不新增 database migration、不新增归档页/API、搜索、复制、导出、COS、完整 `usage_event`、重点句或时间线增强。
 
 核心 WebSocket 请求消息：
 
@@ -373,7 +387,7 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 
 - 前端：`npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
 - 后端：在 `backend/` 内执行 `uv run python --version`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`；数据库步骤完成后再执行 `uv run alembic upgrade head`。
-- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis/Qwen 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py`、`tests/integration/test_quota_redis_integration.py`、`tests/integration/test_qwen_realtime_asr_smoke.py` 或 `tests/integration/test_qwen_interim_translation_smoke.py`；Qwen ASR smoke 需要 `RUN_QWEN_ASR_SMOKE=1`、真实 Qwen ASR 环境变量和测试音频 manifest，Qwen interim smoke 需要 `RUN_QWEN_INTERIM_SMOKE=1` 和真实 Qwen 文本模型环境变量。
+- 后端本地默认 `uv run pytest` 会排除 `integration` 标记；真实 PostgreSQL/Redis/Qwen 集成测试需在 Lighthouse/CI 中执行 `uv run pytest -o addopts= -m integration`，也可按步骤单独运行 `tests/integration/test_database_schema.py`、`tests/integration/test_anonymous_clients_integration.py`、`tests/integration/test_quota_redis_integration.py`、`tests/integration/test_qwen_realtime_asr_smoke.py`、`tests/integration/test_qwen_interim_translation_smoke.py` 或 `tests/integration/test_qwen_final_translation_smoke.py`；Qwen ASR smoke 需要 `RUN_QWEN_ASR_SMOKE=1`、真实 Qwen ASR 环境变量和测试音频 manifest，Qwen interim smoke 需要 `RUN_QWEN_INTERIM_SMOKE=1` 和真实 Qwen 文本模型环境变量，Qwen final smoke 需要 `RUN_QWEN_FINAL_SMOKE=1` 和真实 Qwen 文本模型环境变量。
 - 云端部署：`docker compose config`、`docker compose up -d`、`docker compose ps`。
 - 本机若默认 npm cache 遇到 `EPERM` 权限错误，可临时设置 `$env:npm_config_cache='D:\meeting_mvp\.cache\npm'`；该目录已被根目录 `.gitignore` 忽略。
 
@@ -383,5 +397,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 18 必须等待用户明确允许后再开始；Step 17 当前只提供 Qwen 中文 interim 临时理解，不生成中文 final，不携带最近 5 个 final 上下文，不写 `transcript_segment`，不新增会后归档 API/页面、COS 导出或完整 `usage_event` 链路。
+- Step 19 必须等待用户明确允许后再开始；Step 18 当前已提供 Qwen 中文 final、最近 5 个成功 final 上下文和 `transcript_segment` 入库，但不新增四区 UI 改造、会后归档 API/页面、COS 导出、搜索、复制、导出、重点句/时间线增强或完整 `usage_event` 链路。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。
