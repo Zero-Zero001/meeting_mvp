@@ -89,6 +89,18 @@ function websocketFailure(message = 'WebSocket connection failed'): Error {
   return new Error(message)
 }
 
+function dispatchWorkspaceMessage<T>(
+  callback: ((message: T) => void) | undefined,
+  message: T,
+) {
+  try {
+    callback?.(message)
+  } catch {
+    // Realtime panes are independent; one render/store callback must not break
+    // the WebSocket control flow or later workspace messages.
+  }
+}
+
 export function connectMeetingWebSocket({
   WebSocketCtor = WebSocket as unknown as MeetingWebSocketConstructor,
   captureMode,
@@ -220,22 +232,22 @@ export function connectMeetingWebSocket({
             onAudioStatus?.(message)
             break
           case 'asr_interim':
-            onAsrInterim?.(message)
+            dispatchWorkspaceMessage(onAsrInterim, message)
             break
           case 'asr_final':
-            onAsrFinal?.(message)
+            dispatchWorkspaceMessage(onAsrFinal, message)
             break
           case 'translation_interim':
-            onTranslationInterim?.(message)
+            dispatchWorkspaceMessage(onTranslationInterim, message)
             break
           case 'segment_final':
-            onSegmentFinal?.(message)
+            dispatchWorkspaceMessage(onSegmentFinal, message)
             break
           case 'key_sentence_update':
-            onKeySentenceUpdate?.(message)
+            dispatchWorkspaceMessage(onKeySentenceUpdate, message)
             break
           case 'timeline_update':
-            onTimelineUpdate?.(message)
+            dispatchWorkspaceMessage(onTimelineUpdate, message)
             break
           case 'warning':
             onWarning?.(message)

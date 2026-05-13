@@ -443,6 +443,7 @@ function App() {
           <div className="grid min-w-0 gap-4 lg:grid-rows-2">
             <section
               aria-label="英文原文区"
+              aria-live="polite"
               className="min-h-[260px] min-w-0 rounded-md border border-border bg-background p-4"
             >
               <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
@@ -491,6 +492,7 @@ function App() {
 
             <section
               aria-label="中文翻译区"
+              aria-live="polite"
               className="min-h-[260px] min-w-0 rounded-md border border-border bg-background p-4"
             >
               <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
@@ -529,6 +531,7 @@ function App() {
           <aside className="grid min-w-0 gap-4 lg:grid-rows-[minmax(220px,0.8fr)_minmax(260px,1fr)]">
             <section
               aria-label="当前重点句区"
+              aria-live="polite"
               className="min-w-0 rounded-md border border-border bg-background p-4"
             >
               <div className="flex items-center justify-between gap-3 border-b border-border pb-3">
@@ -544,6 +547,7 @@ function App() {
 
             <section
               aria-label="会议时间线区"
+              aria-live="polite"
               className="min-w-0 rounded-md border border-border bg-background p-4"
             >
               <div className="flex items-center justify-between gap-3 border-b border-border pb-3">

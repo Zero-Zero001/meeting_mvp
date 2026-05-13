@@ -409,7 +409,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             englishFinalSegments: state.englishFinalSegments.filter(
               (segment) => segment.sequence !== message.sequence,
             ),
-            finalSegments: [...state.finalSegments, message],
+            finalSegments: state.finalSegments.some(
+              (segment) =>
+                segment.segment_id === message.segment_id ||
+                segment.sequence === message.sequence,
+            )
+              ? state.finalSegments
+              : [...state.finalSegments, message],
           }))
         },
         onSessionStarted: (message) => {

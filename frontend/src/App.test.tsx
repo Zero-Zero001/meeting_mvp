@@ -188,6 +188,27 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: '会议时间线区' })).toBeInTheDocument()
   })
 
+  it('marks all realtime workspace regions as polite live regions', () => {
+    render(<App />)
+
+    expect(screen.getByRole('region', { name: '英文原文区' })).toHaveAttribute(
+      'aria-live',
+      'polite',
+    )
+    expect(screen.getByRole('region', { name: '中文翻译区' })).toHaveAttribute(
+      'aria-live',
+      'polite',
+    )
+    expect(screen.getByRole('region', { name: '当前重点句区' })).toHaveAttribute(
+      'aria-live',
+      'polite',
+    )
+    expect(screen.getByRole('region', { name: '会议时间线区' })).toHaveAttribute(
+      'aria-live',
+      'polite',
+    )
+  })
+
   it('renders status bar controls and session metadata', () => {
     render(<App />)
     const statusBar = within(screen.getByRole('banner', { name: '会议状态栏' }))

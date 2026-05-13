@@ -1038,3 +1038,49 @@
 - `translation_interim` 仍不入库；正式归档只来自英文 final + 中文 final 的 `transcript_segment`。
 - Qwen final 失败片段当前只保存 `translation_status=failed` 和空中文 final，自动/手动重试仍属于 Step 25。
 - 本步没有新增公开 REST API、数据库 migration、COS、搜索/复制/导出或完整 `usage_event` 链路。
+
+## 2026-05-13 Step 19：四区实时 UI 更新
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 19，未开始 Step 20；本步不新增异常/降级提示体系，不扩展 Provider/WebSocket 错误展示，不做导出失败、预算保险丝或 Step 20 相关场景。
+- 已按确认边界执行：当前重点句区和会议时间线区只消费显式 `key_sentence_update` / `timeline_update`，不从 `segment_final` 派生基础重点句或时间线，避免抢 Step 26/27。
+- 已按 TDD 先补前端目标测试并确认 RED：
+  - `frontend/src/stores/session-store.test.ts` 新增重复 `segment_final` 场景，首次失败为正式双语 final 被重复追加。
+  - `frontend/src/lib/meeting-websocket.test.ts` 新增四区 callback 抛错隔离场景，首次失败为 `onAsrInterim` 抛错会冒泡并打断消息分发。
+  - `frontend/src/App.test.tsx` 新增四个实时区 `aria-live="polite"` 断言，首次失败为实时区缺少 live region 标记。
+- 更新 `frontend/src/stores/session-store.ts`：
+  - `asr_interim` / `translation_interim` 继续作为可替换状态。
+  - `asr_final` 继续追加到临时英文 final 列表。
+  - `segment_final` 按 `segment_id` 或 `sequence` 做幂等保护；重复消息不再重复追加正式双语片段，同时仍按 `sequence` 移除匹配临时英文 final。
+  - `timeline_update.items` 继续按服务端权威快照替换 `timelineItems`，不在前端自行推导或补节点。
+- 更新 `frontend/src/lib/meeting-websocket.ts`：
+  - 为四区实时消息 callbacks 增加隔离分发：`asr_interim`、`asr_final`、`translation_interim`、`segment_final`、`key_sentence_update`、`timeline_update` 的某个 UI/store callback 抛错时，不把 WebSocket 标记为失败，也不阻塞后续工作区消息。
+  - `session_started`、`session_resumed`、`error`、`session_closed` 控制流保持不变。
+- 更新 `frontend/src/App.tsx`：
+  - 英文原文区、中文翻译区、当前重点句区、会议时间线区增加 `aria-live="polite"`，补强实时更新的可访问语义。
+  - 四区布局、样式、空状态和消息来源保持 Step 18 后的既有边界。
+- 更新 `frontend/e2e/app.spec.ts`：
+  - Fake WebSocket 重复推送同一个 `segment_final`，验证真实页面只显示一次正式英文 final 和一次正式中文 final。
+  - 继续覆盖 `asr_interim`、`translation_interim`、`segment_final`、`key_sentence_update`、`timeline_update` 驱动四区独立更新。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 19 前端 RED | `npm run test -- --run src/stores/session-store.test.ts src/lib/meeting-websocket.test.ts src/App.test.tsx` | 首次 3 failed：重复 `segment_final`、callback 抛错冒泡、缺少 `aria-live` |
+| Step 19 前端目标 GREEN | 同上 | 3 个测试文件、27 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 32 source files` |
+| 后端 pytest | `uv run pytest` | 80 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 10 个测试文件、67 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 6 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 20 必须等待用户明确允许后再开始；当前没有新增异常与降级提示体系。
+- 当前重点句仍只来自 `key_sentence_update`；会议时间线仍只来自 `timeline_update.items`，不由前端根据 final 自动派生。
+- 本步没有新增公开 REST API、WebSocket wire schema、数据库 migration、Qwen/COS 调用、会后归档 API/页面、搜索、复制、导出或完整 `usage_event` 链路。

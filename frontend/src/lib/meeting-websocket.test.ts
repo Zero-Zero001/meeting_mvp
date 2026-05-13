@@ -330,6 +330,113 @@ describe('meeting websocket client', () => {
     )
   })
 
+  it('isolates realtime callback failures while dispatching later workspace messages', async () => {
+    FakeWebSocket.instances = []
+    const onAsrInterim = vi.fn(() => {
+      throw new Error('render failed')
+    })
+    const onError = vi.fn()
+    const onKeySentenceUpdate = vi.fn()
+    const onSegmentFinal = vi.fn()
+    const onTimelineUpdate = vi.fn()
+    const onTranslationInterim = vi.fn()
+    const connection = connectMeetingWebSocket({
+      WebSocketCtor,
+      captureMode: 'tab_audio',
+      clientId: '11111111-1111-4111-8111-111111111111',
+      onAsrInterim,
+      onError,
+      onKeySentenceUpdate,
+      onSegmentFinal,
+      onTimelineUpdate,
+      onTranslationInterim,
+      sourcePlatform: 'unknown',
+      url: 'ws://localhost/ws',
+    })
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+    socket.message(
+      JSON.stringify({
+        archive_token: 'archive-token',
+        archive_url: '/archive/session-1?token=archive-token',
+        remaining_seconds_today: 2400,
+        session_id: 'session-1',
+        type: 'session_started',
+      }),
+    )
+    await connection
+
+    expect(() =>
+      socket.message(
+        JSON.stringify({
+          text: 'This callback fails.',
+          type: 'asr_interim',
+        }),
+      ),
+    ).not.toThrow()
+    socket.message(
+      JSON.stringify({
+        text: '后续中文临时理解仍然分发。',
+        type: 'translation_interim',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        chinese_text_final: '正式中文仍然分发。',
+        end_ms: 3200,
+        english_text_final: 'The final message still dispatches.',
+        segment_id: 'segment-1',
+        sequence: 1,
+        start_ms: 0,
+        type: 'segment_final',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        text: '重点句仍然分发。',
+        type: 'key_sentence_update',
+      }),
+    )
+    socket.message(
+      JSON.stringify({
+        items: [
+          {
+            id: 'timeline-1',
+            item_type: 'segment_final',
+            segment_id: 'segment-1',
+            text: '时间线仍然分发。',
+            timestamp_ms: 3200,
+          },
+        ],
+        type: 'timeline_update',
+      }),
+    )
+
+    expect(onError).not.toHaveBeenCalled()
+    expect(onTranslationInterim).toHaveBeenCalledWith({
+      text: '后续中文临时理解仍然分发。',
+      type: 'translation_interim',
+    })
+    expect(onSegmentFinal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chinese_text_final: '正式中文仍然分发。',
+      }),
+    )
+    expect(onKeySentenceUpdate).toHaveBeenCalledWith({
+      text: '重点句仍然分发。',
+      type: 'key_sentence_update',
+    })
+    expect(onTimelineUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            text: '时间线仍然分发。',
+          }),
+        ],
+      }),
+    )
+  })
+
   it('sends session_stop and closes on stop', async () => {
     FakeWebSocket.instances = []
     const connection = connectMeetingWebSocket({

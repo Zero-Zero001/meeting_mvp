@@ -25,7 +25,8 @@
 - Step 15 已实现本地 mock Provider 链路：后端新增 `meeting_mvp_backend.mock_providers` 固定脚本，并在首个有效 binary frame 激活会话后推送 `asr_interim`、`warning`、`translation_interim`、`segment_final`、`key_sentence_update` 和 `timeline_update`，同时写入 `transcript_segment`；前端 WebSocket client、Zustand store 和四区 UI 已消费实时文本；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 16 已将 F06 英文实时转写生产主路径替换为 Qwen3-ASR-Flash-Realtime：后端 `meeting_mvp_backend.stt_providers` 接入 Qwen realtime ASR WebSocket，非 local 环境 WebSocket 会话会把首帧和后续非空 PCM16 binary frame 以 Base64 `input_audio_buffer.append` 持续转发给 Qwen，并发送 `asr_interim` 与 `asr_final`；local 环境继续保留 Step 15 mock Provider；前端 WebSocket client、Zustand store 和英文原文区已消费 `asr_final`，并支持 `session_resume` / `session_resumed` 浏览器断线恢复；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 17 已实现 F07 中文 interim：后端新增 `meeting_mvp_backend.translation_providers`，非 local 且 `QWEN_INTERIM_ENABLED=true` 时对节流后的英文 `asr_interim` 异步调用 Qwen OpenAI-compatible `/chat/completions` 并推送 `translation_interim`；默认 1.5 秒最小间隔，空文本/重复文本跳过，请求中只保留最新待翻译文本；Qwen interim 失败只记录脱敏 warning，不阻塞英文 ASR 或后续 final；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen interim smoke 均已通过。
-- Step 18 已实现 F08 中文 final：后端 `meeting_mvp_backend.translation_providers` 新增 Qwen final provider，非 local WebSocket 会话在英文 `asr_final` 后用 `QWEN_FINAL_MODEL` 调用 Qwen OpenAI-compatible `/chat/completions` 生成正式中文 final，成功写入 `transcript_segment(translation_status=completed)` 并发送 `segment_final`；请求携带最近 5 个成功双语 final 上下文，显式 `enable_thinking=false`、`max_tokens=512`；Qwen final 失败会保存英文 final、空中文 final、`translation_status=failed` 并发送 warning，不关闭 WebSocket；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen final smoke 均已通过；未进入 Step 19。
+- Step 18 已实现 F08 中文 final：后端 `meeting_mvp_backend.translation_providers` 新增 Qwen final provider，非 local WebSocket 会话在英文 `asr_final` 后用 `QWEN_FINAL_MODEL` 调用 Qwen OpenAI-compatible `/chat/completions` 生成正式中文 final，成功写入 `transcript_segment(translation_status=completed)` 并发送 `segment_final`；请求携带最近 5 个成功双语 final 上下文，显式 `enable_thinking=false`、`max_tokens=512`；Qwen final 失败会保存英文 final、空中文 final、`translation_status=failed` 并发送 warning，不关闭 WebSocket；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen final smoke 均已通过。
+- Step 19 已实现 F09 四区实时 UI 补强：前端四区只消费显式 WebSocket 消息，`asr_interim` / `translation_interim` 可替换，`segment_final` 幂等追加并移除匹配 `asr_final`，`key_sentence_update` / `timeline_update` 不从 final 派生；四区 callback 抛错不会破坏后续 WebSocket 消息分发；四个实时区已增加 `aria-live="polite"`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 20。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -34,7 +35,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 18 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final 和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 19 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -241,7 +242,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 18 Qwen 中文 final 已完成；Step 19 必须等用户明确允许后再开始。
+- Step 19 四区实时 UI 补强已完成；Step 20 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -339,9 +340,17 @@ Step 18 Qwen 中文 final 已落地：
 - 成功 final 会进入单 WebSocket 会话内存上下文窗口；后续 final 请求最多携带最近 5 个成功双语 final 片段，仅用于术语和指代一致性。
 - Qwen final 失败不会关闭 WebSocket：后端写入英文 final、空中文 final、`translation_status=failed` 和 `asr_confidence`，发送 `warning(code="qwen_final_translation_failed")`，后续 Step 25 再处理重试。
 - `session_stop`、浏览器断开、resume pause 和错误关闭会取消 pending final translation task、关闭 final provider，并将当前/排队未完成 final 片段按 failed 状态归档，避免丢失英文 final。
-- 前端 `frontend/src/stores/session-store.ts` 只做必要去重：收到 `segment_final` 后按 `sequence` 移除匹配的 `englishFinalSegments`，避免英文区重复展示同一 final；不新增 Step 19 四区 UI 功能。
+- 前端 `frontend/src/stores/session-store.ts` 只做必要去重：收到 `segment_final` 后按 `sequence` 移除匹配的 `englishFinalSegments`，避免英文区重复展示同一 final；Step 19 已进一步补强幂等和四区实时展示。
 - 新增 `backend/tests/integration/test_qwen_final_translation_smoke.py` 作为真实 Qwen final gated smoke hook；默认跳过，显式设置 `RUN_QWEN_FINAL_SMOKE=1` 并提供真实 Qwen 文本配置时才访问真实服务。
 - Step 18 不新增公开 REST API、不修改 WebSocket wire schema、不新增 database migration、不新增归档页/API、搜索、复制、导出、COS、完整 `usage_event`、重点句或时间线增强。
+
+Step 19 四区实时 UI 补强已落地：
+
+- 前端 `frontend/src/stores/session-store.ts` 明确四区实时状态边界：`asr_interim` / `translation_interim` 为可替换状态；`asr_final` 追加为临时英文 final；`segment_final` 按 `segment_id` 或 `sequence` 幂等追加为正式双语 final，并移除匹配 `asr_final`。
+- 前端不从 `segment_final` 派生当前重点句或会议时间线；当前重点句只消费 `key_sentence_update`，会议时间线只消费 `timeline_update.items` 服务端快照，Step 26/27 增强仍等待后续明确允许。
+- `frontend/src/lib/meeting-websocket.ts` 为四区实时 callbacks 增加隔离分发，某个区域更新抛错不会触发 WebSocket error，也不会阻塞后续实时消息。
+- `frontend/src/App.tsx` 的英文原文区、中文翻译区、当前重点句区、会议时间线区均增加 `aria-live="polite"`。
+- Step 19 不新增公开 REST API、不修改 WebSocket wire schema、不新增 database migration、不新增异常/降级提示、COS、搜索、复制、导出或完整 `usage_event` 链路。
 
 核心 WebSocket 请求消息：
 
@@ -397,5 +406,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 19 必须等待用户明确允许后再开始；Step 18 当前已提供 Qwen 中文 final、最近 5 个成功 final 上下文和 `transcript_segment` 入库，但不新增四区 UI 改造、会后归档 API/页面、COS 导出、搜索、复制、导出、重点句/时间线增强或完整 `usage_event` 链路。
+- Step 20 必须等待用户明确允许后再开始；Step 19 当前只补强四区实时 UI 消费、幂等和可访问语义，不新增异常/降级提示、会后归档 API/页面、COS 导出、搜索、复制、导出、重点句/时间线增强或完整 `usage_event` 链路。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

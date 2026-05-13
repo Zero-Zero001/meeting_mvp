@@ -219,7 +219,7 @@ describe('useSessionStore', () => {
     })
   })
 
-  it('stores realtime mock provider messages from the websocket callbacks', async () => {
+  it('keeps realtime workspace state independent and deduplicates confirmed final segments', async () => {
     setReadyIdentity()
     const { stream } = createStream()
     const meetingSocket = createStartedWebSocket()
@@ -230,6 +230,10 @@ describe('useSessionStore', () => {
         stream,
       }),
       connectMeetingWebSocket: async (options) => {
+        options.onAsrInterim?.({
+          text: 'We need to align.',
+          type: 'asr_interim',
+        })
         options.onAsrInterim?.({
           text: 'We need to align on the launch timeline.',
           type: 'asr_interim',
@@ -242,11 +246,23 @@ describe('useSessionStore', () => {
           text: 'We need to align on the launch timeline before Friday.',
           type: 'asr_final',
         })
+        options.onAsrFinal?.({
+          confidence: 0.88,
+          end_ms: 6400,
+          sequence: 2,
+          start_ms: 3200,
+          text: 'Finance will confirm the budget tomorrow.',
+          type: 'asr_final',
+        })
+        options.onTranslationInterim?.({
+          text: '我们需要对齐。',
+          type: 'translation_interim',
+        })
         options.onTranslationInterim?.({
           text: '我们需要对齐上线时间线。',
           type: 'translation_interim',
         })
-        options.onSegmentFinal?.({
+        const confirmedSegment = {
           chinese_text_final: '我们需要在周五前对齐上线时间线。',
           end_ms: 3200,
           english_text_final: 'We need to align on the launch timeline before Friday.',
@@ -254,7 +270,9 @@ describe('useSessionStore', () => {
           sequence: 1,
           start_ms: 0,
           type: 'segment_final',
-        })
+        } as const
+        options.onSegmentFinal?.(confirmedSegment)
+        options.onSegmentFinal?.(confirmedSegment)
         options.onKeySentenceUpdate?.({
           text: '我们需要在周五前对齐上线时间线。',
           type: 'key_sentence_update',
@@ -271,6 +289,18 @@ describe('useSessionStore', () => {
           ],
           type: 'timeline_update',
         })
+        options.onTimelineUpdate?.({
+          items: [
+            {
+              id: 'timeline-2',
+              item_type: 'segment_final',
+              segment_id: 'segment-2',
+              text: '财务明天确认预算。',
+              timestamp_ms: 6400,
+            },
+          ],
+          type: 'timeline_update',
+        })
         return meetingSocket
       },
       startAudioProcessing: async () => createAudioProcessor(),
@@ -281,7 +311,12 @@ describe('useSessionStore', () => {
       keySentenceText: '我们需要在周五前对齐上线时间线。',
       translationInterimText: '我们需要对齐上线时间线。',
     })
-    expect(useSessionStore.getState().englishFinalSegments).toEqual([])
+    expect(useSessionStore.getState().englishFinalSegments).toEqual([
+      expect.objectContaining({
+        sequence: 2,
+        text: 'Finance will confirm the budget tomorrow.',
+      }),
+    ])
     expect(useSessionStore.getState().finalSegments).toHaveLength(1)
     expect(useSessionStore.getState().finalSegments[0]).toMatchObject({
       chinese_text_final: '我们需要在周五前对齐上线时间线。',
@@ -290,8 +325,8 @@ describe('useSessionStore', () => {
     })
     expect(useSessionStore.getState().timelineItems).toEqual([
       expect.objectContaining({
-        segment_id: 'segment-1',
-        text: '我们需要在周五前对齐上线时间线。',
+        segment_id: 'segment-2',
+        text: '财务明天确认预算。',
       }),
     ])
   })

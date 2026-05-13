@@ -762,3 +762,37 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
 - Lighthouse backend 镜像使用 `.env.production` 构建通过，容器内真实 Qwen final smoke 最终通过 `1 passed in 3.18s`；首次超时失败后通过关闭 thinking 和限制输出长度修复。
 - Step 19 未开始；当前没有新增四区实时 UI 改造、归档 API/页面、搜索、复制、导出、COS 或完整 `usage_event` 链路。
+
+## 2026-05-13 Step 19 四区实时 UI 更新
+
+### 架构状态
+- Step 19 是前端实时 UI 补强，不改变后端、数据库、Provider、环境变量或 WebSocket wire schema。
+- 四区实时更新边界固定为显式消息驱动：英文区消费 `asr_interim`、`asr_final` 和 `segment_final.english_text_final`；中文区消费 `translation_interim` 和 `segment_final.chinese_text_final`；当前重点句区只消费 `key_sentence_update`；会议时间线区只消费 `timeline_update.items`。
+- interim 状态仍可替换；正式 final 只追加。`segment_final` 现在按 `segment_id` 或 `sequence` 幂等处理，避免 WebSocket 重放、浏览器断线恢复或测试 mock 重复推送时重复显示正式双语片段。
+- `timeline_update.items` 继续视为服务端权威快照，前端替换整个 `timelineItems` 列表，不自行推导 final 时间线节点；当前重点句也不从 final 自动派生，避免进入 Step 26/27 范围。
+- 前端 WebSocket client 对四区实时 callbacks 做失败隔离：某个区域的 UI/store callback 抛错不会触发 `onError`，也不会影响后续 `translation_interim`、`segment_final`、`key_sentence_update` 或 `timeline_update` 的分发。
+- 四个实时区都标记为 `aria-live="polite"`，让屏幕阅读器能感知实时内容变化；布局和视觉设计保持原工作台风格。
+- Step 20 未开始：本步没有新增异常/降级提示体系、Provider 错误 UI、预算保险丝提示、导出失败提示或完整 `usage_event` 链路。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。Step 19 明确 interim 可替换、final 追加；`segment_final` 做幂等追加并移除匹配临时英文 final；`timeline_update.items` 继续按服务端快照替换。 |
+| `frontend/src/lib/meeting-websocket.ts` | 前端 WebSocket client。Step 19 为四区实时 callbacks 增加隔离分发，保证某个区域更新失败不破坏 WebSocket 控制流或后续工作区消息。 |
+| `frontend/src/App.tsx` | 会议工作台 UI。四个实时区域增加 `aria-live="polite"`，继续分别展示英文原文、中文翻译、当前重点句和会议时间线。 |
+| `frontend/src/stores/session-store.test.ts` | store 单元测试。覆盖 interim 替换、final 追加、重复 `segment_final` 去重、匹配 `asr_final` 去重和 timeline 快照替换。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | WebSocket client 单元测试。覆盖四区 callback 抛错后，后续实时消息仍能继续分发且不触发 WebSocket error。 |
+| `frontend/src/App.test.tsx` | React UI 测试。覆盖四个实时区 live region 标记，以及四区消息分别展示和空状态边界。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。Fake WebSocket 模拟完整实时消息流和重复 `segment_final`，验证真实页面四区独立更新且正式 final 不重复显示。 |
+
+### 状态与边界
+- `segment_final` 幂等只影响前端展示状态；后端归档仍以 Step 18 的 `transcript_segment` 写入为准。
+- 重复 final 去重依据是同一 `segment_id` 或同一 `sequence`；当前会话内 `sequence` 仍由后端按 final 片段顺序维护。
+- 四区 callback 隔离只保护实时工作区展示链路；`error` 和 `session_closed` 仍保持原来的不可继续控制语义，留给 Step 20 做用户提示增强。
+- 前端仍只读取 `VITE_*` 公开配置；没有 Provider 密钥或生产配置进入浏览器产物。
+
+### 验证结论
+- Step 19 已先跑 RED 测试确认前端缺口，再实现 store 幂等、WebSocket callback 隔离和 live region 标记到 GREEN。
+- 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
+- Step 20 未开始；异常与降级提示仍等待用户明确允许。
