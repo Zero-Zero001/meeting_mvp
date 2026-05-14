@@ -796,3 +796,43 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Step 19 已先跑 RED 测试确认前端缺口，再实现 store 幂等、WebSocket callback 隔离和 live region 标记到 GREEN。
 - 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
 - Step 20 未开始；异常与降级提示仍等待用户明确允许。
+
+## 2026-05-14 Step 20 F16 异常与降级提示
+
+### 架构状态
+- Step 20 在前端建立统一异常与降级提示层，不改变 WebSocket wire schema、数据库 schema、环境变量或公开 REST API。
+- 用户提示的来源统一收敛到 `SessionNotice`：本地捕获失败、音频处理失败、30 秒无有效音频、WebSocket `warning`、WebSocket `error` 和 `session_closed.reason` 都映射为中文标题、说明、下一步动作和严重级别。
+- 前端 store 新增 `activeNotice` 和 `lastClosedReason`。可恢复 warning 只更新提示，不清空四区实时内容；不可继续 error 会停止本地音频处理和媒体流，但保留已收到的 final 片段、临时英文 final、`archiveUrl` 和 `sessionId`。
+- UI 在状态栏下方显示提示区域：warning/info 使用 `role="status"` 和 polite live 语义，不可继续 error 使用 `role="alert"` 和 assertive live 语义；提示不会覆盖四区内容。
+- WebSocket client 新增 `MeetingWebSocketError`，把服务端 `error.code` 和原始 error message 带到 store，避免预算、额度、恢复失败和 Provider 错误都退化成通用连接失败。
+- 后端只补齐 Step 20 必需的 provider warning：Qwen interim 翻译失败会发送 `warning(code="qwen_interim_translation_failed")`；该 warning 不关闭 WebSocket，不影响英文 ASR 或中文 final。
+- `export_failed` 仅作为未来导出功能的提示 code 预留；本步未实现真实导出、COS、归档 API/页面或成本埋点。
+- Step 21 未开始：当前没有写入 `usage_event`，也没有成本看板、预算事件统计或 Provider 失败埋点。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `frontend/src/lib/session-notices.ts` | Step 20 新增的提示映射层。把捕获错误、音频管线错误、WebSocket warning/error、关闭原因和预留导出失败 code 转成统一 `SessionNotice`，并包含腾讯会议 Web 标签页无音频时的系统音频降级建议。 |
+| `frontend/src/lib/session-notices.test.ts` | 提示映射单元测试。覆盖授权拒绝、无音轨、30 秒静音、额度/预算拒绝、Qwen interim/final warning、断线恢复失败和导出失败等用户可理解文案与严重级别。 |
+| `frontend/src/lib/meeting-websocket.ts` | 前端 WebSocket client。Step 20 新增 `MeetingWebSocketError`，服务端 `error` 消息触发 `onError` 时保留 `code` 和 server message；`warning` 仍作为可恢复消息分发。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | WebSocket client 测试。新增服务端 error code 保留断言，并继续覆盖 warning 不触发失败控制流和四区 callback 隔离。 |
+| `frontend/src/stores/session-store.ts` | Zustand 会话状态中枢。新增 `activeNotice`、`lastClosedReason`，把捕获、音频、warning、error、closed 统一接入提示模型；错误清理本地音频资源但保留已收到内容与归档入口。 |
+| `frontend/src/stores/session-store.test.ts` | store 单元测试。覆盖 warning 不清空实时/归档状态、blocking error 保留 final/archive、腾讯会议无音频降级、断线恢复失败提示和静音提示。 |
+| `frontend/src/App.tsx` | 会议工作台 UI。新增状态栏下方的可访问提示区域，按 severity 使用 `role="status"` 或 `role="alert"`，并保持四区内容可见。 |
+| `frontend/src/App.test.tsx` | React UI 测试。覆盖提示区域可访问角色、错误文案展示、腾讯会议无音频提示和异常状态下 final 内容仍可见。 |
+| `frontend/e2e/app.spec.ts` | Playwright 浏览器测试。Fake WebSocket 增加 provider warning、预算保险丝 error 和恢复失败消息，验证真实页面提示明确且四区内容不被误清空。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 20 在 interim translation provider 失败时发送 `qwen_interim_translation_failed` warning；额度、预算、ASR error 和 session closed 控制流保持既有 schema。 |
+| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 行为测试。新增 Qwen interim warning、每日额度耗尽和预算保险丝拒绝覆盖，确保可恢复 warning 与不可继续 error/closed 边界清晰。 |
+
+### 状态与边界
+- `activeNotice` 是前端展示状态，不写数据库；正式会议档案仍只来自 Step 18 的 `transcript_segment`。
+- Provider warning 和 WebSocket error 使用既有 `warning` / `error` 消息类型；本步没有新增 message type 或字段。
+- 用户主动停止会议不会显示错误提示；服务端非主动关闭原因会映射为不可继续提示。
+- 捕获失败、无音轨和静音提示发生在上传正式有效音频前，不应消耗会议额度。
+- Playwright E2E 通过 `npm run preview` 服务 `dist`，因此验证 UI 变更前需要先运行 `npm run build`。
+
+### 验证结论
+- Step 20 已先跑 RED 测试确认提示映射、WebSocket error code、store 状态和后端 interim warning 缺口，再实现到 GREEN。
+- 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
+- Step 21 未开始；使用量与成本埋点、`usage_event` 写入和看板仍等待用户明确允许。

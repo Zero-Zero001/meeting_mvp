@@ -1084,3 +1084,57 @@
 - Step 20 必须等待用户明确允许后再开始；当前没有新增异常与降级提示体系。
 - 当前重点句仍只来自 `key_sentence_update`；会议时间线仍只来自 `timeline_update.items`，不由前端根据 final 自动派生。
 - 本步没有新增公开 REST API、WebSocket wire schema、数据库 migration、Qwen/COS 调用、会后归档 API/页面、搜索、复制、导出或完整 `usage_event` 链路。
+
+## 2026-05-14 Step 20：F16 异常与降级提示
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 20，未开始 Step 21；本步不写 `usage_event`，不做成本埋点或看板，不新增归档 API/页面、COS、搜索、复制或真实导出流程。
+- 新增 `frontend/src/lib/session-notices.ts`：
+  - 统一把捕获失败、无音频轨道、30 秒静音、WebSocket `warning`、WebSocket `error` 和 `session_closed.reason` 映射为中文用户提示。
+  - 提示模型包含 `code`、`severity`、`title`、`message` 和 `action`，区分可恢复 warning/status 与不可继续 error/alert。
+  - 覆盖 `permission_denied`、`no_audio_track`、`not_supported`、`audio_silent_timeout`、`daily_quota_exhausted`、`active_session_limit_reached`、`budget_fuse_triggered`、`qwen_asr_error`、`qwen_interim_translation_failed`、`qwen_final_translation_failed`、`session_resume_failed`、`websocket_failed`、`export_failed` 等固定 code。
+  - 腾讯会议 Web 标签页无音频轨道时，明确提示切换到系统音频模式后重新捕获。
+- 更新 `frontend/src/lib/meeting-websocket.ts`：
+  - 新增 `MeetingWebSocketError`，保留服务端 `error.code` 和原始 server message，供 store 映射为精确用户提示。
+  - `warning` 继续作为可恢复消息分发，不触发 WebSocket 失败控制流。
+- 更新 `frontend/src/stores/session-store.ts`：
+  - 新增 `activeNotice` 和 `lastClosedReason`。
+  - 捕获授权拒绝、无音轨、浏览器不支持、音频处理失败、30 秒无有效音频、provider warning、服务端 error 和关闭原因均进入同一提示模型。
+  - `onWarning` 只更新提示，不清空四区内容，不停止会话。
+  - `onError` 会停止本地音频处理和媒体流，保留已收到的 `finalSegments`、`englishFinalSegments`、`archiveUrl` 和 `sessionId`。
+  - 用户主动停止 `session_closed(reason="user_stopped")` 不显示错误提示。
+- 更新 `frontend/src/App.tsx`：
+  - 在状态栏下方新增可访问提示区域，warning/info 使用 `role="status"`，不可继续错误使用 `role="alert"`。
+  - 异常提示不覆盖英文/中文 final 内容，四区工作台仍保持可见。
+- 后端只做 Step 20 必要补强：
+  - `backend/src/meeting_mvp_backend/ws_sessions.py` 在 Qwen interim 翻译失败时发送 `warning(code="qwen_interim_translation_failed")`，不关闭 WebSocket，不阻塞英文 ASR 或 final。
+  - 保持 Qwen final 失败已有 `warning(code="qwen_final_translation_failed")`；Qwen ASR、额度和预算拒绝仍走 `error` + `session_closed`。
+- 扩展测试：
+  - 后端 WebSocket 测试覆盖 Qwen interim warning、每日额度耗尽、预算保险丝拒绝。
+  - 前端新增提示映射单元测试，并扩展 WebSocket client、store、App 和 E2E，覆盖 provider warning、预算保险丝、断线恢复失败、授权拒绝和腾讯会议无音频降级。
+- 本次没有修改 WebSocket wire schema，没有新增公开 REST API、数据库 migration、环境变量或 Provider 密钥暴露。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 20 前端 RED | `npm run test -- src/lib/session-notices.test.ts src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 首次失败：缺少 `session-notices`、`MeetingWebSocketError`、`activeNotice` 和 UI 提示区域 |
+| Step 20 后端 RED | `uv run pytest tests/test_websocket_sessions.py -q` | 新增 interim warning 场景首次失败，确认后端未发送 `qwen_interim_translation_failed` warning |
+| Step 20 后端目标 GREEN | `uv run pytest tests/test_websocket_sessions.py -q` | 24 passed |
+| Step 20 前端目标 GREEN | `npm run test -- src/lib/session-notices.test.ts src/lib/meeting-websocket.test.ts src/stores/session-store.test.ts src/App.test.tsx` | 4 个测试文件、40 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 32 source files` |
+| 后端 pytest | `uv run pytest` | 83 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 11 个测试文件、80 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 9 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 21 必须等待用户明确允许后再开始；当前没有写入 `usage_event`，也没有新增成本埋点或看板。
+- `export_failed` 当前只是前端提示映射预留，未实现真实导出流程。
+- 已归档内容“不丢失”在本步体现为前端异常状态不清空已收到 final、归档入口和会话标识；后端仍保持已入库片段。
+- Playwright E2E 使用 `npm run preview` 服务 `dist`，改动 UI 后需要先运行 `npm run build`，否则可能复用旧构建产物。

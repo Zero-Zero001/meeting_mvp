@@ -962,6 +962,47 @@ def test_interim_translation_failure_does_not_block_asr_final() -> None:
     assert repository.transcript_segments == []
 
 
+def test_interim_translation_failure_sends_recoverable_warning() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align."),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(
+        error=RuntimeError("qwen text unavailable"),
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            asr_interim = receive_until_message_type(websocket, "asr_interim")
+            warning = receive_until_message_type(websocket, "warning")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            closed = receive_until_message_type(websocket, "session_closed")
+
+    assert asr_interim["text"] == "We need to align."
+    assert warning == {
+        "type": "warning",
+        "code": "qwen_interim_translation_failed",
+        "message": "中文临时理解暂时不可用，英文转写会继续。",
+    }
+    assert closed == {"type": "session_closed", "reason": "user_stopped"}
+    assert repository.transcript_segments == []
+
+
 def test_stopping_session_cancels_in_flight_interim_translation() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
@@ -1173,6 +1214,39 @@ def test_rejects_duplicate_active_session() -> None:
     assert closed == {
         "type": "session_closed",
         "reason": "active_session_limit_reached",
+    }
+    assert repository.sessions == {}
+
+
+@pytest.mark.parametrize(
+    ("denial_reason", "remaining_seconds_today"),
+    [
+        (QuotaDenialReason.DAILY_QUOTA_EXHAUSTED, 0),
+        (QuotaDenialReason.BUDGET_FUSE_TRIGGERED, 1200),
+    ],
+)
+def test_rejects_quota_and_budget_denials_with_error_and_closed(
+    denial_reason: QuotaDenialReason,
+    remaining_seconds_today: int,
+) -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService(
+        denial_reason=denial_reason,
+        remaining_seconds_today=remaining_seconds_today,
+    )
+
+    with make_client(repository=repository, quota_service=quota_service) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            error = websocket.receive_json()
+            closed = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert error["code"] == denial_reason.value
+    assert closed == {
+        "type": "session_closed",
+        "reason": denial_reason.value,
     }
     assert repository.sessions == {}
 

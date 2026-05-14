@@ -27,6 +27,15 @@ import {
   type MeetingWebSocketClient,
   type WebSocketStatus,
 } from '@/lib/meeting-websocket'
+import {
+  noticeFromAudioPipelineError,
+  noticeFromCaptureFailure,
+  noticeFromCode,
+  noticeFromSessionClosedReason,
+  noticeFromWarningMessage,
+  noticeFromWebSocketError,
+  type SessionNotice,
+} from '@/lib/session-notices'
 import type { ServerMessage } from '@/protocol/websocket-messages'
 
 export type { WebSocketStatus } from '@/lib/meeting-websocket'
@@ -116,6 +125,7 @@ type SessionState = {
   anonymousClientStatus: AnonymousClientStatus
   archiveToken: string | null
   archiveUrl: string | null
+  activeNotice: SessionNotice | null
   audioLevel: number
   audioPipelineErrorCode: AudioPipelineErrorCode | null
   audioProcessingStatus: AudioProcessingStatus
@@ -130,6 +140,7 @@ type SessionState = {
   finalSegments: FinalSegment[]
   hasEffectiveAudio: boolean
   keySentenceText: string | null
+  lastClosedReason: string | null
   lastCaptureAttempt: CaptureAttempt | null
   mediaStream: MediaStream | null
   meetingWebSocket: MeetingWebSocketClient | null
@@ -157,6 +168,7 @@ export const initialSessionState = {
   anonymousClientStatus: 'idle' as AnonymousClientStatus,
   archiveToken: null as string | null,
   archiveUrl: null as string | null,
+  activeNotice: null as SessionNotice | null,
   audioLevel: 0,
   audioPipelineErrorCode: null as AudioPipelineErrorCode | null,
   audioProcessingStatus: 'idle' as AudioProcessingStatus,
@@ -171,6 +183,7 @@ export const initialSessionState = {
   finalSegments: [] as FinalSegment[],
   hasEffectiveAudio: false,
   keySentenceText: null as string | null,
+  lastClosedReason: null as string | null,
   lastCaptureAttempt: null as CaptureAttempt | null,
   mediaStream: null as MediaStream | null,
   meetingWebSocket: null as MeetingWebSocketClient | null,
@@ -265,6 +278,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     if (!isIdentityReady(currentState)) {
       set({
+        activeNotice: noticeFromAudioPipelineError('identity_not_ready', {
+          captureMode: mode,
+          sourcePlatform: currentState.sourcePlatform,
+        }),
         audioPipelineErrorCode: 'identity_not_ready',
         captureErrorCode: null,
         captureErrorMessage: '匿名身份尚未同步，稍后再开始捕获。',
@@ -280,6 +297,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     stopMediaStream(currentState.mediaStream)
 
     set({
+      activeNotice: null,
       archiveToken: null,
       archiveUrl: null,
       audioLevel: 0,
@@ -295,6 +313,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       finalSegments: [],
       hasEffectiveAudio: false,
       keySentenceText: null,
+      lastClosedReason: null,
       mediaStream: null,
       meetingWebSocket: null,
       sessionId: null,
@@ -333,6 +352,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     if (!result.ok) {
       set({
+        activeNotice: noticeFromCaptureFailure(result.errorCode, {
+          captureMode: mode,
+          sourcePlatform,
+        }),
         captureErrorCode: result.errorCode,
         captureErrorMessage: result.message,
         captureStatus: captureStatusFromErrorCode(result.errorCode),
@@ -348,6 +371,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     set({
+      activeNotice: null,
       captureErrorCode: null,
       captureErrorMessage: null,
       captureStatus: 'ready',
@@ -383,14 +407,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             englishFinalSegments: [...state.englishFinalSegments, message],
           }))
         },
-        onClosed: () => {
-          set({
+        onClosed: (message) => {
+          set((state) => ({
+            activeNotice:
+              noticeFromSessionClosedReason(message.reason) ?? state.activeNotice,
+            lastClosedReason: message.reason,
             webSocketStatus: 'closed',
-          })
+          }))
         },
-        onError: () => {
+        onError: (error) => {
+          const state = get()
+          void stopAudioProcessor(state.audioProcessor)
+          stopMediaStream(state.mediaStream)
           set({
+            activeNotice: noticeFromWebSocketError(error),
+            audioLevel: 0,
             audioPipelineErrorCode: 'websocket_failed',
+            audioProcessingStatus: 'idle',
+            audioProcessor: null,
+            hasEffectiveAudio: false,
+            mediaStream: null,
+            status: 'idle',
+            silenceWarning: false,
             webSocketStatus: 'error',
           })
         },
@@ -427,9 +465,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           })
         },
         onStatusChange: (webSocketStatus) => {
-          set({
+          set((state) => ({
+            activeNotice:
+              webSocketStatus === 'connecting' &&
+              state.webSocketStatus === 'started' &&
+              state.sessionId !== null
+                ? noticeFromCode('websocket_reconnecting', 'warning')
+                : state.activeNotice,
             webSocketStatus,
-          })
+          }))
         },
         onTimelineUpdate: (message) => {
           set({
@@ -441,11 +485,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             translationInterimText: message.text,
           })
         },
+        onWarning: (message) => {
+          set({
+            activeNotice: noticeFromWarningMessage(message),
+          })
+        },
         sourcePlatform,
       })
-    } catch {
+    } catch (error) {
       stopMediaStream(result.stream)
       set({
+        activeNotice: noticeFromWebSocketError(
+          error instanceof Error ? error : new Error('WebSocket connection failed'),
+        ),
         audioPipelineErrorCode: 'websocket_failed',
         captureErrorCode: 'capture_failed',
         captureErrorMessage: 'WebSocket 连接失败，请稍后重试。',
@@ -474,6 +526,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
         onLevel: (levelState: AudioLevelState) => {
           set((state) => ({
+            activeNotice: levelState.silenceWarning
+              ? noticeFromAudioPipelineError('audio_silent_timeout', {
+                  captureMode: state.captureMode,
+                  sourcePlatform: state.sourcePlatform,
+                })
+              : state.activeNotice?.code === 'audio_silent_timeout'
+                ? null
+                : state.activeNotice,
             audioLevel: levelState.level,
             audioPipelineErrorCode: levelState.silenceWarning
               ? 'audio_silent_timeout'
@@ -488,7 +548,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }))
         },
         onSilenceWarning: () => {
+          const state = get()
           set({
+            activeNotice: noticeFromAudioPipelineError('audio_silent_timeout', {
+              captureMode: state.captureMode,
+              sourcePlatform: state.sourcePlatform,
+            }),
             audioPipelineErrorCode: 'audio_silent_timeout',
             audioProcessingStatus: 'silent',
             hasEffectiveAudio: false,
@@ -507,7 +572,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       stopMeetingWebSocket(meetingWebSocket)
       stopMediaStream(result.stream)
       const isUnsupported = error instanceof AudioProcessingUnsupportedError
+      const noticeCode = isUnsupported
+        ? 'audio_processing_unsupported'
+        : 'audio_processing_failed'
       set({
+        activeNotice: noticeFromAudioPipelineError(noticeCode, {
+          captureMode: mode,
+          sourcePlatform,
+        }),
         audioPipelineErrorCode: isUnsupported
           ? 'audio_processing_unsupported'
           : 'audio_processing_failed',
@@ -535,6 +607,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     stopMediaStream(state.mediaStream)
 
     set({
+      activeNotice: null,
       archiveUrl: null,
       archiveToken: null,
       audioLevel: 0,
@@ -545,6 +618,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       captureErrorMessage: null,
       captureStatus: 'idle',
       hasEffectiveAudio: false,
+      lastClosedReason: null,
       mediaStream: null,
       meetingWebSocket: null,
       sessionId: null,

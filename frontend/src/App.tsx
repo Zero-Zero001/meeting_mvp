@@ -147,6 +147,7 @@ function startButtonLabel({
 
 function App() {
   const {
+    activeNotice,
     anonymousClientError,
     anonymousClientStatus,
     archiveUrl,
@@ -414,7 +415,7 @@ function App() {
               </p>
             ) : null}
             {captureErrorMessage ? (
-              <p className="mt-1 font-medium text-zinc-950" role="status">
+              <p className="mt-1 font-medium text-zinc-950">
                 {captureErrorMessage}
               </p>
             ) : null}
@@ -429,6 +430,22 @@ function App() {
               </p>
             ) : null}
           </div>
+
+          {activeNotice ? (
+            <div
+              aria-live={activeNotice.severity === 'error' ? 'assertive' : 'polite'}
+              className={
+                activeNotice.severity === 'error'
+                  ? 'rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950'
+                  : 'rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950'
+              }
+              role={activeNotice.severity === 'error' ? 'alert' : 'status'}
+            >
+              <p className="font-medium">{activeNotice.title}</p>
+              <p className="mt-1 text-sm">{activeNotice.message}</p>
+              <p className="mt-1 text-sm">{activeNotice.action}</p>
+            </div>
+          ) : null}
 
           {anonymousClientError || serverSyncError ? (
             <p className="text-sm text-muted-foreground">

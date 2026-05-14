@@ -35,6 +35,26 @@ export type MeetingWebSocketClient = {
   stop: () => void
 }
 
+export class MeetingWebSocketError extends Error {
+  code: string
+  serverMessage?: Extract<ServerMessage, { type: 'error' }>
+
+  constructor({
+    code = 'websocket_failed',
+    message = 'WebSocket connection failed',
+    serverMessage,
+  }: {
+    code?: string
+    message?: string
+    serverMessage?: Extract<ServerMessage, { type: 'error' }>
+  } = {}) {
+    super(message)
+    this.name = 'MeetingWebSocketError'
+    this.code = code
+    this.serverMessage = serverMessage
+  }
+}
+
 export type ConnectMeetingWebSocketOptions = {
   WebSocketCtor?: MeetingWebSocketConstructor
   captureMode: CaptureMode
@@ -43,7 +63,7 @@ export type ConnectMeetingWebSocketOptions = {
   onAsrFinal?: (message: Extract<ServerMessage, { type: 'asr_final' }>) => void
   onAsrInterim?: (message: Extract<ServerMessage, { type: 'asr_interim' }>) => void
   onClosed?: (message: Extract<ServerMessage, { type: 'session_closed' }>) => void
-  onError?: (error: Error) => void
+  onError?: (error: MeetingWebSocketError) => void
   onKeySentenceUpdate?: (
     message: Extract<ServerMessage, { type: 'key_sentence_update' }>,
   ) => void
@@ -85,8 +105,11 @@ export function resolveWebSocketUrl(
   return `${protocol}//${locationLike.host}/ws`
 }
 
-function websocketFailure(message = 'WebSocket connection failed'): Error {
-  return new Error(message)
+function websocketFailure(
+  message = 'WebSocket connection failed',
+  code = 'websocket_failed',
+): MeetingWebSocketError {
+  return new MeetingWebSocketError({ code, message })
 }
 
 function dispatchWorkspaceMessage<T>(
@@ -131,7 +154,7 @@ export function connectMeetingWebSocket({
     let currentArchiveUrl: string | null = null
     let socket: MeetingWebSocketLike
 
-    function fail(error: Error) {
+    function fail(error: MeetingWebSocketError) {
       stopping = true
       onError?.(error)
       onStatusChange?.('error')
@@ -253,7 +276,13 @@ export function connectMeetingWebSocket({
             onWarning?.(message)
             break
           case 'error':
-            fail(websocketFailure(message.message ?? message.code))
+            fail(
+              new MeetingWebSocketError({
+                code: message.code,
+                message: message.message ?? message.code,
+                serverMessage: message,
+              }),
+            )
             break
           case 'session_closed':
             stopping = true
@@ -285,7 +314,13 @@ export function connectMeetingWebSocket({
       try {
         socket = new WebSocketCtor(url)
       } catch (error) {
-        fail(error instanceof Error ? error : websocketFailure())
+        fail(
+          error instanceof MeetingWebSocketError
+            ? error
+            : websocketFailure(
+                error instanceof Error ? error.message : undefined,
+              ),
+        )
         return
       }
       attachSocketHandlers(mode)

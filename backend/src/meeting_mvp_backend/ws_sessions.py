@@ -82,6 +82,7 @@ CONFIGURATION_ERROR_REASON = "configuration_error"
 INTERNAL_ERROR_REASON = "internal_error"
 QWEN_ASR_ERROR_REASON = "qwen_asr_error"
 SESSION_RESUME_FAILED_REASON = "session_resume_failed"
+QWEN_INTERIM_TRANSLATION_FAILED_CODE = "qwen_interim_translation_failed"
 QWEN_FINAL_TRANSLATION_FAILED_CODE = "qwen_final_translation_failed"
 MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
 INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS = 1.5
@@ -951,6 +952,14 @@ class WebSocketSessionOrchestrator:
                     "qwen_interim_translation_failed",
                     error_type=exc.__class__.__name__,
                     session_id=str(state.session_id),
+                )
+                await _send_server_message(
+                    websocket,
+                    WarningMessage(
+                        type="warning",
+                        code=QWEN_INTERIM_TRANSLATION_FAILED_CODE,
+                        message="中文临时理解暂时不可用，英文转写会继续。",
+                    ),
                 )
                 continue
 

@@ -12,7 +12,12 @@ declare global {
   }
 }
 
-type CaptureMockMode = 'success' | 'denied' | 'no_audio'
+type CaptureMockMode =
+  | 'success'
+  | 'denied'
+  | 'no_audio'
+  | 'budget_fuse'
+  | 'resume_failed'
 
 async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
   await page.addInitScript((captureMode) => {
@@ -67,6 +72,7 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
     })
 
     window.__sentBinaryFrames = []
+    let websocketCount = 0
 
     class FakeWebSocket {
       static CLOSED = 3
@@ -79,8 +85,11 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
       onmessage = null
       onopen = null
       readyState = WebSocket.CONNECTING
+      socketIndex
 
       constructor() {
+        websocketCount += 1
+        this.socketIndex = websocketCount
         window.__meetingWebSocket = this
         queueMicrotask(() => {
           this.readyState = WebSocket.OPEN
@@ -97,6 +106,15 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
                 data: JSON.stringify({
                   text: 'We need to align on the launch timeline.',
                   type: 'asr_interim',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  code: 'qwen_interim_translation_failed',
+                  message: '中文临时理解暂时不可用，英文转写会继续。',
+                  type: 'warning',
                 }),
               }),
             )
@@ -172,12 +190,46 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
                 }),
               }),
             )
+            setTimeout(() => {
+              this.onmessage?.(
+                new MessageEvent('message', {
+                  data: JSON.stringify({
+                    code: 'qwen_interim_translation_failed',
+                    message: '中文临时理解暂时不可用，英文转写会继续。',
+                    type: 'warning',
+                  }),
+                }),
+              )
+            }, 0)
           })
           return
         }
 
         const payload = JSON.parse(data)
         if (payload.type === 'session_start') {
+          if (captureMode === 'budget_fuse') {
+            queueMicrotask(() => {
+              this.onmessage?.(
+                new MessageEvent('message', {
+                  data: JSON.stringify({
+                    code: 'budget_fuse_triggered',
+                    message: 'Budget fuse triggered',
+                    type: 'error',
+                  }),
+                }),
+              )
+              this.onmessage?.(
+                new MessageEvent('message', {
+                  data: JSON.stringify({
+                    reason: 'budget_fuse_triggered',
+                    type: 'session_closed',
+                  }),
+                }),
+              )
+            })
+            return
+          }
+
           queueMicrotask(() => {
             this.onmessage?.(
               new MessageEvent('message', {
@@ -187,6 +239,27 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
                   remaining_seconds_today: 2400,
                   session_id: 'session-1',
                   type: 'session_started',
+                }),
+              }),
+            )
+          })
+        }
+        if (payload.type === 'session_resume' && captureMode === 'resume_failed') {
+          queueMicrotask(() => {
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  code: 'session_resume_failed',
+                  message: 'Session cannot be resumed',
+                  type: 'error',
+                }),
+              }),
+            )
+            this.onmessage?.(
+              new MessageEvent('message', {
+                data: JSON.stringify({
+                  reason: 'session_resume_failed',
+                  type: 'session_closed',
                 }),
               }),
             )
@@ -380,4 +453,70 @@ test('shows system audio fallback guidance when capture has no audio track', asy
   await page.getByRole('button', { name: '开始捕获' }).click()
 
   await expect(page.getByText('请切换系统音频模式后重新捕获。')).toBeVisible()
+})
+
+test('shows provider warning while keeping realtime content', async ({ page }) => {
+  await mockBrowserPipeline(page, 'success')
+  await page.goto('/')
+
+  await page.getByRole('button', { name: '开始捕获' }).click()
+  await emitAudioSamples(page, 0.1)
+
+  await expect(page.getByRole('status')).toContainText('中文临时理解暂时不可用')
+  await expect(
+    page.getByRole('region', { name: '英文原文区' }).getByText(
+      'We need to align on the launch timeline before Friday.',
+    ),
+  ).toBeVisible()
+})
+
+test('shows budget fuse denial without clearing the workspace shell', async ({
+  page,
+}) => {
+  await mockBrowserPipeline(page, 'budget_fuse')
+  await page.goto('/')
+
+  await page.getByRole('button', { name: '开始捕获' }).click()
+
+  await expect(page.getByRole('alert')).toContainText(
+    '当前测试额度已暂停新会议',
+  )
+  await expect(page.getByRole('region', { name: '英文原文区' })).toBeVisible()
+})
+
+test('shows resume failure when the server reports recovery cannot continue', async ({
+  page,
+}) => {
+  await mockBrowserPipeline(page, 'resume_failed')
+  await page.goto('/')
+
+  await page.getByRole('button', { name: '开始捕获' }).click()
+  await expect(
+    page.getByRole('banner', { name: '会议状态栏' }).getByText('已建会'),
+  ).toBeVisible()
+
+  await page.evaluate(() => {
+    const socket = window.__meetingWebSocket as {
+      onmessage?: ((event: MessageEvent) => void) | null
+    }
+    socket.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          code: 'session_resume_failed',
+          message: 'Session cannot be resumed',
+          type: 'error',
+        }),
+      }),
+    )
+    socket.onmessage?.(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          reason: 'session_resume_failed',
+          type: 'session_closed',
+        }),
+      }),
+    )
+  })
+
+  await expect(page.getByRole('alert')).toContainText('断线恢复失败')
 })

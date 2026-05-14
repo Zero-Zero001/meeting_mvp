@@ -295,6 +295,13 @@ describe('App', () => {
   it('shows a 30 second silence warning from the audio pipeline', () => {
     useSessionStore.setState({
       ...useSessionStore.getState(),
+      activeNotice: {
+        action: '确认会议中有人讲话，并检查共享音频；必要时切换系统音频。',
+        code: 'audio_silent_timeout',
+        message: '已捕获窗口或屏幕，但 30 秒内没有有效声音，静音帧不会上传。',
+        severity: 'warning',
+        title: '暂未检测到会议声音',
+      },
       audioPipelineErrorCode: 'audio_silent_timeout',
       audioProcessingStatus: 'silent',
       silenceWarning: true,
@@ -304,6 +311,47 @@ describe('App', () => {
 
     expect(
       screen.getByText('30 秒内未检测到有效音频，请检查共享音频。'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('暂未检测到会议声音')
+  })
+
+  it('renders blocking degradation notices as alerts without hiding workspace content', () => {
+    useSessionStore.setState({
+      ...useSessionStore.getState(),
+      activeNotice: {
+        action: '稍后重新开始会议；已经归档的 final 片段会保留。',
+        code: 'qwen_asr_error',
+        message: '核心 ASR 连接异常，本场实时转写无法继续。',
+        severity: 'error',
+        title: '英文转写服务暂时不可用',
+      },
+      finalSegments: [
+        {
+          chinese_text_final: '预算审查调整到周五。',
+          end_ms: 2400,
+          english_text_final: 'The budget review moved to Friday.',
+          segment_id: 'segment-1',
+          sequence: 1,
+          start_ms: 0,
+          type: 'segment_final',
+        },
+      ],
+    })
+
+    render(<App />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      '英文转写服务暂时不可用',
+    )
+    expect(
+      within(screen.getByRole('region', { name: '英文原文区' })).getByText(
+        'The budget review moved to Friday.',
+      ),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '中文翻译区' })).getByText(
+        '预算审查调整到周五。',
+      ),
     ).toBeInTheDocument()
   })
 
@@ -442,5 +490,6 @@ describe('App', () => {
     expect(
       screen.getByText('请切换系统音频模式后重新捕获。'),
     ).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('没有捕获到会议声音')
   })
 })

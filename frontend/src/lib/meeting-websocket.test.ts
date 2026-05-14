@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AUDIO_FORMAT } from './audio-frames'
 import {
   connectMeetingWebSocket,
+  MeetingWebSocketError,
   resolveWebSocketUrl,
   type MeetingWebSocketConstructor,
 } from './meeting-websocket'
@@ -466,6 +467,48 @@ describe('meeting websocket client', () => {
       type: 'session_stop',
     })
     expect(socket.readyState).toBe(3)
+  })
+
+  it('preserves server error codes for user-facing notices', async () => {
+    FakeWebSocket.instances = []
+    const onError = vi.fn()
+    const connection = connectMeetingWebSocket({
+      WebSocketCtor,
+      captureMode: 'tab_audio',
+      clientId: '11111111-1111-4111-8111-111111111111',
+      onError,
+      sourcePlatform: 'unknown',
+      url: 'ws://localhost/ws',
+    })
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+    socket.message(
+      JSON.stringify({
+        archive_token: 'archive-token',
+        archive_url: '/archive/session-1?token=archive-token',
+        remaining_seconds_today: 2400,
+        session_id: 'session-1',
+        type: 'session_started',
+      }),
+    )
+    await connection
+
+    socket.message(
+      JSON.stringify({
+        code: 'budget_fuse_triggered',
+        message: 'Budget fuse triggered',
+        type: 'error',
+      }),
+    )
+
+    expect(onError).toHaveBeenCalledOnce()
+    const error = onError.mock.calls[0][0] as MeetingWebSocketError
+    expect(error).toBeInstanceOf(MeetingWebSocketError)
+    expect(error.code).toBe('budget_fuse_triggered')
+    expect(error.serverMessage).toMatchObject({
+      code: 'budget_fuse_triggered',
+      type: 'error',
+    })
   })
 
   it('rejects when the websocket closes before session_started', async () => {
