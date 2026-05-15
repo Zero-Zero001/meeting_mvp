@@ -9,6 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from meeting_mvp_backend.db.models import AnonymousClient
+from meeting_mvp_backend.usage_events import (
+    UsageEventRecorder,
+    UsageEventType,
+    record_usage_event_best_effort,
+)
 
 
 @dataclass(frozen=True)
@@ -31,9 +36,11 @@ class AnonymousClientService:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         daily_free_seconds: int,
+        usage_event_recorder: UsageEventRecorder | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._daily_free_seconds = daily_free_seconds
+        self._usage_event_recorder = usage_event_recorder
 
     async def initialize_client(
         self,
@@ -72,6 +79,18 @@ class AnonymousClientService:
             remaining_seconds_today = max(
                 self._daily_free_seconds - anonymous_client.daily_minutes_used * 60,
                 0,
+            )
+
+        if is_new:
+            await record_usage_event_best_effort(
+                recorder=self._usage_event_recorder,
+                client_id=client_id_string,
+                event_type=UsageEventType.CLIENT_CREATED,
+                payload={
+                    "daily_free_seconds": self._daily_free_seconds,
+                    "ip_hash_present": bool((ip_address or "").strip()),
+                    "user_agent_hash_present": bool((user_agent or "").strip()),
+                },
             )
 
         return AnonymousClientInitialization(

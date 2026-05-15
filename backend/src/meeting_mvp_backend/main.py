@@ -21,6 +21,7 @@ from meeting_mvp_backend.translation_providers import (
     create_qwen_final_translation_provider_from_settings,
     create_qwen_interim_translation_provider_from_settings,
 )
+from meeting_mvp_backend.usage_events import SQLAlchemyUsageEventRecorder
 from meeting_mvp_backend.ws_sessions import (
     SQLAlchemyMeetingSessionRepository,
     WebSocketSessionOrchestrator,
@@ -92,6 +93,9 @@ def get_anonymous_client_service(
     return AnonymousClientService(
         session_factory=request.app.state.db_session_factory,
         daily_free_seconds=settings.daily_free_seconds,
+        usage_event_recorder=SQLAlchemyUsageEventRecorder(
+            session_factory=request.app.state.db_session_factory,
+        ),
     )
 
 
@@ -151,6 +155,9 @@ def get_websocket_session_orchestrator(
             (lambda: create_qwen_interim_translation_provider_from_settings(settings))
             if settings.app_env is not AppEnv.LOCAL and settings.qwen_interim_enabled
             else None
+        ),
+        usage_event_recorder=SQLAlchemyUsageEventRecorder(
+            session_factory=websocket.app.state.db_session_factory,
         ),
     )
 

@@ -32,7 +32,7 @@ from meeting_mvp_backend.mock_providers import (
     DEFAULT_MOCK_PROVIDER_SCRIPT,
     MockProviderScript,
 )
-from meeting_mvp_backend.quota import QuotaDecision
+from meeting_mvp_backend.quota import QuotaDecision, QuotaDenialReason
 from meeting_mvp_backend.stt_providers import (
     StreamingSttProvider,
     SttFinalEvent,
@@ -43,6 +43,11 @@ from meeting_mvp_backend.translation_providers import (
     FinalTranslationProvider,
     FinalTranslationRequest,
     InterimTranslationProvider,
+)
+from meeting_mvp_backend.usage_events import (
+    UsageEventRecorder,
+    UsageEventType,
+    record_usage_event_best_effort,
 )
 from meeting_mvp_backend.ws_messages import (
     AsrFinalMessage,
@@ -159,6 +164,8 @@ class WebSocketSessionState:
     archive_token_hash: str
     archive_url: str
     remaining_seconds_today: int
+    capture_mode: CaptureMode
+    source_platform: SourcePlatform
     active_started_at: datetime | None = None
     has_audio: bool = False
     closed: bool = False
@@ -358,6 +365,7 @@ class WebSocketSessionOrchestrator:
         final_translation_provider_factory: (
             FinalTranslationProviderFactory | None
         ) = None,
+        usage_event_recorder: UsageEventRecorder | None = None,
     ) -> None:
         self._repository = repository
         self._quota_service = quota_service
@@ -369,6 +377,23 @@ class WebSocketSessionOrchestrator:
         self._translation_min_interval_seconds = translation_min_interval_seconds
         self._translation_provider_factory = translation_provider_factory
         self._final_translation_provider_factory = final_translation_provider_factory
+        self._usage_event_recorder = usage_event_recorder
+
+    async def _record_usage_event(
+        self,
+        event_type: UsageEventType,
+        *,
+        client_id: str,
+        payload: dict[str, object] | None = None,
+        session_id: uuid.UUID | str | None = None,
+    ) -> None:
+        await record_usage_event_best_effort(
+            recorder=self._usage_event_recorder,
+            client_id=client_id,
+            session_id=session_id,
+            event_type=event_type,
+            payload=payload,
+        )
 
     async def handle(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -512,10 +537,32 @@ class WebSocketSessionOrchestrator:
             )
             return None
 
+        await self._record_usage_event(
+            UsageEventType.CAPTURE_STARTED,
+            client_id=message.client_id,
+            payload={
+                "capture_mode": message.capture_mode,
+                "source_platform": message.source_platform,
+            },
+        )
         session_id = uuid.uuid4()
         quota_decision = await quota_service.reserve_active_session(
             message.client_id,
             str(session_id),
+        )
+        quota_reason = (
+            quota_decision.reason.value
+            if quota_decision.reason is not None
+            else None
+        )
+        await self._record_usage_event(
+            UsageEventType.QUOTA_CHECKED,
+            client_id=message.client_id,
+            payload={
+                "allowed": quota_decision.allowed,
+                "remaining_seconds_today": quota_decision.remaining_seconds_today,
+                "reason": quota_reason,
+            },
         )
         if not quota_decision.allowed:
             reason = (
@@ -523,6 +570,20 @@ class WebSocketSessionOrchestrator:
                 if quota_decision.reason is not None
                 else INVALID_MESSAGE_REASON
             )
+            denial_event_type = _usage_event_type_for_quota_denial(
+                quota_decision.reason,
+            )
+            if denial_event_type is not None:
+                await self._record_usage_event(
+                    denial_event_type,
+                    client_id=message.client_id,
+                    payload={
+                        "remaining_seconds_today": (
+                            quota_decision.remaining_seconds_today
+                        ),
+                        "reason": reason,
+                    },
+                )
             await self._close_with_error(
                 websocket=websocket,
                 state=None,
@@ -568,12 +629,26 @@ class WebSocketSessionOrchestrator:
             session_id,
             archive_token,
         )
+        source_platform = SourcePlatform(message.source_platform)
+        capture_mode = CaptureMode(message.capture_mode)
+        await self._record_usage_event(
+            UsageEventType.SESSION_STARTED,
+            client_id=message.client_id,
+            session_id=session_id,
+            payload={
+                "capture_mode": capture_mode.value,
+                "remaining_seconds_today": quota_decision.remaining_seconds_today,
+                "source_platform": source_platform.value,
+            },
+        )
         return WebSocketSessionState(
             session_id=session_id,
             client_id=message.client_id,
             archive_token_hash=hash_archive_token(archive_token),
             archive_url=archive_url,
             remaining_seconds_today=quota_decision.remaining_seconds_today,
+            capture_mode=capture_mode,
+            source_platform=source_platform,
         )
 
     async def _resume_session(
@@ -663,6 +738,15 @@ class WebSocketSessionOrchestrator:
         )
         state.has_audio = True
         state.active_started_at = active_at
+        await self._record_usage_event(
+            UsageEventType.AUDIO_DETECTED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "capture_mode": state.capture_mode.value,
+                "source_platform": state.source_platform.value,
+            },
+        )
         await _send_server_message(
             websocket,
             AudioStatusMessage(type="audio_status", has_audio=True, level=None),
@@ -699,12 +783,30 @@ class WebSocketSessionOrchestrator:
         try:
             async for event in provider.events():
                 if isinstance(event, SttInterimEvent):
+                    await self._record_usage_event(
+                        UsageEventType.ASR_INTERIM_RECEIVED,
+                        client_id=state.client_id,
+                        session_id=state.session_id,
+                        payload={"text_length": len(event.text)},
+                    )
                     await _send_server_message(
                         websocket,
                         AsrInterimMessage(type="asr_interim", text=event.text),
                     )
                     self._schedule_interim_translation(websocket, state, event.text)
                 elif isinstance(event, SttFinalEvent):
+                    await self._record_usage_event(
+                        UsageEventType.ASR_FINAL_RECEIVED,
+                        client_id=state.client_id,
+                        session_id=state.session_id,
+                        payload={
+                            "confidence_present": event.confidence is not None,
+                            "end_ms": event.end_ms,
+                            "sequence": event.sequence,
+                            "start_ms": event.start_ms,
+                            "text_length": len(event.text),
+                        },
+                    )
                     await _send_server_message(
                         websocket,
                         AsrFinalMessage(
@@ -723,6 +825,16 @@ class WebSocketSessionOrchestrator:
             logger.warning(
                 "qwen_asr_stream_failed",
                 error_type=exc.__class__.__name__,
+            )
+            await self._record_usage_event(
+                UsageEventType.PROVIDER_ERROR,
+                client_id=state.client_id,
+                session_id=state.session_id,
+                payload={
+                    "code": QWEN_ASR_ERROR_REASON,
+                    "error_type": exc.__class__.__name__,
+                    "provider": "qwen_realtime_asr",
+                },
             )
             await self._close_with_error(
                 websocket=websocket,
@@ -789,6 +901,17 @@ class WebSocketSessionOrchestrator:
                     session_id=str(state.session_id),
                     sequence=event.sequence,
                 )
+                await self._record_usage_event(
+                    UsageEventType.PROVIDER_ERROR,
+                    client_id=state.client_id,
+                    session_id=state.session_id,
+                    payload={
+                        "code": QWEN_FINAL_TRANSLATION_FAILED_CODE,
+                        "error_type": exc.__class__.__name__,
+                        "provider": "qwen_final_translation",
+                        "sequence": event.sequence,
+                    },
+                )
                 await self._archive_failed_final_translation(
                     websocket=websocket,
                     state=state,
@@ -800,6 +923,17 @@ class WebSocketSessionOrchestrator:
 
             translated_text = translated_text.strip()
             if translated_text == "":
+                await self._record_usage_event(
+                    UsageEventType.PROVIDER_ERROR,
+                    client_id=state.client_id,
+                    session_id=state.session_id,
+                    payload={
+                        "code": QWEN_FINAL_TRANSLATION_FAILED_CODE,
+                        "error_type": "EmptyTranslation",
+                        "provider": "qwen_final_translation",
+                        "sequence": event.sequence,
+                    },
+                )
                 await self._archive_failed_final_translation(
                     websocket=websocket,
                     state=state,
@@ -809,6 +943,16 @@ class WebSocketSessionOrchestrator:
                 state.current_final_translation = None
                 continue
 
+            await self._record_usage_event(
+                UsageEventType.TRANSLATION_FINAL_COMPLETED,
+                client_id=state.client_id,
+                session_id=state.session_id,
+                payload={
+                    "chinese_text_length": len(translated_text),
+                    "english_text_length": len(event.text),
+                    "sequence": event.sequence,
+                },
+            )
             await self._archive_completed_final_translation(
                 websocket=websocket,
                 state=state,
@@ -841,6 +985,20 @@ class WebSocketSessionOrchestrator:
             asr_confidence=event.confidence,
         )
         state.archived_final_sequences.add(event.sequence)
+        await self._record_usage_event(
+            UsageEventType.SEGMENT_ARCHIVED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "chinese_text_length": len(translated_text),
+                "end_ms": event.end_ms,
+                "english_text_length": len(event.text),
+                "segment_id": str(segment_id),
+                "sequence": event.sequence,
+                "start_ms": event.start_ms,
+                "translation_status": TranslationStatus.COMPLETED.value,
+            },
+        )
         state.final_translation_context.append(
             FinalTranslationContextSegment(
                 sequence=event.sequence,
@@ -873,7 +1031,7 @@ class WebSocketSessionOrchestrator:
             return
 
         repository = _require_repository(self._repository)
-        await repository.create_transcript_segment(
+        segment_id = await repository.create_transcript_segment(
             session_id=state.session_id,
             sequence=event.sequence,
             start_ms=event.start_ms,
@@ -885,6 +1043,20 @@ class WebSocketSessionOrchestrator:
             asr_confidence=event.confidence,
         )
         state.archived_final_sequences.add(event.sequence)
+        await self._record_usage_event(
+            UsageEventType.SEGMENT_ARCHIVED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "chinese_text_length": 0,
+                "end_ms": event.end_ms,
+                "english_text_length": len(event.text),
+                "segment_id": str(segment_id),
+                "sequence": event.sequence,
+                "start_ms": event.start_ms,
+                "translation_status": TranslationStatus.FAILED.value,
+            },
+        )
         if send_warning:
             await _send_server_message(
                 websocket,
@@ -943,6 +1115,15 @@ class WebSocketSessionOrchestrator:
                 state.translation_provider = provider
 
             state.last_translation_request_at = self._clock()
+            await self._record_usage_event(
+                UsageEventType.TRANSLATION_INTERIM_REQUESTED,
+                client_id=state.client_id,
+                session_id=state.session_id,
+                payload={
+                    "min_interval_seconds": self._translation_min_interval_seconds,
+                    "text_length": len(text),
+                },
+            )
             try:
                 translated_text = await provider.translate_interim(text)
             except asyncio.CancelledError:
@@ -952,6 +1133,16 @@ class WebSocketSessionOrchestrator:
                     "qwen_interim_translation_failed",
                     error_type=exc.__class__.__name__,
                     session_id=str(state.session_id),
+                )
+                await self._record_usage_event(
+                    UsageEventType.PROVIDER_ERROR,
+                    client_id=state.client_id,
+                    session_id=state.session_id,
+                    payload={
+                        "code": QWEN_INTERIM_TRANSLATION_FAILED_CODE,
+                        "error_type": exc.__class__.__name__,
+                        "provider": "qwen_interim_translation",
+                    },
                 )
                 await _send_server_message(
                     websocket,
@@ -994,11 +1185,27 @@ class WebSocketSessionOrchestrator:
         script: MockProviderScript = DEFAULT_MOCK_PROVIDER_SCRIPT,
     ) -> None:
         await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await self._record_usage_event(
+            UsageEventType.ASR_INTERIM_RECEIVED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={"text_length": len(script.english_interim)},
+        )
         await _send_server_message(
             websocket,
             AsrInterimMessage(type="asr_interim", text=script.english_interim),
         )
         await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await self._record_usage_event(
+            UsageEventType.PROVIDER_ERROR,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "code": script.warning_code,
+                "error_type": "MockProviderWarning",
+                "provider": "mock_provider",
+            },
+        )
         await _send_server_message(
             websocket,
             WarningMessage(
@@ -1008,6 +1215,15 @@ class WebSocketSessionOrchestrator:
             ),
         )
         await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
+        await self._record_usage_event(
+            UsageEventType.TRANSLATION_INTERIM_REQUESTED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "min_interval_seconds": 0,
+                "text_length": len(script.english_interim),
+            },
+        )
         await _send_server_message(
             websocket,
             TranslationInterimMessage(
@@ -1019,6 +1235,28 @@ class WebSocketSessionOrchestrator:
 
         repository = _require_repository(self._repository)
         final_segment = script.final_segment
+        await self._record_usage_event(
+            UsageEventType.ASR_FINAL_RECEIVED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "confidence_present": False,
+                "end_ms": final_segment.end_ms,
+                "sequence": final_segment.sequence,
+                "start_ms": final_segment.start_ms,
+                "text_length": len(final_segment.english_text_final),
+            },
+        )
+        await self._record_usage_event(
+            UsageEventType.TRANSLATION_FINAL_COMPLETED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "chinese_text_length": len(final_segment.chinese_text_final),
+                "english_text_length": len(final_segment.english_text_final),
+                "sequence": final_segment.sequence,
+            },
+        )
         segment_id = await repository.create_transcript_segment(
             session_id=state.session_id,
             sequence=final_segment.sequence,
@@ -1027,6 +1265,20 @@ class WebSocketSessionOrchestrator:
             english_text_final=final_segment.english_text_final,
             chinese_text_final=final_segment.chinese_text_final,
             is_key_sentence=final_segment.is_key_sentence,
+        )
+        await self._record_usage_event(
+            UsageEventType.SEGMENT_ARCHIVED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "chinese_text_length": len(final_segment.chinese_text_final),
+                "end_ms": final_segment.end_ms,
+                "english_text_length": len(final_segment.english_text_final),
+                "segment_id": str(segment_id),
+                "sequence": final_segment.sequence,
+                "start_ms": final_segment.start_ms,
+                "translation_status": TranslationStatus.COMPLETED.value,
+            },
         )
         await _send_server_message(
             websocket,
@@ -1110,6 +1362,17 @@ class WebSocketSessionOrchestrator:
         await quota_service.release_active_session(
             state.client_id,
             str(state.session_id),
+        )
+        await self._record_usage_event(
+            UsageEventType.SESSION_CLOSED,
+            client_id=state.client_id,
+            session_id=state.session_id,
+            payload={
+                "duration_seconds": duration_seconds,
+                "quota_seconds_consumed": duration_seconds,
+                "reason": reason,
+                "remaining_seconds_today": remaining_seconds_today,
+            },
         )
 
         if send_messages:
@@ -1288,6 +1551,16 @@ def _status_for_close_reason(reason: str) -> MeetingSessionStatus:
     if reason == BROWSER_DISCONNECTED_REASON:
         return MeetingSessionStatus.ERROR
     return MeetingSessionStatus.ERROR
+
+
+def _usage_event_type_for_quota_denial(
+    reason: QuotaDenialReason | None,
+) -> UsageEventType | None:
+    if reason is QuotaDenialReason.DAILY_QUOTA_EXHAUSTED:
+        return UsageEventType.QUOTA_EXHAUSTED
+    if reason is QuotaDenialReason.BUDGET_FUSE_TRIGGERED:
+        return UsageEventType.BUDGET_FUSE_TRIGGERED
+    return None
 
 
 def _require_repository(

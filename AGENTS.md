@@ -27,7 +27,8 @@
 - Step 17 已实现 F07 中文 interim：后端新增 `meeting_mvp_backend.translation_providers`，非 local 且 `QWEN_INTERIM_ENABLED=true` 时对节流后的英文 `asr_interim` 异步调用 Qwen OpenAI-compatible `/chat/completions` 并推送 `translation_interim`；默认 1.5 秒最小间隔，空文本/重复文本跳过，请求中只保留最新待翻译文本；Qwen interim 失败只记录脱敏 warning，不阻塞英文 ASR 或后续 final；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen interim smoke 均已通过。
 - Step 18 已实现 F08 中文 final：后端 `meeting_mvp_backend.translation_providers` 新增 Qwen final provider，非 local WebSocket 会话在英文 `asr_final` 后用 `QWEN_FINAL_MODEL` 调用 Qwen OpenAI-compatible `/chat/completions` 生成正式中文 final，成功写入 `transcript_segment(translation_status=completed)` 并发送 `segment_final`；请求携带最近 5 个成功双语 final 上下文，显式 `enable_thinking=false`、`max_tokens=512`；Qwen final 失败会保存英文 final、空中文 final、`translation_status=failed` 并发送 warning，不关闭 WebSocket；本地后端 Ruff/mypy/pytest、前端 lint/test/build/e2e 和 Lighthouse 后端容器真实 Qwen final smoke 均已通过。
 - Step 19 已实现 F09 四区实时 UI 补强：前端四区只消费显式 WebSocket 消息，`asr_interim` / `translation_interim` 可替换，`segment_final` 幂等追加并移除匹配 `asr_final`，`key_sentence_update` / `timeline_update` 不从 final 派生；四区 callback 抛错不会破坏后续 WebSocket 消息分发；四个实时区已增加 `aria-live="polite"`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 20 已实现 F16 异常与降级提示：前端新增 `session-notices` 统一映射捕获失败、无音频、静音、WebSocket warning/error、关闭原因和预留导出失败提示；store 新增 `activeNotice`/`lastClosedReason`，错误时停止本地音频资源但保留已收到 final、归档入口和 session id；UI 使用 `role="status"`/`role="alert"` 展示可访问提示；后端在 Qwen interim 失败时发送 `warning(code="qwen_interim_translation_failed")`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 21。
+- Step 20 已实现 F16 异常与降级提示：前端新增 `session-notices` 统一映射捕获失败、无音频、静音、WebSocket warning/error、关闭原因和预留导出失败提示；store 新增 `activeNotice`/`lastClosedReason`，错误时停止本地音频资源但保留已收到 final、归档入口和 session id；UI 使用 `role="status"`/`role="alert"` 展示可访问提示；后端在 Qwen interim 失败时发送 `warning(code="qwen_interim_translation_failed")`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 21 已实现 usage_event 埋点基础：新增 `meeting_mvp_backend.usage_events`，集中管理事件 allowlist、payload 安全校验、SQLAlchemy writer 和 best-effort 写入；匿名新用户写入 `client_created`，WebSocket 会话写入 `capture_started`、`quota_checked`、`session_started`、`audio_detected`、ASR/翻译/归档、Provider 错误、额度/预算拒绝和 `session_closed` 等后端可确定事件；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 22。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -36,7 +37,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 20 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 21 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -243,7 +244,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 20 异常与降级提示已完成；Step 21 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -362,6 +363,15 @@ Step 20 F16 异常与降级提示已落地：
 - 后端 `backend/src/meeting_mvp_backend/ws_sessions.py` 在 Qwen interim 翻译失败时发送 `warning(code="qwen_interim_translation_failed")`，不关闭 WebSocket，不阻塞英文 ASR 或 final；Qwen final warning、Qwen ASR error、额度/预算拒绝保持既有 schema。
 - Step 20 不新增公开 REST API、不修改 WebSocket wire schema、不新增 database migration、不新增环境变量、不写 `usage_event`、不实现真实导出/COS/搜索/复制或成本看板。
 
+Step 21 usage_event 埋点基础已落地：
+
+- 新增 `backend/src/meeting_mvp_backend/usage_events.py`，定义 Step 21 事件 allowlist、`UsageEventRecord`、`UsageEventRecorder`、`SQLAlchemyUsageEventRecorder`、payload 安全校验和 best-effort 写入工具。
+- `usage_event.payload` 安全校验会拒绝二进制音频、raw audio、PCM frame、API key、secret、token、password、private key、credential 等字段；事件 payload 只允许保存状态、长度、序号、时间点、错误 code/type、剩余额度、capture/source 类型等元数据。
+- `backend/src/meeting_mvp_backend/anonymous_clients.py` 在新匿名用户创建成功后记录 `client_created`；payload 只包含 `daily_free_seconds`、`ip_hash_present`、`user_agent_hash_present`，不保存明文 IP、User-Agent 或 hash 值本身。
+- `backend/src/meeting_mvp_backend/ws_sessions.py` 在后端可确定的会话节点写入 usage event：`capture_started`、`quota_checked`、`session_started`、`audio_detected`、`asr_interim_received`、`asr_final_received`、`translation_interim_requested`、`translation_final_completed`、`segment_archived`、`provider_error`、`quota_exhausted`、`budget_fuse_triggered`、`session_closed`。
+- `capture_failed` 和 `archive_viewed` 只完成事件类型和安全写入能力；当前没有前端埋点 API，也没有归档查看 API/页面，真实触发留给后续步骤。
+- Step 21 不新增公开 REST API、不修改 WebSocket wire schema、不新增 database migration、不新增环境变量、不实现会后归档 API/页面、搜索、复制、导出/COS 或成本看板。
+
 核心 WebSocket 请求消息：
 
 - `session_start`
@@ -416,5 +426,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 21 必须等待用户明确允许后再开始；Step 20 只补齐异常与降级提示，不写 `usage_event`，不新增成本埋点/看板、会后归档 API/页面、真实导出/COS、搜索、复制或重点句/时间线增强。
+- Step 22 必须等待用户明确允许后再开始；Step 21 只补齐后端 usage_event 埋点基础，不新增会后归档 API/页面、真实 `archive_viewed` 触发、前端埋点 API、成本看板、真实导出/COS、搜索、复制或重点句/时间线增强。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

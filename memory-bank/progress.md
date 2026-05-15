@@ -1138,3 +1138,47 @@
 - `export_failed` 当前只是前端提示映射预留，未实现真实导出流程。
 - 已归档内容“不丢失”在本步体现为前端异常状态不清空已收到 final、归档入口和会话标识；后端仍保持已入库片段。
 - Playwright E2E 使用 `npm run preview` 服务 `dist`，改动 UI 后需要先运行 `npm run build`，否则可能复用旧构建产物。
+
+## 2026-05-15 Step 21：usage_event 埋点基础
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 21，未开始 Step 22；本步不新增会后归档 API/页面、搜索、复制、导出、COS、成本看板、WebSocket wire schema、数据库 migration 或前端公开埋点 API。
+- 新增 `backend/src/meeting_mvp_backend/usage_events.py`：
+  - 定义 Step 21 事件 allowlist：`client_created`、`quota_checked`、`capture_started`、`capture_failed`、`audio_detected`、`session_started`、`asr_interim_received`、`asr_final_received`、`translation_interim_requested`、`translation_final_completed`、`segment_archived`、`archive_viewed`、`provider_error`、`quota_exhausted`、`budget_fuse_triggered`、`session_closed`。
+  - 新增 `UsageEventRecord`、`UsageEventRecorder` 协议、`SQLAlchemyUsageEventRecorder` 和 `record_usage_event_best_effort()`。
+  - 新增 payload 安全校验，拒绝二进制音频、raw audio、PCM frame、API key、secret、token、password、private key、credential 等字段进入 `usage_event.payload`。
+- 接入匿名用户初始化：
+  - `AnonymousClientService` 支持注入 usage event recorder。
+  - 新匿名用户创建并提交成功后记录 `client_created`。
+  - payload 只记录 `daily_free_seconds`、`ip_hash_present`、`user_agent_hash_present` 等脱敏元数据，不保存明文 IP、User-Agent 或 hash 值本身。
+- 接入 WebSocket 会话编排：
+  - `session_start` 已初始化匿名用户后记录 `capture_started`，额度结果记录 `quota_checked`。
+  - 每日额度耗尽和预算保险丝分别记录 `quota_exhausted` / `budget_fuse_triggered`，仍沿用既有 `error` + `session_closed` 控制流。
+  - 成功创建 pending session 后记录 `session_started`，payload 不包含 `archive_token` 或 `archive_url`。
+  - 首个有效 binary audio frame 激活会话时记录 `audio_detected`。
+  - STT interim/final、interim 翻译请求、final 翻译完成、segment 归档、Provider 错误、session 关闭均写入对应 usage event；payload 只包含长度、状态、序号、时间戳、错误类型等元数据，不保存英文原文、中文译文、原始音频或密钥。
+  - local mock Provider 路径同样记录 ASR、翻译、Provider warning 和 segment 归档事件，便于本地端到端漏斗验证。
+- `archive_viewed` 与 `capture_failed` 仅在 Step 21 中完成事件类型和安全写入能力；浏览器本地捕获失败的前端上报和真实归档查看触发点留给后续明确步骤，避免提前进入 Step 22。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 21 usage_events/匿名 RED | `uv run pytest tests/test_usage_events.py tests/test_anonymous_clients_service.py -q` | 首次 2 errors：缺少 `meeting_mvp_backend.usage_events` |
+| Step 21 WebSocket RED | `uv run pytest tests/test_websocket_sessions.py -q` | 首次 29 failed：`WebSocketSessionOrchestrator` 尚不接受 `usage_event_recorder` |
+| Step 21 目标 GREEN | `uv run pytest tests/test_websocket_sessions.py tests/test_usage_events.py tests/test_anonymous_clients_service.py -q` | 41 passed |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 33 source files` |
+| 后端 pytest | `uv run pytest` | 100 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 11 个测试文件、80 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 9 个 Chromium 测试通过 |
+
+### 后续注意
+
+- Step 22 必须等待用户明确允许后再开始；当前没有会后归档 API/页面，也没有真正触发 `archive_viewed`。
+- Step 21 没有新增前端埋点 API，因此浏览器本地授权拒绝、无音轨等 `capture_failed` 暂不由前端上报；如后续需要统计这些本地失败，应单独设计安全 allowlist API 或复用后续归档/会话接口。
+- `usage_event` 是观测数据，写入失败只记录脱敏 warning，不中断匿名初始化或 WebSocket 主流程。
+- 当前事件 payload 设计刻意不存原文、译文、音频、明文 token、明文 IP/User-Agent 或任何 Provider 密钥；后续新增事件必须继续复用 `usage_events` 的安全校验。

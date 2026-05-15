@@ -836,3 +836,41 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Step 20 已先跑 RED 测试确认提示映射、WebSocket error code、store 状态和后端 interim warning 缺口，再实现到 GREEN。
 - 本地完整验证已通过：后端 Ruff、mypy、pytest；前端 lint、Vitest、build、Playwright E2E；`git diff --check` 仅有 Windows LF/CRLF 提示，无空白错误。
 - Step 21 未开始；使用量与成本埋点、`usage_event` 写入和看板仍等待用户明确允许。
+
+## 2026-05-15 Step 21 usage_event 埋点基础
+
+### 架构状态
+- Step 21 在后端建立基础 usage event 写入层，不改变数据库 schema、WebSocket wire schema、前端公开配置或公开 REST API。
+- 既有 `usage_event` 表继续作为漏斗、质量和成本分析的基础事件源；本步复用 Step 07 已有 `client_id`、可选 `session_id`、`event_type`、`payload`、`created_at` 字段，不新增 migration。
+- 新增 `usage_events` 模块集中管理事件 allowlist、payload 安全校验、事件记录结构和 SQLAlchemy 写入器。业务代码只通过 recorder 写事件，避免在匿名初始化和 WebSocket 编排层直接拼 SQLAlchemy `UsageEvent`。
+- `SQLAlchemyUsageEventRecorder` 由 FastAPI 依赖组装注入 `AnonymousClientService` 和 `WebSocketSessionOrchestrator`；local/mock 与生产路径共用同一事件写入接口。
+- `usage_event` 写入为 best-effort：写入失败只记录脱敏 warning，不中断匿名初始化、额度拒绝、音频上传、Provider 调用、segment 归档或会话关闭。
+- WebSocket 会话事件覆盖后端可确定的漏斗节点：`capture_started`、`quota_checked`、`session_started`、`audio_detected`、ASR/翻译/归档事件、`provider_error`、额度/预算拒绝和 `session_closed`。
+- `capture_failed` 和 `archive_viewed` 只在本步完成事件类型和安全写入能力；浏览器本地捕获失败上报与真实归档查看触发点仍属于后续明确步骤，避免提前进入 Step 22。
+- 事件 payload 只保存元数据：状态、长度、序号、时间点、错误 code/type、剩余额度、capture/source 类型等；不保存英文原文、中文译文、原始音频、PCM frame、明文 token、明文 IP/User-Agent 或任何 Provider 密钥。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/usage_events.py` | Step 21 新增的 usage event 核心模块。定义 `UsageEventType` allowlist、`STEP_21_USAGE_EVENT_TYPES`、`UsageEventRecord`、`UsageEventRecorder` 协议、`SQLAlchemyUsageEventRecorder`、payload 安全校验和 `record_usage_event_best_effort()`。 |
+| `backend/src/meeting_mvp_backend/anonymous_clients.py` | 匿名用户初始化服务。Step 21 注入 usage event recorder，新匿名用户创建成功后记录 `client_created`，payload 只包含脱敏存在性标记和额度配置。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口与依赖组装。Step 21 为匿名初始化服务和 WebSocket orchestrator 创建并注入 `SQLAlchemyUsageEventRecorder`。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 21 在会话开始、额度检查、音频激活、ASR、翻译、归档、Provider 错误和关闭路径记录 usage event；不改变既有 WebSocket 消息结构。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 数据库模型。Step 21 复用既有 `UsageEvent` 模型和 PostgreSQL JSONB payload；字段保持 Step 07 schema，不新增 migration。 |
+| `backend/tests/test_usage_events.py` | usage event 模块单元测试。覆盖事件 allowlist、必要字段、SQLAlchemy writer 行为、payload 安全拒绝和 best-effort 失败隔离。 |
+| `backend/tests/test_anonymous_clients_service.py` | 匿名初始化服务单元测试。覆盖新匿名用户写入 `client_created`，以及既有匿名用户不重复记录创建事件。 |
+| `backend/tests/test_websocket_sessions.py` | WebSocket 行为测试。Step 21 新增 fake recorder，覆盖成功会话漏斗、Provider/归档事件、额度/预算拒绝和 Provider 错误事件。 |
+
+### 状态与边界
+- `usage_event` 是观测数据，不是主业务状态来源；正式会议档案仍以 `transcript_segment` 为准，额度实时状态仍以 Redis 为准。
+- `session_started` WebSocket 响应仍返回明文 `archive_token` 给浏览器；usage event payload 明确不保存该 token、`archive_url` 或 token hash。
+- `client_created` 只在新匿名用户创建后写一次；重复匿名初始化只更新 `anonymous_client.last_seen_at` / `user_agent_hash`，不重复写创建事件。
+- local mock Provider 会写 ASR/翻译/归档/Provider warning 事件，便于本地漏斗测试；真实 Qwen provider 路径写入同一套事件类型。
+- Step 22 未开始：当前没有归档查询 API/页面，没有 token 校验 API，也没有真实 `archive_viewed` 触发点。
+
+### 验证结论
+- Step 21 已先跑 RED 测试确认缺少 `usage_events` 模块和 WebSocket recorder 注入缺口，再实现到 GREEN。
+- 本地后端验证通过：Ruff、mypy、pytest；pytest 结果为 100 passed，13 integration deselected。
+- 本地前端回归验证通过：lint、Vitest、build、Playwright E2E；本步未修改前端代码。
+- Step 22 未开始；会后基础双语归档仍等待用户明确允许。

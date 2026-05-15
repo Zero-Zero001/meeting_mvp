@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -22,6 +23,7 @@ from meeting_mvp_backend.main import app, get_websocket_session_orchestrator
 from meeting_mvp_backend.quota import QuotaDecision, QuotaDenialReason
 from meeting_mvp_backend.stt_providers import SttEvent, SttFinalEvent, SttInterimEvent
 from meeting_mvp_backend.translation_providers import FinalTranslationRequest
+from meeting_mvp_backend.usage_events import UsageEventRecord, UsageEventType
 from meeting_mvp_backend.ws_sessions import (
     InMemorySessionResumeRegistry,
     WebSocketSessionOrchestrator,
@@ -289,6 +291,29 @@ class FakeFinalTranslationProvider:
         self.closed = True
 
 
+class FakeUsageEventRecorder:
+    def __init__(self) -> None:
+        self.records: list[UsageEventRecord] = []
+
+    async def record_event(
+        self,
+        *,
+        client_id: str,
+        event_type: UsageEventType | str,
+        payload: dict[str, object] | None = None,
+        session_id: uuid.UUID | str | None = None,
+    ) -> UsageEventRecord:
+        record = UsageEventRecord(
+            client_id=client_id,
+            session_id=uuid.UUID(str(session_id)) if session_id is not None else None,
+            event_type=UsageEventType(event_type),
+            payload=payload or {},
+            created_at=FIXED_NOW,
+        )
+        self.records.append(record)
+        return record
+
+
 class SequenceClock:
     def __init__(self, *values: datetime) -> None:
         self._values = list(values)
@@ -323,6 +348,7 @@ def make_client(
     translation_min_interval_seconds: float = 0,
     translation_provider: FakeInterimTranslationProvider | None = None,
     final_translation_provider: FakeFinalTranslationProvider | None = None,
+    usage_event_recorder: FakeUsageEventRecorder | None = None,
 ) -> TestClient:
     settings = Settings()
     settings.public_base_url = "https://meeting.example.test"
@@ -345,6 +371,7 @@ def make_client(
                 (lambda: translation_provider) if translation_provider else None
             ),
             translation_min_interval_seconds=translation_min_interval_seconds,
+            usage_event_recorder=usage_event_recorder,
         )
 
     app.dependency_overrides[get_websocket_session_orchestrator] = (
@@ -388,6 +415,12 @@ def receive_until_message_type(
             return message
 
 
+def usage_event_types(
+    usage_event_recorder: FakeUsageEventRecorder,
+) -> list[UsageEventType]:
+    return [record.event_type for record in usage_event_recorder.records]
+
+
 def test_session_start_returns_session_started_and_writes_pending_session() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
@@ -414,6 +447,65 @@ def test_session_start_returns_session_started_and_writes_pending_session() -> N
             )
             assert stored_session.archive_token_hash != message["archive_token"]
             assert quota_service.reserved_session_ids == [session_id]
+
+
+def test_usage_events_record_session_lifecycle_without_audio_content() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    usage_events = FakeUsageEventRecorder()
+    stt_provider = FakeSttProvider()
+    active_at = FIXED_NOW + timedelta(seconds=2)
+    stop_at = FIXED_NOW + timedelta(seconds=9)
+    clock = SequenceClock(FIXED_NOW, active_at, stop_at)
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        clock=clock,
+        stt_provider=stt_provider,
+        usage_event_recorder=usage_events,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = str(started["session_id"])
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    assert usage_event_types(usage_events) == [
+        UsageEventType.CAPTURE_STARTED,
+        UsageEventType.QUOTA_CHECKED,
+        UsageEventType.SESSION_STARTED,
+        UsageEventType.AUDIO_DETECTED,
+        UsageEventType.SESSION_CLOSED,
+    ]
+    assert usage_events.records[0].session_id is None
+    assert usage_events.records[0].payload == {
+        "capture_mode": "tab_audio",
+        "source_platform": "google_meet",
+    }
+    assert usage_events.records[1].payload == {
+        "allowed": True,
+        "remaining_seconds_today": 2400,
+        "reason": None,
+    }
+    assert usage_events.records[2].session_id == uuid.UUID(session_id)
+    assert "archive_token" not in usage_events.records[2].payload
+    assert "archive_url" not in usage_events.records[2].payload
+    assert usage_events.records[-1].payload == {
+        "duration_seconds": 7,
+        "quota_seconds_consumed": 7,
+        "reason": "user_stopped",
+        "remaining_seconds_today": 2393,
+    }
+    payload_json = json.dumps(
+        [record.payload for record in usage_events.records],
+        ensure_ascii=False,
+    )
+    assert "\\x00" not in payload_json
 
 
 def test_non_empty_binary_frame_activates_session_then_stop_settles_quota() -> None:
@@ -456,6 +548,71 @@ def test_non_empty_binary_frame_activates_session_then_stop_settles_quota() -> N
     assert stored_session.quota_seconds_consumed == 7
     assert quota_service.consumed_seconds == [7]
     assert quota_service.released_session_ids == [session_id]
+
+
+def test_usage_events_record_provider_and_archive_metadata_without_text() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    usage_events = FakeUsageEventRecorder()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align on the launch timeline."),
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=3200,
+                text="We need to align on the launch timeline before Friday.",
+                confidence=0.91,
+            ),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(
+        translations=["我们需要对齐上线时间线。"],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(
+        outcomes=["我们需要在周五前对齐上线时间线。"],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+        final_translation_provider=final_translation_provider,
+        usage_event_recorder=usage_events,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = str(started["session_id"])
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            receive_until_message_type(websocket, "translation_interim")
+            receive_until_message_type(websocket, "segment_final")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            receive_until_message_type(websocket, "session_closed")
+
+    recorded_types = usage_event_types(usage_events)
+    assert UsageEventType.ASR_INTERIM_RECEIVED in recorded_types
+    assert UsageEventType.TRANSLATION_INTERIM_REQUESTED in recorded_types
+    assert UsageEventType.ASR_FINAL_RECEIVED in recorded_types
+    assert UsageEventType.TRANSLATION_FINAL_COMPLETED in recorded_types
+    assert UsageEventType.SEGMENT_ARCHIVED in recorded_types
+    segment_archived = [
+        record
+        for record in usage_events.records
+        if record.event_type is UsageEventType.SEGMENT_ARCHIVED
+    ][0]
+    assert segment_archived.session_id == uuid.UUID(session_id)
+    assert segment_archived.payload["sequence"] == 1
+    assert segment_archived.payload["translation_status"] == "completed"
+    payload_json = json.dumps(
+        [record.payload for record in usage_events.records],
+        ensure_ascii=False,
+    )
+    assert "We need to align" not in payload_json
+    assert "我们需要" not in payload_json
 
 
 def test_valid_audio_frame_runs_mock_provider_and_archives_final_segment() -> None:
@@ -1063,6 +1220,41 @@ def test_qwen_asr_error_closes_session_and_releases_quota() -> None:
     assert stt_provider.closed is True
 
 
+def test_usage_events_record_provider_error_without_error_message() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    usage_events = FakeUsageEventRecorder()
+    stt_provider = FakeSttProvider(error=RuntimeError("qwen unavailable"))
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        usage_event_recorder=usage_events,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "error")
+            receive_until_message_type(websocket, "session_closed")
+
+    provider_errors = [
+        record
+        for record in usage_events.records
+        if record.event_type is UsageEventType.PROVIDER_ERROR
+    ]
+    assert len(provider_errors) == 1
+    assert provider_errors[0].session_id == uuid.UUID(str(started["session_id"]))
+    assert provider_errors[0].payload == {
+        "code": "qwen_asr_error",
+        "error_type": "RuntimeError",
+        "provider": "qwen_realtime_asr",
+    }
+    assert "qwen unavailable" not in json.dumps(provider_errors[0].payload)
+
+
 def test_stopping_stt_session_closes_provider() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
@@ -1249,6 +1441,47 @@ def test_rejects_quota_and_budget_denials_with_error_and_closed(
         "reason": denial_reason.value,
     }
     assert repository.sessions == {}
+
+
+@pytest.mark.parametrize(
+    ("denial_reason", "expected_event_type"),
+    [
+        (QuotaDenialReason.DAILY_QUOTA_EXHAUSTED, UsageEventType.QUOTA_EXHAUSTED),
+        (QuotaDenialReason.BUDGET_FUSE_TRIGGERED, UsageEventType.BUDGET_FUSE_TRIGGERED),
+    ],
+)
+def test_usage_events_record_quota_and_budget_denials(
+    denial_reason: QuotaDenialReason,
+    expected_event_type: UsageEventType,
+) -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService(
+        denial_reason=denial_reason,
+        remaining_seconds_today=0,
+    )
+    usage_events = FakeUsageEventRecorder()
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        usage_event_recorder=usage_events,
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            receive_until_message_type(websocket, "session_closed")
+
+    assert usage_event_types(usage_events) == [
+        UsageEventType.CAPTURE_STARTED,
+        UsageEventType.QUOTA_CHECKED,
+        expected_event_type,
+    ]
+    assert usage_events.records[1].payload == {
+        "allowed": False,
+        "remaining_seconds_today": 0,
+        "reason": denial_reason.value,
+    }
+    assert usage_events.records[2].session_id is None
 
 
 def test_rejects_uninitialized_client() -> None:
