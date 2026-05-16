@@ -4,12 +4,18 @@ from typing import Annotated, cast
 from uuid import UUID
 
 import structlog
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, status
 from pydantic import BaseModel, ConfigDict
 
 from meeting_mvp_backend.anonymous_clients import (
     AnonymousClientInitialization,
     AnonymousClientService,
+)
+from meeting_mvp_backend.archives import (
+    ArchiveAccessDenied,
+    ArchiveResponse,
+    ArchiveService,
+    SQLAlchemyArchiveRepository,
 )
 from meeting_mvp_backend.config import AppEnv, Settings, load_settings, settings_status
 from meeting_mvp_backend.db.session import create_engine, create_session_factory
@@ -99,6 +105,31 @@ def get_anonymous_client_service(
     )
 
 
+def get_archive_service(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> ArchiveService:
+    if not settings.database_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DATABASE_URL is required to view archives",
+        )
+
+    if not hasattr(request.app.state, "db_session_factory"):
+        engine = create_engine(settings.database_url)
+        request.app.state.db_engine = engine
+        request.app.state.db_session_factory = create_session_factory(engine)
+
+    return ArchiveService(
+        repository=SQLAlchemyArchiveRepository(
+            request.app.state.db_session_factory,
+        ),
+        usage_event_recorder=SQLAlchemyUsageEventRecorder(
+            session_factory=request.app.state.db_session_factory,
+        ),
+    )
+
+
 def get_websocket_settings(websocket: WebSocket) -> Settings:
     if hasattr(websocket.app.state, "settings"):
         return cast(Settings, websocket.app.state.settings)
@@ -178,6 +209,26 @@ async def initialize_anonymous_client(
         user_agent=request.headers.get("user-agent"),
     )
     return AnonymousClientCreateResponse.model_validate(result)
+
+
+@app.get("/api/archives/{session_id}")
+async def view_archive(
+    session_id: UUID,
+    service: Annotated[ArchiveService, Depends(get_archive_service)],
+    token: str | None = Query(default=None),
+) -> ArchiveResponse:
+    if token is None or token.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Archive token is required",
+        )
+    try:
+        return await service.view_archive(session_id=session_id, token=token)
+    except ArchiveAccessDenied as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Archive not found or expired",
+        ) from exc
 
 
 @app.websocket("/ws")

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import ArchivePage from '@/archive/ArchivePage'
 import {
   useSessionStore,
   type AudioProcessingStatus,
@@ -146,6 +147,14 @@ function startButtonLabel({
 }
 
 function App() {
+  if (isArchivePath()) {
+    return <ArchivePage />
+  }
+
+  return <MeetingWorkspace />
+}
+
+function MeetingWorkspace() {
   const {
     activeNotice,
     anonymousClientError,
@@ -643,6 +652,13 @@ function TimelineItem({ label, value }: { label: string; value: string }) {
       <dd className="font-medium">{value}</dd>
     </div>
   )
+}
+
+function isArchivePath(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.location.pathname.startsWith('/archive/')
 }
 
 export default App

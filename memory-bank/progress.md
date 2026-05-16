@@ -1178,7 +1178,65 @@
 
 ### 后续注意
 
-- Step 22 必须等待用户明确允许后再开始；当前没有会后归档 API/页面，也没有真正触发 `archive_viewed`。
+- Step 21 结束时尚未实现会后归档 API/页面；Step 22 已补齐基础归档 API/页面与真实 `archive_viewed` 触发点。
 - Step 21 没有新增前端埋点 API，因此浏览器本地授权拒绝、无音轨等 `capture_failed` 暂不由前端上报；如后续需要统计这些本地失败，应单独设计安全 allowlist API 或复用后续归档/会话接口。
 - `usage_event` 是观测数据，写入失败只记录脱敏 warning，不中断匿名初始化或 WebSocket 主流程。
 - 当前事件 payload 设计刻意不存原文、译文、音频、明文 token、明文 IP/User-Agent 或任何 Provider 密钥；后续新增事件必须继续复用 `usage_events` 的安全校验。
+
+## 2026-05-16 Step 22：基础双语归档页/API
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 22，未开始 Step 23；本步不新增数据库 migration、搜索、复制、Markdown/JSON 导出、COS、成本看板或归档增强功能。
+- 新增 `backend/src/meeting_mvp_backend/archive_tokens.py`：
+  - 将 `hash_archive_token()` 和 `build_archive_url()` 从 WebSocket 编排中抽为共享模块。
+  - `ws_sessions.py` 改为从该模块导入并显式 re-export，保持既有建会返回 `archive_token` / `archive_url` 行为和测试入口兼容。
+- 新增 `backend/src/meeting_mvp_backend/archives.py`：
+  - 定义归档响应 Pydantic model、repository protocol、SQLAlchemy repository、`ArchiveService` 和 `ArchiveAccessDenied`。
+  - 复用 `meeting_session`、`transcript_segment` 和 `usage_event` 表，不新增 migration。
+  - 使用 `hash_archive_token(token)` 与 `hmac.compare_digest()` 校验 archive token hash；session 不存在、token 错误和归档过期统一隐藏为 404。
+  - 按 `sequence` 升序返回 final 片段；响应包含 session 元数据和双语 final 片段，不返回明文 token 或 token hash。
+- `backend/src/meeting_mvp_backend/main.py` 新增 `GET /api/archives/{session_id}?token=...`：
+  - 缺少或空 `token` 返回 401。
+  - session 不存在、错误 token、归档过期返回 404。
+  - 缺少 `DATABASE_URL` 返回 503。
+- 归档 `end_reason` 派生规则已落地：
+  - 优先读取最新 `usage_event(event_type=session_closed).payload.reason`。
+  - 缺失时 fallback 到 `meeting_session.status.value`。
+- 成功查看归档后 best-effort 写入 `archive_viewed`：
+  - payload 只包含 `segment_count`、`session_status`、`end_reason`、`translation_failed_count` 等安全元数据。
+  - 不保存明文 token、`archive_url`、英文原文、中文译文、明文 IP/User-Agent 或任何 Provider 密钥。
+- 前端新增 `frontend/src/api/archives.ts`：
+  - 构造 `/api/archives/{session_id}?token=...`，支持 `VITE_API_BASE_URL`。
+  - 使用 Zod 校验归档响应，HTTP 非 2xx 映射为带 status 的 `ArchiveAccessError`。
+- 前端新增 `frontend/src/archive/ArchivePage.tsx`：
+  - 从当前 URL 的 `/archive/:sessionId` 和 `token` 查询归档。
+  - 展示 loading、缺 token、无权限/过期、空归档、正常归档和异常结束状态。
+  - 展示双语 final 片段、时间戳、翻译状态和重点句标记；不做搜索、复制或导出。
+- `frontend/src/App.tsx` 增加轻量路径分流：`/archive/:sessionId` 渲染归档页，其余路径保持实时会议工作台；未引入 React Router。
+- 新增测试文件：
+  - `backend/tests/test_archives.py`
+  - `frontend/src/api/archives.test.ts`
+  - `frontend/src/archive/ArchivePage.test.tsx`
+  - `frontend/e2e/archive.spec.ts`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 22 后端 RED | `uv run pytest tests/test_archives.py` | 首次失败：缺少 `meeting_mvp_backend.archives` |
+| Step 22 前端 RED | `npm run test -- src/api/archives.test.ts src/archive/ArchivePage.test.tsx` | 首次失败：缺少 `src/api/archives.ts` 和 `src/archive/ArchivePage.tsx` |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 36 source files` |
+| 后端 pytest | `uv run pytest` | 110 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 13 个测试文件、88 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 10 个 Chromium 测试通过 |
+
+### 后续注意
+
+- Step 23 必须等待用户明确允许后再开始；当前没有搜索、复制、Markdown/JSON 导出、COS、成本看板、归档增强或重点句/时间线增强。
+- `archive_viewed` 的真实触发点已由 Step 22 归档 API 补齐，但 payload 仍必须继续遵守 Step 21 的 usage event 安全边界。
+- `end_reason` 依赖 Step 21 的 `session_closed` usage event；历史会话或异常缺失该事件时使用 `meeting_session.status` fallback。
+- Playwright E2E 通过 `npm run preview` 服务 `dist`，验证归档 UI 变更前需要先运行 `npm run build`，避免复用旧构建产物。

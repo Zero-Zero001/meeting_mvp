@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import secrets
 import uuid
@@ -10,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
-from urllib.parse import quote
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
@@ -18,6 +16,10 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from meeting_mvp_backend.archive_tokens import (
+    build_archive_url as build_archive_url,
+    hash_archive_token as hash_archive_token,
+)
 from meeting_mvp_backend.config import Settings
 from meeting_mvp_backend.db.models import (
     AnonymousClient,
@@ -1500,21 +1502,6 @@ class WebSocketSessionOrchestrator:
             send_messages=False,
             websocket=None,
         )
-
-
-def hash_archive_token(archive_token: str) -> str:
-    return hashlib.sha256(archive_token.encode("utf-8")).hexdigest()
-
-
-def build_archive_url(
-    public_base_url: str | None,
-    session_id: uuid.UUID,
-    archive_token: str,
-) -> str:
-    archive_path = f"/archive/{session_id}?token={quote(archive_token, safe='')}"
-    if public_base_url is None or public_base_url.strip() == "":
-        return archive_path
-    return f"{public_base_url.rstrip('/')}{archive_path}"
 
 
 def _now_utc() -> datetime:

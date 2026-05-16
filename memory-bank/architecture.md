@@ -867,10 +867,53 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `session_started` WebSocket 响应仍返回明文 `archive_token` 给浏览器；usage event payload 明确不保存该 token、`archive_url` 或 token hash。
 - `client_created` 只在新匿名用户创建后写一次；重复匿名初始化只更新 `anonymous_client.last_seen_at` / `user_agent_hash`，不重复写创建事件。
 - local mock Provider 会写 ASR/翻译/归档/Provider warning 事件，便于本地漏斗测试；真实 Qwen provider 路径写入同一套事件类型。
-- Step 22 未开始：当前没有归档查询 API/页面，没有 token 校验 API，也没有真实 `archive_viewed` 触发点。
+- Step 21 结束时尚未有归档查询 API/页面、token 校验 API 或真实 `archive_viewed` 触发点；这些能力已在 Step 22 补齐。
 
 ### 验证结论
 - Step 21 已先跑 RED 测试确认缺少 `usage_events` 模块和 WebSocket recorder 注入缺口，再实现到 GREEN。
 - 本地后端验证通过：Ruff、mypy、pytest；pytest 结果为 100 passed，13 integration deselected。
 - 本地前端回归验证通过：lint、Vitest、build、Playwright E2E；本步未修改前端代码。
-- Step 22 未开始；会后基础双语归档仍等待用户明确允许。
+- Step 22 已在 2026-05-16 小节落地；Step 23 未开始。
+
+## 2026-05-16 Step 22 基础双语归档页/API
+
+### 架构状态
+- Step 22 实现 F10 基础双语归档闭环：浏览器通过 `/archive/:sessionId?token=...` 打开只读归档页，前端调用后端 `GET /api/archives/{session_id}?token=...` 获取 session 元数据和双语 final 片段。
+- 本步不新增数据库 migration，继续复用 `meeting_session`、`transcript_segment` 和 `usage_event`。归档正文来源只来自 `transcript_segment` 的 final 字段，不读取或保存 raw audio、interim 文本或前端私有信息。
+- archive token 逻辑从 WebSocket 会话编排中抽到 `archive_tokens`，WebSocket 建会继续生成明文 token 返回给浏览器，但数据库只保存 `archive_token_hash`；归档 API 只接收一次性查询 token 并做 hash 校验，不在响应、usage event 或日志中回显 token。
+- `ArchiveService` 是后端归档业务边界：校验 token、判断 retention 是否过期、读取 final segments、派生 `end_reason`，并在成功查看后 best-effort 写入 `archive_viewed`。
+- 归档访问错误遵循信息隐藏边界：缺 token 是 401；session 不存在、token 错误、归档过期统一 404，避免通过 API 区分 session 是否存在。
+- `end_reason` 优先从最新 `usage_event(event_type=session_closed).payload.reason` 派生；如果历史会话缺少该事件，则 fallback 到 `meeting_session.status.value`。
+- `archive_viewed` 是 Step 22 新增的真实触发点，payload 只保存 `segment_count`、`session_status`、`end_reason`、`translation_failed_count` 等统计元数据，不保存正文、译文、token、archive URL、IP/User-Agent 或 Provider 密钥。
+- 前端归档页是轻量路径分流，不引入 React Router；`App.tsx` 在 `/archive/` 路径渲染 `ArchivePage`，其余路径仍渲染实时会议工作台。
+- Step 23 未开始：当前没有搜索、复制、Markdown/JSON 导出、COS 导出文件、归档增强看板、成本看板或重点句/时间线增强。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/archive_tokens.py` | 归档 token 共享模块。提供 `hash_archive_token()` 和 `build_archive_url()`，让 WebSocket 建会与归档 API 使用同一套 token hash/URL 逻辑。 |
+| `backend/src/meeting_mvp_backend/archives.py` | Step 22 后端归档核心模块。定义归档响应模型、repository protocol、SQLAlchemy repository、`ArchiveService` 和 `ArchiveAccessDenied`；负责 token 校验、过期判断、final 片段查询、`end_reason` 派生和 `archive_viewed` 写入。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口。新增 archive service 依赖和 `GET /api/archives/{session_id}` 路由；缺 `DATABASE_URL` 时返回 503，缺 token 返回 401，访问失败隐藏为 404。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | 后端 WebSocket 会话编排层。Step 22 改为从 `archive_tokens` 导入并显式 re-export `hash_archive_token` / `build_archive_url`，保持既有会话启动和归档 URL 返回行为。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 数据库模型。Step 22 复用 `MeetingSession.archive_token_hash`、`retention_expires_at`、`TranscriptSegment` final 字段和 `UsageEvent`，不新增 schema。 |
+| `backend/tests/test_archives.py` | 后端归档单元/API 测试。覆盖正确 token、缺 token、空 token、错误 token、过期归档、segment 排序、不同关闭原因和 `archive_viewed` payload 安全边界。 |
+| `frontend/src/api/archives.ts` | 前端归档 API client。构造 `/api/archives/{session_id}?token=...` URL，支持 `VITE_API_BASE_URL`，使用 Zod 校验响应，并把 HTTP 错误映射为 `ArchiveAccessError`。 |
+| `frontend/src/archive/ArchivePage.tsx` | 前端基础归档页。解析 `/archive/:sessionId` 和 `token`，展示 loading、缺 token、无权限/过期、空归档、正常/异常结束状态，以及双语 final 片段、时间戳、翻译状态和重点句标记。 |
+| `frontend/src/App.tsx` | 前端顶层分流。Step 22 在 `/archive/` 路径渲染归档页，其他路径保持原实时会议工作台；没有引入 React Router。 |
+| `frontend/src/api/archives.test.ts` | 前端 API client 单元测试。覆盖 URL 构造、响应解析、HTTP 错误和 Zod schema 校验失败。 |
+| `frontend/src/archive/ArchivePage.test.tsx` | 归档页组件测试。覆盖 loading、成功、空片段、缺 token、无权限/过期和异常结束原因展示。 |
+| `frontend/e2e/archive.spec.ts` | Playwright 归档页 smoke test。Mock archive API 后打开 `/archive/:sessionId?token=...`，验证归档正文展示和桌面/移动无水平溢出。 |
+
+### 数据与安全边界
+- 归档 API 的成功响应只返回产品需要展示的 session 元数据和 final 片段；不返回 `archive_token_hash`、明文 token、`archive_url`、usage event payload 或匿名用户 IP/User-Agent hash。
+- `translation_status=failed` 的片段会正常展示英文 final 与失败状态；后续 final 重试属于 M1-B/F13，不在 Step 22 中实现。
+- 空归档是合法状态，表示 session 已存在且 token 通过，但当前没有 final 片段；页面展示空状态，不自动派生内容。
+- `archive_viewed` 写入失败不影响归档读取；usage event 仍是观测数据，不作为归档授权或正文来源。
+- 搜索、复制、Markdown/JSON 导出、COS 私有对象与短期签名 URL 仍属于后续步骤，不能在 Step 22 基础页中提前引入。
+
+### 验证结论
+- Step 22 已先跑 RED 测试确认缺少后端 `archives` 模块和前端归档 API/页面，再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 110 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、88 个测试通过，E2E 为 10 个 Chromium 测试通过。
+- Step 23 未开始；当前没有搜索、复制、导出、COS 或归档增强功能。
