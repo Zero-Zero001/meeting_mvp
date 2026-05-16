@@ -873,7 +873,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Step 21 已先跑 RED 测试确认缺少 `usage_events` 模块和 WebSocket recorder 注入缺口，再实现到 GREEN。
 - 本地后端验证通过：Ruff、mypy、pytest；pytest 结果为 100 passed，13 integration deselected。
 - 本地前端回归验证通过：lint、Vitest、build、Playwright E2E；本步未修改前端代码。
-- Step 22 已在 2026-05-16 小节落地；Step 23 未开始。
+- Step 22 已在 2026-05-16 小节落地；Step 23 搜索与复制已在后续小节补齐。
 
 ## 2026-05-16 Step 22 基础双语归档页/API
 
@@ -886,7 +886,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `end_reason` 优先从最新 `usage_event(event_type=session_closed).payload.reason` 派生；如果历史会话缺少该事件，则 fallback 到 `meeting_session.status.value`。
 - `archive_viewed` 是 Step 22 新增的真实触发点，payload 只保存 `segment_count`、`session_status`、`end_reason`、`translation_failed_count` 等统计元数据，不保存正文、译文、token、archive URL、IP/User-Agent 或 Provider 密钥。
 - 前端归档页是轻量路径分流，不引入 React Router；`App.tsx` 在 `/archive/` 路径渲染 `ArchivePage`，其余路径仍渲染实时会议工作台。
-- Step 23 未开始：当前没有搜索、复制、Markdown/JSON 导出、COS 导出文件、归档增强看板、成本看板或重点句/时间线增强。
+- Step 22 结束时尚未实现搜索、复制、Markdown/JSON 导出、COS 导出文件、归档增强看板、成本看板或重点句/时间线增强；搜索与复制已在 Step 23 补齐。
 
 ### 文件作用
 
@@ -916,4 +916,44 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - Step 22 已先跑 RED 测试确认缺少后端 `archives` 模块和前端归档 API/页面，再实现到 GREEN。
 - 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 110 passed，13 integration deselected。
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、88 个测试通过，E2E 为 10 个 Chromium 测试通过。
-- Step 23 未开始；当前没有搜索、复制、导出、COS 或归档增强功能。
+- Step 23 已在后续小节补齐搜索与复制；导出、COS 和归档增强功能仍未开始。
+
+## 2026-05-16 Step 23 搜索与复制
+
+### 架构状态
+- Step 23 在 Step 22 基础归档页上实现 F11：归档页本地搜索已加载的 final 片段，并允许复制单个双语片段进入用户工作流。
+- 本步不新增数据库 migration、不新增后端搜索查询 API、不读取或写入 `export_file`，也不实现 Markdown/JSON 导出、COS 上传或短期签名 URL。
+- 搜索只发生在前端当前 `ArchiveResponse.segments` 内，范围包括 `english_text_final`、`chinese_text_final`、开始/结束时间戳和时间范围；空搜索显示全部片段，有搜索无命中显示空结果状态。
+- 复制使用浏览器 Clipboard API，复制文本固定包含时间、英文原文和中文翻译；复制失败只显示前端可访问错误提示，不清空已加载归档内容。
+- 价值事件使用新的归档事件 API：`POST /api/archives/{session_id}/events?token=...`。该接口复用 Step 22 的 archive token 授权、retention 判断和信息隐藏边界。
+- `usage_event` 新增 `archive_searched` 与 `segment_copied`。搜索 payload 只记录搜索词长度与命中统计；复制 payload 由后端根据 `segment_id` 派生 sequence、translation status、文本长度和重点句标记。
+- 事件写入继续 best-effort：写入失败不影响归档查看、搜索过滤或复制动作。
+- Step 24 未开始：当前没有导出格式、COS 对象、`export_created` / `export_failed` 真实触发或导出 UI。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/usage_events.py` | Step 23 扩展 usage event allowlist，新增 `archive_searched`、`segment_copied` 和 `STEP_23_USAGE_EVENT_TYPES`；payload 安全校验拒绝搜索词、正文、token、archive URL、音频和密钥字段。 |
+| `backend/src/meeting_mvp_backend/archives.py` | 后端归档业务模块。Step 23 新增归档事件请求模型和 `ArchiveService.record_archive_event()`，复用 token 校验与过期判断，记录安全的搜索/复制元数据。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 入口。Step 23 新增 `POST /api/archives/{session_id}/events`，缺 token 返回 401，授权失败/过期/非法 segment 统一 404，成功返回 204。 |
+| `backend/tests/test_usage_events.py` | usage event 单元测试。覆盖 Step 21 allowlist 稳定、Step 23 allowlist 扩展，以及搜索词/正文/token/audio/secret payload 拒绝。 |
+| `backend/tests/test_archives.py` | 归档服务/API 测试。覆盖搜索事件、复制事件、非法 segment、缺 token、错误 token 和 best-effort 事件边界。 |
+| `frontend/src/api/archives.ts` | 前端归档 API client。Step 23 新增 `ArchiveEvent`、事件 URL 构造和 `recordArchiveEvent()`，只发送安全元数据。 |
+| `frontend/src/archive/ArchivePage.tsx` | 前端归档页。Step 23 增加搜索输入、本地过滤、无结果状态、片段复制按钮、复制失败提示和搜索/复制事件上报。 |
+| `frontend/src/api/archives.test.ts` | 前端 API client 测试。覆盖事件 URL、POST body、204 成功和 HTTP 错误映射。 |
+| `frontend/src/archive/ArchivePage.test.tsx` | 归档页组件测试。覆盖英文/中文/时间搜索、无结果状态、debounced 搜索事件、复制文本格式、复制成功事件和 clipboard 失败。 |
+| `frontend/e2e/archive.spec.ts` | Playwright 归档页 smoke test。Mock archive API 和事件 API，验证搜索过滤、复制按钮和无水平溢出。 |
+
+### 数据与安全边界
+- `archive_searched` 不保存搜索词原文，只保存 `query_length`、`matched_segment_count`、`total_segment_count`。
+- `segment_copied` 不保存英文正文或中文译文，只保存 `segment_id`、`sequence`、`translation_status`、`english_text_length`、`chinese_text_length`、`is_key_sentence`。
+- 前端事件 POST body 不包含 token 字段；token 只作为既有归档授权查询参数发送给后端。
+- 后端 payload 安全校验允许长度类元数据，但拒绝 `query`、`text`、`english_text`、`chinese_text`、`archive_url`、token、secret、raw audio、PCM frame 等字段。
+- 搜索/复制事件只用于价值验证漏斗，不作为归档授权、归档正文或导出流程的状态来源。
+
+### 验证结论
+- Step 23 已按 TDD 先跑 RED：后端缺少 Step 23 事件/API 入口，前端缺少事件 API client、搜索输入和复制按钮；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 121 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、95 个测试通过，E2E 为 10 个 Chromium 测试通过。
+- Step 24 未开始；当前没有 Markdown/JSON 导出、COS、`export_file` 或签名 URL。

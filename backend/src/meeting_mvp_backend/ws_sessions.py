@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from meeting_mvp_backend.archive_tokens import (
     build_archive_url as build_archive_url,
+)
+from meeting_mvp_backend.archive_tokens import (
     hash_archive_token as hash_archive_token,
 )
 from meeting_mvp_backend.config import Settings

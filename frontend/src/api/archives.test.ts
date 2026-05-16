@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   ArchiveAccessError,
   buildArchiveApiUrl,
+  buildArchiveEventApiUrl,
   fetchArchive,
+  recordArchiveEvent,
 } from './archives'
 
 const archivePayload = {
@@ -79,6 +81,77 @@ describe('archives API', () => {
 
     await expect(
       fetchArchive({
+        fetchFn,
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'wrong-token',
+      }),
+    ).rejects.toMatchObject(
+      new ArchiveAccessError({
+        message: 'Archive not found or expired',
+        status: 404,
+      }),
+    )
+  })
+
+  it('builds archive event URLs from public API base and encoded token', () => {
+    expect(
+      buildArchiveEventApiUrl({
+        apiBaseUrl: 'https://api.example.test/',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'token with spaces',
+      }),
+    ).toBe(
+      'https://api.example.test/api/archives/11111111-1111-4111-8111-111111111111/events?token=token%20with%20spaces',
+    )
+  })
+
+  it('records archive search events without raw query or token in the body', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+
+    await recordArchiveEvent({
+      apiBaseUrl: '',
+      event: {
+        event_type: 'archive_searched',
+        matched_segment_count: 1,
+        query_length: 15,
+        total_segment_count: 2,
+      },
+      fetchFn,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+
+    expect(fetchFn).toHaveBeenCalledWith(
+      '/api/archives/11111111-1111-4111-8111-111111111111/events?token=archive-token',
+      expect.objectContaining({
+        body: JSON.stringify({
+          event_type: 'archive_searched',
+          matched_segment_count: 1,
+          query_length: 15,
+          total_segment_count: 2,
+        }),
+        method: 'POST',
+      }),
+    )
+    const [, init] = fetchFn.mock.calls[0]
+    expect(String(init.body)).not.toContain('launch timeline')
+    expect(String(init.body)).not.toContain('archive-token')
+  })
+
+  it('records segment copied events and reports HTTP errors', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Archive not found or expired' }), {
+        headers: { 'content-type': 'application/json' },
+        status: 404,
+      }),
+    )
+
+    await expect(
+      recordArchiveEvent({
+        event: {
+          event_type: 'segment_copied',
+          segment_id: '22222222-2222-4222-8222-222222222222',
+        },
         fetchFn,
         sessionId: '11111111-1111-4111-8111-111111111111',
         token: 'wrong-token',

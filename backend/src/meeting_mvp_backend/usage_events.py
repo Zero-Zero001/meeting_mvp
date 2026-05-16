@@ -19,6 +19,7 @@ _BINARY_TYPES = bytes | bytearray | memoryview
 _FORBIDDEN_PAYLOAD_KEY_PARTS = (
     "api_key",
     "apikey",
+    "archive_url",
     "secret",
     "token",
     "password",
@@ -28,6 +29,12 @@ _FORBIDDEN_PAYLOAD_KEY_PARTS = (
     "audio_bytes",
     "audio_frame",
     "pcm",
+)
+_FORBIDDEN_EXACT_PAYLOAD_KEYS = (
+    "chinese_text",
+    "english_text",
+    "query",
+    "text",
 )
 
 
@@ -48,9 +55,33 @@ class UsageEventType(StrEnum):
     QUOTA_EXHAUSTED = "quota_exhausted"
     BUDGET_FUSE_TRIGGERED = "budget_fuse_triggered"
     SESSION_CLOSED = "session_closed"
+    ARCHIVE_SEARCHED = "archive_searched"
+    SEGMENT_COPIED = "segment_copied"
 
 
-STEP_21_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = tuple(UsageEventType)
+STEP_21_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
+    UsageEventType.CLIENT_CREATED,
+    UsageEventType.QUOTA_CHECKED,
+    UsageEventType.CAPTURE_STARTED,
+    UsageEventType.CAPTURE_FAILED,
+    UsageEventType.AUDIO_DETECTED,
+    UsageEventType.SESSION_STARTED,
+    UsageEventType.ASR_INTERIM_RECEIVED,
+    UsageEventType.ASR_FINAL_RECEIVED,
+    UsageEventType.TRANSLATION_INTERIM_REQUESTED,
+    UsageEventType.TRANSLATION_FINAL_COMPLETED,
+    UsageEventType.SEGMENT_ARCHIVED,
+    UsageEventType.ARCHIVE_VIEWED,
+    UsageEventType.PROVIDER_ERROR,
+    UsageEventType.QUOTA_EXHAUSTED,
+    UsageEventType.BUDGET_FUSE_TRIGGERED,
+    UsageEventType.SESSION_CLOSED,
+)
+STEP_23_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
+    *STEP_21_USAGE_EVENT_TYPES,
+    UsageEventType.ARCHIVE_SEARCHED,
+    UsageEventType.SEGMENT_COPIED,
+)
 
 
 class UnsafeUsageEventPayload(ValueError):
@@ -186,7 +217,9 @@ def _validate_payload_key(key: object, *, path: str) -> str:
         msg = f"Usage event payload key at {path} must be a string"
         raise UnsafeUsageEventPayload(msg)
     normalized_key = key.lower()
-    if any(part in normalized_key for part in _FORBIDDEN_PAYLOAD_KEY_PARTS):
+    if normalized_key in _FORBIDDEN_EXACT_PAYLOAD_KEYS or any(
+        part in normalized_key for part in _FORBIDDEN_PAYLOAD_KEY_PARTS
+    ):
         msg = f"Usage event payload key {path} is not allowed"
         raise UnsafeUsageEventPayload(msg)
     return key

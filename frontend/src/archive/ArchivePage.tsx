@@ -2,27 +2,41 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
   CalendarClock,
+  Check,
   Clock3,
+  Copy,
   Languages,
+  Search,
   ShieldCheck,
 } from 'lucide-react'
 
 import {
   ArchiveAccessError,
   fetchArchive,
+  recordArchiveEvent,
   type ArchiveResponse,
   type ArchiveSegment,
+  type ArchiveEvent,
 } from '@/api/archives'
+import { Button } from '@/components/ui/button'
 
 type LocationLike = Pick<Location, 'pathname' | 'search'>
 type FetchArchiveFn = (options: {
   sessionId: string
   token: string
 }) => Promise<ArchiveResponse>
+type RecordArchiveEventFn = (options: {
+  sessionId: string
+  token: string
+  event: ArchiveEvent
+}) => Promise<void>
+type WriteClipboardTextFn = (text: string) => Promise<void>
 
 type ArchivePageProps = {
   fetchArchiveFn?: FetchArchiveFn
   location?: LocationLike
+  recordArchiveEventFn?: RecordArchiveEventFn
+  writeClipboardTextFn?: WriteClipboardTextFn
 }
 
 type ArchiveState =
@@ -33,9 +47,14 @@ type ArchiveState =
 function ArchivePage({
   fetchArchiveFn = fetchArchive,
   location = window.location,
+  recordArchiveEventFn = recordArchiveEvent,
+  writeClipboardTextFn = writeClipboardText,
 }: ArchivePageProps) {
   const access = useMemo(() => parseArchiveLocation(location), [location])
   const [state, setState] = useState<ArchiveState>({ status: 'loading' })
+  const [searchQuery, setSearchQuery] = useState('')
+  const [copiedSegmentId, setCopiedSegmentId] = useState<string | null>(null)
+  const [clipboardError, setClipboardError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!access.ok) {
@@ -70,6 +89,57 @@ function ArchivePage({
     }
   }, [access, fetchArchiveFn])
 
+  useEffect(() => {
+    if (!access.ok || state.status !== 'ready') {
+      return
+    }
+    const trimmedQuery = searchQuery.trim()
+    if (trimmedQuery === '') {
+      return
+    }
+    const archive = state.archive
+    const timeoutId = window.setTimeout(() => {
+      void recordArchiveEventFn({
+        event: {
+          event_type: 'archive_searched',
+          matched_segment_count: filterArchiveSegments(
+            archive.segments,
+            trimmedQuery,
+          ).length,
+          query_length: trimmedQuery.length,
+          total_segment_count: archive.segments.length,
+        },
+        sessionId: access.sessionId,
+        token: access.token,
+      }).catch(() => undefined)
+    }, 400)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [access, recordArchiveEventFn, searchQuery, state])
+
+  async function handleCopySegment(segment: ArchiveSegment): Promise<void> {
+    if (!access.ok) {
+      return
+    }
+    try {
+      await writeClipboardTextFn(formatSegmentCopyText(segment))
+      setCopiedSegmentId(segment.segment_id)
+      setClipboardError(null)
+      void recordArchiveEventFn({
+        event: {
+          event_type: 'segment_copied',
+          segment_id: segment.segment_id,
+        },
+        sessionId: access.sessionId,
+        token: access.token,
+      }).catch(() => undefined)
+    } catch {
+      setClipboardError('复制失败，请手动选择文本复制')
+    }
+  }
+
   return (
     <main className="min-h-svh bg-zinc-50 text-foreground">
       <section className="mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-4 px-4 py-4 sm:px-5 lg:px-6">
@@ -101,14 +171,37 @@ function ArchivePage({
         ) : null}
 
         {access.ok && state.status === 'ready' ? (
-          <ArchiveContent archive={state.archive} />
+          <ArchiveContent
+            archive={state.archive}
+            clipboardError={clipboardError}
+            copiedSegmentId={copiedSegmentId}
+            onCopySegment={(segment) => void handleCopySegment(segment)}
+            onSearchQueryChange={setSearchQuery}
+            searchQuery={searchQuery}
+          />
         ) : null}
       </section>
     </main>
   )
 }
 
-function ArchiveContent({ archive }: { archive: ArchiveResponse }) {
+function ArchiveContent({
+  archive,
+  clipboardError,
+  copiedSegmentId,
+  onCopySegment,
+  onSearchQueryChange,
+  searchQuery,
+}: {
+  archive: ArchiveResponse
+  clipboardError: string | null
+  copiedSegmentId: string | null
+  onCopySegment: (segment: ArchiveSegment) => void
+  onSearchQueryChange: (query: string) => void
+  searchQuery: string
+}) {
+  const filteredSegments = filterArchiveSegments(archive.segments, searchQuery)
+  const hasSearchQuery = searchQuery.trim() !== ''
   return (
     <>
       <section
@@ -138,6 +231,35 @@ function ArchiveContent({ archive }: { archive: ArchiveResponse }) {
       </section>
 
       <section
+        aria-label="归档搜索"
+        className="grid gap-2 rounded-md border border-border bg-background p-3"
+      >
+        <label
+          className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground"
+          htmlFor="archive-search"
+        >
+          <Search className="size-4 shrink-0" />
+          <span>搜索</span>
+        </label>
+        <input
+          aria-label="搜索归档片段"
+          className="min-w-0 rounded-md border border-border bg-background px-3 py-2 text-sm text-zinc-950 outline-none focus:border-zinc-500"
+          id="archive-search"
+          onChange={(event) => onSearchQueryChange(event.target.value)}
+          placeholder="搜索英文、中文或时间"
+          value={searchQuery}
+        />
+        {clipboardError ? (
+          <div
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950"
+            role="alert"
+          >
+            {clipboardError}
+          </div>
+        ) : null}
+      </section>
+
+      <section
         aria-label="双语 final 片段"
         className="grid gap-3"
       >
@@ -145,9 +267,18 @@ function ArchiveContent({ archive }: { archive: ArchiveResponse }) {
           <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
             暂无 final 片段
           </div>
+        ) : filteredSegments.length === 0 && hasSearchQuery ? (
+          <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
+            未找到匹配片段
+          </div>
         ) : (
-          archive.segments.map((segment) => (
-            <ArchiveSegmentArticle key={segment.segment_id} segment={segment} />
+          filteredSegments.map((segment) => (
+            <ArchiveSegmentArticle
+              copied={copiedSegmentId === segment.segment_id}
+              key={segment.segment_id}
+              onCopy={() => onCopySegment(segment)}
+              segment={segment}
+            />
           ))
         )}
       </section>
@@ -155,7 +286,15 @@ function ArchiveContent({ archive }: { archive: ArchiveResponse }) {
   )
 }
 
-function ArchiveSegmentArticle({ segment }: { segment: ArchiveSegment }) {
+function ArchiveSegmentArticle({
+  copied,
+  onCopy,
+  segment,
+}: {
+  copied: boolean
+  onCopy: () => void
+  segment: ArchiveSegment
+}) {
   return (
     <article
       aria-label={`片段 ${segment.sequence}`}
@@ -170,6 +309,21 @@ function ArchiveSegmentArticle({ segment }: { segment: ArchiveSegment }) {
             重点句
           </span>
         ) : null}
+        <Button
+          aria-label={`复制片段 ${segment.sequence}`}
+          className="ml-auto"
+          onClick={onCopy}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          {copied ? (
+            <Check className="size-4" />
+          ) : (
+            <Copy className="size-4" />
+          )}
+          {copied ? '已复制' : '复制'}
+        </Button>
       </div>
       <div className="mt-4 grid gap-3">
         <p className="text-sm leading-6 text-zinc-950">
@@ -313,11 +467,48 @@ function formatTimestamp(timestampMs: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
+function filterArchiveSegments(
+  segments: ArchiveSegment[],
+  query: string,
+): ArchiveSegment[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  if (normalizedQuery === '') {
+    return segments
+  }
+  return segments.filter((segment) =>
+    searchableSegmentValues(segment).some((value) =>
+      value.toLocaleLowerCase().includes(normalizedQuery),
+    ),
+  )
+}
+
+function searchableSegmentValues(segment: ArchiveSegment): string[] {
+  return [
+    segment.english_text_final,
+    segment.chinese_text_final,
+    formatTimestamp(segment.start_ms),
+    formatTimestamp(segment.end_ms),
+    `${formatTimestamp(segment.start_ms)} - ${formatTimestamp(segment.end_ms)}`,
+  ]
+}
+
+function formatSegmentCopyText(segment: ArchiveSegment): string {
+  return [
+    `时间：${formatTimestamp(segment.start_ms)} - ${formatTimestamp(segment.end_ms)}`,
+    `英文：${segment.english_text_final}`,
+    `中文：${segment.chinese_text_final || '中文 final 暂不可用'}`,
+  ].join('\n')
+}
+
 function formatDateTime(value: string): string {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value))
+}
+
+function writeClipboardText(text: string): Promise<void> {
+  return navigator.clipboard.writeText(text)
 }
 
 export default ArchivePage

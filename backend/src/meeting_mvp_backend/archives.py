@@ -5,9 +5,9 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Annotated, Literal, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -91,6 +91,28 @@ class ArchiveResponse(BaseModel):
     quota_seconds_consumed: int
     retention_expires_at: datetime
     segments: list[ArchiveSegmentResponse]
+
+
+class ArchiveSearchEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: Literal["archive_searched"]
+    query_length: int = Field(ge=1)
+    matched_segment_count: int = Field(ge=0)
+    total_segment_count: int = Field(ge=0)
+
+
+class ArchiveSegmentCopiedEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: Literal["segment_copied"]
+    segment_id: uuid.UUID
+
+
+type ArchiveEventRequest = Annotated[
+    ArchiveSearchEventRequest | ArchiveSegmentCopiedEventRequest,
+    Field(discriminator="event_type"),
+]
 
 
 class ArchiveRepository(Protocol):
@@ -208,20 +230,7 @@ class ArchiveService:
         session_id: uuid.UUID,
         token: str,
     ) -> ArchiveResponse:
-        if token.strip() == "":
-            raise ArchiveAccessDenied("archive not found or expired")
-
-        session = await self._repository.get_session(session_id)
-        if session is None:
-            raise ArchiveAccessDenied("archive not found or expired")
-        if session.retention_expires_at <= self._clock():
-            raise ArchiveAccessDenied("archive not found or expired")
-        if not secrets.compare_digest(
-            hash_archive_token(token),
-            session.archive_token_hash,
-        ):
-            raise ArchiveAccessDenied("archive not found or expired")
-
+        session = await self._authorize_session(session_id=session_id, token=token)
         segments = sorted(
             await self._repository.list_segments(session_id),
             key=lambda segment: segment.sequence,
@@ -272,6 +281,86 @@ class ArchiveService:
             },
         )
         return archive
+
+    async def record_archive_event(
+        self,
+        *,
+        session_id: uuid.UUID,
+        token: str,
+        event: ArchiveEventRequest,
+    ) -> None:
+        session = await self._authorize_session(session_id=session_id, token=token)
+        if isinstance(event, ArchiveSearchEventRequest):
+            await record_usage_event_best_effort(
+                recorder=self._usage_event_recorder,
+                client_id=session.client_id,
+                session_id=session.session_id,
+                event_type=UsageEventType.ARCHIVE_SEARCHED,
+                payload={
+                    "matched_segment_count": event.matched_segment_count,
+                    "query_length": event.query_length,
+                    "total_segment_count": event.total_segment_count,
+                },
+            )
+            return
+
+        segment = await self._find_segment(
+            session_id=session.session_id,
+            segment_id=event.segment_id,
+        )
+        if segment is None:
+            raise ArchiveAccessDenied("archive not found or expired")
+        await record_usage_event_best_effort(
+            recorder=self._usage_event_recorder,
+            client_id=session.client_id,
+            session_id=session.session_id,
+            event_type=UsageEventType.SEGMENT_COPIED,
+            payload={
+                "chinese_text_length": len(segment.chinese_text_final),
+                "english_text_length": len(segment.english_text_final),
+                "is_key_sentence": segment.is_key_sentence,
+                "segment_id": str(segment.segment_id),
+                "sequence": segment.sequence,
+                "translation_status": segment.translation_status.value,
+            },
+        )
+
+    async def _authorize_session(
+        self,
+        *,
+        session_id: uuid.UUID,
+        token: str,
+    ) -> ArchiveSessionRecord:
+        if token.strip() == "":
+            raise ArchiveAccessDenied("archive not found or expired")
+        session = await self._repository.get_session(session_id)
+        if session is None:
+            raise ArchiveAccessDenied("archive not found or expired")
+        if session.retention_expires_at <= self._clock():
+            raise ArchiveAccessDenied("archive not found or expired")
+        if not secrets.compare_digest(
+            hash_archive_token(token),
+            session.archive_token_hash,
+        ):
+            raise ArchiveAccessDenied("archive not found or expired")
+        return session
+
+    async def _find_segment(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+    ) -> ArchiveTranscriptSegmentRecord | None:
+        segments = await self._repository.list_segments(session_id)
+        return next(
+            (
+                segment
+                for segment in segments
+                if segment.segment_id == segment_id
+                and segment.session_id == session_id
+            ),
+            None,
+        )
 
 
 def _now_utc() -> datetime:

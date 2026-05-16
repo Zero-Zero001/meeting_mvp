@@ -10,6 +10,7 @@ import pytest
 from meeting_mvp_backend.db.models import UsageEvent
 from meeting_mvp_backend.usage_events import (
     STEP_21_USAGE_EVENT_TYPES,
+    STEP_23_USAGE_EVENT_TYPES,
     SQLAlchemyUsageEventRecorder,
     UnsafeUsageEventPayload,
     UsageEventRecord,
@@ -87,6 +88,14 @@ def test_step_21_event_types_are_allowlisted() -> None:
     }
 
 
+def test_step_23_event_types_extend_usage_event_allowlist() -> None:
+    assert {event_type.value for event_type in STEP_23_USAGE_EVENT_TYPES} == {
+        *{event_type.value for event_type in STEP_21_USAGE_EVENT_TYPES},
+        "archive_searched",
+        "segment_copied",
+    }
+
+
 def test_build_usage_event_record_populates_required_fields_for_each_event() -> None:
     client_id = str(uuid.uuid4())
     session_id = uuid.uuid4()
@@ -116,6 +125,10 @@ def test_build_usage_event_record_populates_required_fields_for_each_event() -> 
         {"raw_audio": [0, 1, 2]},
         {"api_key": "secret-value"},
         {"nested": {"archive_token": "secret-token"}},
+        {"query": "launch timeline"},
+        {"text": "raw meeting text"},
+        {"english_text": "We need to align."},
+        {"chinese_text": "我们需要对齐。"},
         {"frame": b"\x00\x01"},
         {"items": [{"private_key": "secret-value"}]},
     ],

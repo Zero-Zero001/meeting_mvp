@@ -29,7 +29,8 @@
 - Step 19 已实现 F09 四区实时 UI 补强：前端四区只消费显式 WebSocket 消息，`asr_interim` / `translation_interim` 可替换，`segment_final` 幂等追加并移除匹配 `asr_final`，`key_sentence_update` / `timeline_update` 不从 final 派生；四区 callback 抛错不会破坏后续 WebSocket 消息分发；四个实时区已增加 `aria-live="polite"`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 20 已实现 F16 异常与降级提示：前端新增 `session-notices` 统一映射捕获失败、无音频、静音、WebSocket warning/error、关闭原因和预留导出失败提示；store 新增 `activeNotice`/`lastClosedReason`，错误时停止本地音频资源但保留已收到 final、归档入口和 session id；UI 使用 `role="status"`/`role="alert"` 展示可访问提示；后端在 Qwen interim 失败时发送 `warning(code="qwen_interim_translation_failed")`；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 21 已实现 usage_event 埋点基础：新增 `meeting_mvp_backend.usage_events`，集中管理事件 allowlist、payload 安全校验、SQLAlchemy writer 和 best-effort 写入；匿名新用户写入 `client_created`，WebSocket 会话写入 `capture_started`、`quota_checked`、`session_started`、`audio_detected`、ASR/翻译/归档、Provider 错误、额度/预算拒绝和 `session_closed` 等后端可确定事件；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 22 已实现 F10 基础双语归档页/API：后端新增 `meeting_mvp_backend.archive_tokens` 与 `meeting_mvp_backend.archives`，提供 `GET /api/archives/{session_id}?token=...`，复用 `meeting_session`、`transcript_segment` 和 `usage_event`，校验 archive token hash，按 `sequence` 返回双语 final 片段并记录 `archive_viewed`；前端新增 `frontend/src/api/archives.ts` 和 `frontend/src/archive/ArchivePage.tsx`，`App.tsx` 对 `/archive/:sessionId` 轻量分流；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 23。
+- Step 22 已实现 F10 基础双语归档页/API：后端新增 `meeting_mvp_backend.archive_tokens` 与 `meeting_mvp_backend.archives`，提供 `GET /api/archives/{session_id}?token=...`，复用 `meeting_session`、`transcript_segment` 和 `usage_event`，校验 archive token hash，按 `sequence` 返回双语 final 片段并记录 `archive_viewed`；前端新增 `frontend/src/api/archives.ts` 和 `frontend/src/archive/ArchivePage.tsx`，`App.tsx` 对 `/archive/:sessionId` 轻量分流；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 23 已实现 F11 搜索与复制：后端 `usage_events` 新增 `archive_searched`、`segment_copied` 和 `STEP_23_USAGE_EVENT_TYPES`，`archives` / `main` 新增 `POST /api/archives/{session_id}/events?token=...`，复用 archive token 校验并只写安全元数据；前端归档页新增本地英文/中文/时间戳搜索、无结果状态、片段复制、复制失败提示和搜索/复制事件上报；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 24。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -38,7 +39,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 22 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API 和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 23 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -245,7 +246,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -380,7 +381,16 @@ Step 22 基础双语归档页/API 已落地：
 - 新增 `GET /api/archives/{session_id}?token=...`：缺 token 返回 401，session 不存在、错误 token、归档过期统一 404，成功返回 session 元数据和按 `sequence` 升序的双语 final 片段。
 - `end_reason` 优先读取最新 `usage_event.session_closed` payload reason，缺失时 fallback 到 `meeting_session.status`；成功查看归档记录 `archive_viewed`，payload 只含安全元数据。
 - 前端新增 `frontend/src/api/archives.ts` 和 `frontend/src/archive/ArchivePage.tsx`；`frontend/src/App.tsx` 对 `/archive/:sessionId` 做轻量分流，不新增 React Router。
-- Step 22 不实现搜索、复制、Markdown/JSON 导出、COS、成本看板、归档增强或 Step 23+ 功能。
+- Step 22 本身不实现搜索、复制、Markdown/JSON 导出、COS、成本看板或归档增强；搜索与复制已在 Step 23 补齐。
+
+Step 23 搜索与复制已落地：
+
+- `backend/src/meeting_mvp_backend/usage_events.py` 新增 `archive_searched`、`segment_copied` 和 `STEP_23_USAGE_EVENT_TYPES`；payload 安全校验拒绝搜索词、正文、token、archive URL、音频和密钥字段，只允许长度、命中数、sequence、translation status 等元数据。
+- `backend/src/meeting_mvp_backend/archives.py` 新增 `ArchiveSearchEventRequest`、`ArchiveSegmentCopiedEventRequest` 和 `ArchiveService.record_archive_event()`；复制事件会验证 segment 属于当前归档，并由后端派生安全元数据。
+- `backend/src/meeting_mvp_backend/main.py` 新增 `POST /api/archives/{session_id}/events?token=...`：缺 token 返回 401，session 不存在、错误 token、过期归档或非法 segment 统一 404，成功返回 204。
+- `frontend/src/api/archives.ts` 新增 `ArchiveEvent`、`buildArchiveEventApiUrl()` 和 `recordArchiveEvent()`；事件 POST body 不包含 raw query、正文或 token 字段。
+- `frontend/src/archive/ArchivePage.tsx` 新增归档页本地搜索、无结果状态、片段复制按钮、复制失败提示和搜索/复制事件上报；搜索范围覆盖英文 final、中文 final 和时间戳。
+- Step 23 不实现 Markdown/JSON 导出、COS 上传、`export_file`、短期签名 URL、导出 UI 或 Step 24+ 功能。
 
 核心 WebSocket 请求消息：
 
@@ -436,5 +446,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 23 必须等待用户明确允许后再开始；Step 22 只实现基础双语归档页/API，不新增搜索、复制、导出、COS、成本看板、重点句/时间线增强或前端埋点 API。
+- Step 24 必须等待用户明确允许后再开始；Step 23 只实现搜索与复制，不新增 Markdown/JSON 导出、COS、`export_file`、短期签名 URL、导出 UI、成本看板、重点句/时间线增强或前端公开埋点 API。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

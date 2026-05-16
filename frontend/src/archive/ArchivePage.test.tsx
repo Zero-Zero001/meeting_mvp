@@ -1,8 +1,13 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import ArchivePage from './ArchivePage'
-import { ArchiveAccessError, type ArchiveResponse } from '@/api/archives'
+import {
+  ArchiveAccessError,
+  type ArchiveResponse,
+  type ArchiveSegment,
+} from '@/api/archives'
 
 const archiveResponse: ArchiveResponse = {
   capture_mode: 'tab_audio',
@@ -29,6 +34,18 @@ const archiveResponse: ArchiveResponse = {
   source_platform: 'google_meet',
   started_at: '2026-05-16T10:00:00Z',
   status: 'ended',
+}
+
+const secondSegment: ArchiveSegment = {
+  chinese_text_final: '预算审查会在明天完成。',
+  end_ms: 7200,
+  english_text_final: 'The budget review will finish tomorrow.',
+  is_key_sentence: false,
+  segment_id: '33333333-3333-4333-8333-333333333333',
+  sequence: 2,
+  speaker_label: null,
+  start_ms: 4100,
+  translation_status: 'completed',
 }
 
 describe('ArchivePage', () => {
@@ -138,5 +155,140 @@ describe('ArchivePage', () => {
     )
 
     expect(await screen.findByText('浏览器断开')).toBeInTheDocument()
+  })
+
+  it('filters archive segments by English, Chinese, and timestamp matches', async () => {
+    const user = userEvent.setup()
+    const fetchArchiveFn = vi.fn().mockResolvedValue({
+      ...archiveResponse,
+      segments: [...archiveResponse.segments, secondSegment],
+    } satisfies ArchiveResponse)
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={fetchArchiveFn}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    const searchInput = await screen.findByLabelText('搜索归档片段')
+    await user.type(searchInput, 'BUDGET')
+    expect(screen.queryByText('We need to align on the launch timeline before Friday.')).not.toBeInTheDocument()
+    expect(screen.getByText('The budget review will finish tomorrow.')).toBeInTheDocument()
+
+    await user.clear(searchInput)
+    await user.type(searchInput, '周五')
+    expect(screen.getByText('我们需要在周五前对齐上线时间。')).toBeInTheDocument()
+    expect(screen.queryByText('The budget review will finish tomorrow.')).not.toBeInTheDocument()
+
+    await user.clear(searchInput)
+    await user.type(searchInput, '0:04')
+    expect(screen.queryByText('We need to align on the launch timeline before Friday.')).not.toBeInTheDocument()
+    expect(screen.getByText('The budget review will finish tomorrow.')).toBeInTheDocument()
+  })
+
+  it('renders a no results state and records debounced search metadata only', async () => {
+    const user = userEvent.setup()
+    const recordArchiveEventFn = vi.fn().mockResolvedValue(undefined)
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue({
+          ...archiveResponse,
+          segments: [...archiveResponse.segments, secondSegment],
+        } satisfies ArchiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        recordArchiveEventFn={recordArchiveEventFn}
+      />,
+    )
+
+    await user.type(await screen.findByLabelText('搜索归档片段'), 'missing phrase')
+
+    expect(await screen.findByText('未找到匹配片段')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(recordArchiveEventFn).toHaveBeenCalledWith({
+        event: {
+          event_type: 'archive_searched',
+          matched_segment_count: 0,
+          query_length: 14,
+          total_segment_count: 2,
+        },
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'archive-token',
+      })
+    })
+    expect(JSON.stringify(recordArchiveEventFn.mock.calls[0][0].event)).not.toContain(
+      'missing phrase',
+    )
+    expect(JSON.stringify(recordArchiveEventFn.mock.calls[0][0].event)).not.toContain(
+      'archive-token',
+    )
+  })
+
+  it('copies a segment with time, English, and Chinese text, then records copy metadata', async () => {
+    const user = userEvent.setup()
+    const writeClipboardTextFn = vi.fn().mockResolvedValue(undefined)
+    const recordArchiveEventFn = vi.fn().mockResolvedValue(undefined)
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue(archiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        recordArchiveEventFn={recordArchiveEventFn}
+        writeClipboardTextFn={writeClipboardTextFn}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '复制片段 1' }))
+
+    expect(writeClipboardTextFn).toHaveBeenCalledWith(
+      [
+        '时间：0:00 - 0:03',
+        '英文：We need to align on the launch timeline before Friday.',
+        '中文：我们需要在周五前对齐上线时间。',
+      ].join('\n'),
+    )
+    expect(await screen.findByText('已复制')).toBeInTheDocument()
+    expect(recordArchiveEventFn).toHaveBeenCalledWith({
+      event: {
+        event_type: 'segment_copied',
+        segment_id: '22222222-2222-4222-8222-222222222222',
+      },
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+  })
+
+  it('shows a clipboard failure notice without clearing archive content', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue(archiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        writeClipboardTextFn={vi.fn().mockRejectedValue(new Error('denied'))}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '复制片段 1' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '复制失败，请手动选择文本复制',
+    )
+    expect(
+      screen.getByText('We need to align on the launch timeline before Friday.'),
+    ).toBeInTheDocument()
   })
 })

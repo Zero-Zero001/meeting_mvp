@@ -36,6 +36,17 @@ const archiveResponseSchema = z.object({
 
 export type ArchiveSegment = z.infer<typeof archiveSegmentSchema>
 export type ArchiveResponse = z.infer<typeof archiveResponseSchema>
+export type ArchiveSearchEvent = {
+  event_type: 'archive_searched'
+  query_length: number
+  matched_segment_count: number
+  total_segment_count: number
+}
+export type ArchiveSegmentCopiedEvent = {
+  event_type: 'segment_copied'
+  segment_id: string
+}
+export type ArchiveEvent = ArchiveSearchEvent | ArchiveSegmentCopiedEvent
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -67,6 +78,24 @@ export function buildArchiveApiUrl({
   return `${apiBaseUrl.replace(/\/$/, '')}${archivePath}`
 }
 
+export function buildArchiveEventApiUrl({
+  apiBaseUrl = publicConfig.apiBaseUrl,
+  sessionId,
+  token,
+}: {
+  apiBaseUrl?: string
+  sessionId: string
+  token: string
+}): string {
+  const archivePath = `/api/archives/${encodeURIComponent(
+    sessionId,
+  )}/events?token=${encodeURIComponent(token)}`
+  if (apiBaseUrl.trim() === '') {
+    return archivePath
+  }
+  return `${apiBaseUrl.replace(/\/$/, '')}${archivePath}`
+}
+
 export async function fetchArchive({
   apiBaseUrl = publicConfig.apiBaseUrl,
   fetchFn = fetch,
@@ -90,6 +119,36 @@ export async function fetchArchive({
   }
 
   return archiveResponseSchema.parse(await response.json())
+}
+
+export async function recordArchiveEvent({
+  apiBaseUrl = publicConfig.apiBaseUrl,
+  event,
+  fetchFn = fetch,
+  sessionId,
+  token,
+}: {
+  apiBaseUrl?: string
+  event: ArchiveEvent
+  fetchFn?: FetchLike
+  sessionId: string
+  token: string
+}): Promise<void> {
+  const response = await fetchFn(
+    buildArchiveEventApiUrl({ apiBaseUrl, sessionId, token }),
+    {
+      body: JSON.stringify(event),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    },
+  )
+
+  if (!response.ok) {
+    throw new ArchiveAccessError({
+      message: await responseErrorMessage(response),
+      status: response.status,
+    })
+  }
 }
 
 async function responseErrorMessage(response: Response): Promise<string> {

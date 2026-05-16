@@ -1236,7 +1236,64 @@
 
 ### 后续注意
 
-- Step 23 必须等待用户明确允许后再开始；当前没有搜索、复制、Markdown/JSON 导出、COS、成本看板、归档增强或重点句/时间线增强。
+- Step 22 结束时尚未实现搜索、复制、Markdown/JSON 导出、COS、成本看板、归档增强或重点句/时间线增强；搜索与复制已在 Step 23 补齐。
 - `archive_viewed` 的真实触发点已由 Step 22 归档 API 补齐，但 payload 仍必须继续遵守 Step 21 的 usage event 安全边界。
 - `end_reason` 依赖 Step 21 的 `session_closed` usage event；历史会话或异常缺失该事件时使用 `meeting_session.status` fallback。
 - Playwright E2E 通过 `npm run preview` 服务 `dist`，验证归档 UI 变更前需要先运行 `npm run build`，避免复用旧构建产物。
+
+## 2026-05-16 Step 23：F11 搜索与复制
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 23，未开始 Step 24；本步不新增 Markdown/JSON 导出、COS、`export_file`、签名 URL、导出 UI、数据库 migration 或后端搜索查询 API。
+- 扩展 `backend/src/meeting_mvp_backend/usage_events.py`：
+  - `UsageEventType` 新增 `archive_searched` 和 `segment_copied`。
+  - 保留 `STEP_21_USAGE_EVENT_TYPES` 为 Step 21 原始事件集合，新增 `STEP_23_USAGE_EVENT_TYPES` 表示截至 Step 23 的完整 allowlist。
+  - payload 安全校验继续拒绝音频、密钥、token，并新增对 `query`、`text`、`english_text`、`chinese_text`、`archive_url` 等正文/搜索词字段的拒绝；`text_length`、`english_text_length`、`chinese_text_length` 等长度元数据仍允许。
+- 扩展 `backend/src/meeting_mvp_backend/archives.py`：
+  - 新增 `ArchiveSearchEventRequest`、`ArchiveSegmentCopiedEventRequest` 和 `ArchiveEventRequest`。
+  - `ArchiveService.record_archive_event()` 复用既有 archive token 校验、retention 过期判断和信息隐藏边界。
+  - `archive_searched` payload 只记录 `query_length`、`matched_segment_count`、`total_segment_count`。
+  - `segment_copied` 会验证 `segment_id` 属于当前归档，并由后端派生 `sequence`、`translation_status`、`english_text_length`、`chinese_text_length`、`is_key_sentence` 等安全元数据。
+- `backend/src/meeting_mvp_backend/main.py` 新增 `POST /api/archives/{session_id}/events?token=...`：
+  - 缺少或空 token 返回 401。
+  - session 不存在、错误 token、过期归档和 segment 不属于当前 session 统一返回 404。
+  - 成功接收搜索/复制事件返回 204；usage event 写入失败仍按 best-effort 处理，不影响前端搜索/复制体验。
+- 扩展 `frontend/src/api/archives.ts`：
+  - 新增 `ArchiveEvent` 类型、`buildArchiveEventApiUrl()` 和 `recordArchiveEvent()`。
+  - 事件 POST body 只包含安全元数据，不包含 raw query、英文正文、中文译文、token 或 archive URL。
+- 扩展 `frontend/src/archive/ArchivePage.tsx`：
+  - 增加 `aria-label="搜索归档片段"` 的搜索输入。
+  - 搜索在已加载的 final 片段中本地完成，范围覆盖英文 final、中文 final、开始/结束时间戳和时间范围；英文大小写不敏感，中文按包含匹配。
+  - 空搜索显示全部片段，有搜索无命中时显示“未找到匹配片段”。
+  - 每个片段新增复制按钮，复制内容固定包含时间、英文原文和中文翻译；复制成功后显示“已复制”，复制失败时显示可访问错误提示且不清空归档内容。
+  - 非空搜索 400ms debounce 后记录 `archive_searched`；复制成功后记录 `segment_copied`；事件上报失败不阻塞 UI。
+- 扩展测试文件：
+  - `backend/tests/test_usage_events.py`
+  - `backend/tests/test_archives.py`
+  - `frontend/src/api/archives.test.ts`
+  - `frontend/src/archive/ArchivePage.test.tsx`
+  - `frontend/e2e/archive.spec.ts`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 23 后端 RED | `uv run pytest tests/test_usage_events.py tests/test_archives.py -q` | 首次 2 errors：缺少 `STEP_23_USAGE_EVENT_TYPES`、`ArchiveSearchEventRequest` 等 Step 23 入口 |
+| Step 23 后端目标 GREEN | `uv run pytest tests/test_usage_events.py tests/test_archives.py -q` | 31 passed |
+| Step 23 前端 RED | `npm run test -- src/api/archives.test.ts src/archive/ArchivePage.test.tsx` | 首次 7 failed：缺少事件 API client、搜索输入和复制按钮 |
+| Step 23 前端目标 GREEN | 同上 | 2 个测试文件、15 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 36 source files` |
+| 后端 pytest | `uv run pytest` | 121 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 13 个测试文件、95 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 10 个 Chromium 测试通过 |
+
+### 后续注意
+
+- Step 24 必须等待用户明确允许后再开始；当前没有 Markdown/JSON 导出、COS 上传、`export_file` 写入、短期签名 URL 或导出失败事件。
+- 搜索事件只记录搜索词长度和命中统计，不记录搜索词原文。
+- 复制事件只在浏览器 clipboard 写入成功后上报；后端只记录 segment 元数据和文本长度，不记录英文/中文正文。
+- `usage_event` 仍是观测数据，写入失败不得影响归档查看、搜索或复制主流程。

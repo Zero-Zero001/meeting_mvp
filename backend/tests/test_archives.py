@@ -12,6 +12,8 @@ from meeting_mvp_backend.archive_tokens import hash_archive_token
 from meeting_mvp_backend.archives import (
     ArchiveAccessDenied,
     ArchiveResponse,
+    ArchiveSearchEventRequest,
+    ArchiveSegmentCopiedEventRequest,
     ArchiveSegmentResponse,
     ArchiveService,
     ArchiveSessionRecord,
@@ -91,6 +93,7 @@ class FakeArchiveService:
         self.response = response
         self.error = error
         self.calls: list[tuple[uuid.UUID, str]] = []
+        self.event_calls: list[tuple[uuid.UUID, str, object]] = []
 
     async def view_archive(
         self,
@@ -103,6 +106,17 @@ class FakeArchiveService:
             raise self.error
         assert self.response is not None
         return self.response
+
+    async def record_archive_event(
+        self,
+        *,
+        session_id: uuid.UUID,
+        token: str,
+        event: object,
+    ) -> None:
+        self.event_calls.append((session_id, token, event))
+        if self.error is not None:
+            raise self.error
 
 
 @pytest.fixture(autouse=True)
@@ -281,6 +295,113 @@ async def test_archive_service_derives_end_reason(
 
 
 @pytest.mark.asyncio
+async def test_archive_service_records_search_event_with_safe_payload() -> None:
+    session = make_archive_session()
+    repository = FakeArchiveRepository(
+        session=session,
+        segments=[make_segment(session_id=session.session_id, sequence=1)],
+    )
+    usage_events = FakeUsageEventRecorder()
+    service = ArchiveService(
+        clock=lambda: FIXED_NOW,
+        repository=repository,
+        usage_event_recorder=usage_events,
+    )
+
+    await service.record_archive_event(
+        session_id=session.session_id,
+        token="archive-token",
+        event=ArchiveSearchEventRequest(
+            event_type="archive_searched",
+            matched_segment_count=1,
+            query_length=15,
+            total_segment_count=2,
+        ),
+    )
+
+    assert usage_events.records == [
+        UsageEventRecord(
+            client_id=session.client_id,
+            created_at=FIXED_NOW,
+            event_type=UsageEventType.ARCHIVE_SEARCHED,
+            payload={
+                "matched_segment_count": 1,
+                "query_length": 15,
+                "total_segment_count": 2,
+            },
+            session_id=session.session_id,
+        ),
+    ]
+    assert "query" not in usage_events.records[0].payload
+    assert "token" not in usage_events.records[0].payload
+
+
+@pytest.mark.asyncio
+async def test_archive_service_records_copy_event_with_metadata() -> None:
+    session = make_archive_session()
+    segment = make_segment(session_id=session.session_id, sequence=2)
+    usage_events = FakeUsageEventRecorder()
+    service = ArchiveService(
+        clock=lambda: FIXED_NOW,
+        repository=FakeArchiveRepository(session=session, segments=[segment]),
+        usage_event_recorder=usage_events,
+    )
+
+    await service.record_archive_event(
+        session_id=session.session_id,
+        token="archive-token",
+        event=ArchiveSegmentCopiedEventRequest(
+            event_type="segment_copied",
+            segment_id=segment.segment_id,
+        ),
+    )
+
+    records = usage_events.records
+    assert records == [
+        UsageEventRecord(
+            client_id=session.client_id,
+            created_at=FIXED_NOW,
+            event_type=UsageEventType.SEGMENT_COPIED,
+            payload={
+                "chinese_text_length": len(segment.chinese_text_final),
+                "english_text_length": len(segment.english_text_final),
+                "is_key_sentence": False,
+                "segment_id": str(segment.segment_id),
+                "sequence": 2,
+                "translation_status": "completed",
+            },
+            session_id=session.session_id,
+        ),
+    ]
+    assert "english_text_final" not in records[0].payload
+    assert "chinese_text_final" not in records[0].payload
+    assert "token" not in records[0].payload
+
+
+@pytest.mark.asyncio
+async def test_archive_service_rejects_copy_event_for_segment_outside_session() -> None:
+    session = make_archive_session()
+    service = ArchiveService(
+        clock=lambda: FIXED_NOW,
+        repository=FakeArchiveRepository(
+            session=session,
+            segments=[make_segment(session_id=uuid.uuid4(), sequence=1)],
+        ),
+        usage_event_recorder=FakeUsageEventRecorder(),
+    )
+
+    with pytest.raises(ArchiveAccessDenied):
+        await service.record_archive_event(
+            session_id=session.session_id,
+            token="archive-token",
+            event=ArchiveSegmentCopiedEventRequest(
+                event_type="segment_copied",
+                segment_id=uuid.uuid4(),
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_archive_endpoint_returns_archive_response() -> None:
     session = make_archive_session()
     response = ArchiveResponse(
@@ -359,3 +480,99 @@ async def test_archive_endpoint_hides_wrong_token_and_missing_session_as_404() -
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Archive not found or expired"}
+
+
+@pytest.mark.asyncio
+async def test_archive_event_endpoint_accepts_search_and_copy_events() -> None:
+    service = FakeArchiveService(response=None)
+    app.dependency_overrides[get_archive_service] = lambda: service
+    transport = ASGITransport(app=app)
+    session_id = uuid.uuid4()
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        search_response = await client.post(
+            f"/api/archives/{session_id}/events?token=archive-token",
+            json={
+                "event_type": "archive_searched",
+                "matched_segment_count": 1,
+                "query_length": 15,
+                "total_segment_count": 2,
+            },
+        )
+        copy_response = await client.post(
+            f"/api/archives/{session_id}/events?token=archive-token",
+            json={
+                "event_type": "segment_copied",
+                "segment_id": str(uuid.UUID("22222222-2222-4222-8222-222222222222")),
+            },
+        )
+
+    assert search_response.status_code == 204
+    assert copy_response.status_code == 204
+    assert service.event_calls[0][0:2] == (session_id, "archive-token")
+    assert service.event_calls[1][0:2] == (session_id, "archive-token")
+
+
+@pytest.mark.asyncio
+async def test_archive_event_endpoint_rejects_missing_or_empty_token() -> None:
+    service = FakeArchiveService(response=None)
+    app.dependency_overrides[get_archive_service] = lambda: service
+    transport = ASGITransport(app=app)
+    session_id = uuid.uuid4()
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        missing_response = await client.post(
+            f"/api/archives/{session_id}/events",
+            json={
+                "event_type": "archive_searched",
+                "matched_segment_count": 0,
+                "query_length": 5,
+                "total_segment_count": 2,
+            },
+        )
+        empty_response = await client.post(
+            f"/api/archives/{session_id}/events?token=",
+            json={
+                "event_type": "archive_searched",
+                "matched_segment_count": 0,
+                "query_length": 5,
+                "total_segment_count": 2,
+            },
+        )
+
+    assert missing_response.status_code == 401
+    assert empty_response.status_code == 401
+    assert service.event_calls == []
+
+
+@pytest.mark.asyncio
+async def test_archive_event_endpoint_hides_denied_archive_as_404() -> None:
+    service = FakeArchiveService(
+        response=None,
+        error=ArchiveAccessDenied("archive not found or expired"),
+    )
+    app.dependency_overrides[get_archive_service] = lambda: service
+    transport = ASGITransport(app=app)
+    session_id = uuid.uuid4()
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/archives/{session_id}/events?token=wrong-token",
+            json={
+                "event_type": "archive_searched",
+                "matched_segment_count": 0,
+                "query_length": 5,
+                "total_segment_count": 2,
+            },
+        )
+
+    assert response.status_code == 404

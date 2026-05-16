@@ -4,7 +4,16 @@ from typing import Annotated, cast
 from uuid import UUID
 
 import structlog
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    status,
+)
 from pydantic import BaseModel, ConfigDict
 
 from meeting_mvp_backend.anonymous_clients import (
@@ -13,6 +22,7 @@ from meeting_mvp_backend.anonymous_clients import (
 )
 from meeting_mvp_backend.archives import (
     ArchiveAccessDenied,
+    ArchiveEventRequest,
     ArchiveResponse,
     ArchiveService,
     SQLAlchemyArchiveRepository,
@@ -229,6 +239,35 @@ async def view_archive(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Archive not found or expired",
         ) from exc
+
+
+@app.post(
+    "/api/archives/{session_id}/events",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def record_archive_event(
+    session_id: UUID,
+    event: ArchiveEventRequest,
+    service: Annotated[ArchiveService, Depends(get_archive_service)],
+    token: str | None = Query(default=None),
+) -> Response:
+    if token is None or token.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Archive token is required",
+        )
+    try:
+        await service.record_archive_event(
+            session_id=session_id,
+            token=token,
+            event=event,
+        )
+    except ArchiveAccessDenied as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Archive not found or expired",
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.websocket("/ws")
