@@ -12,6 +12,27 @@ test('renders archive page from session id and token', async ({ page }) => {
     })
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url.includes('/exports')) {
+        const body = String(init?.body ?? '')
+        if (body.includes('archive-token')) {
+          return new Response('unsafe export body', { status: 400 })
+        }
+        return new Response(
+          JSON.stringify({
+            created_at: '2026-05-16T10:09:00Z',
+            download_url: 'https://cos.example.test/private-download',
+            download_url_expires_at: '2026-05-16T11:09:00Z',
+            export_id: '44444444-4444-4444-8444-444444444444',
+            format: body.includes('json') ? 'json' : 'markdown',
+            retention_expires_at: '2026-06-15T10:00:00Z',
+            session_id: '11111111-1111-4111-8111-111111111111',
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+            status: 201,
+          },
+        )
+      }
       if (url.includes('/events')) {
         const body = String(init?.body ?? '')
         if (body.includes('archive-token')) {
@@ -90,6 +111,13 @@ test('renders archive page from session id and token', async ({ page }) => {
   await expect
     .poll(() => page.evaluate(() => window.localStorage.getItem('copied-archive-text')))
     .toContain('时间：0:04 - 0:07')
+
+  await page.getByRole('button', { name: '导出 JSON' }).click()
+  await expect(page.getByText('导出已生成')).toBeVisible()
+  await expect(page.getByRole('link', { name: '下载 JSON' })).toHaveAttribute(
+    'href',
+    'https://cos.example.test/private-download',
+  )
 
   const hasHorizontalOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > document.documentElement.clientWidth,

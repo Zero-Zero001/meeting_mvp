@@ -957,3 +957,49 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 121 passed，13 integration deselected。
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、95 个测试通过，E2E 为 10 个 Chromium 测试通过。
 - Step 24 未开始；当前没有 Markdown/JSON 导出、COS、`export_file` 或签名 URL。
+
+## 2026-05-16 Step 24 Markdown / JSON 导出
+
+### 架构状态
+- Step 24 在 Step 22/23 归档授权和页面基础上实现 F12：用户在归档页通过同一 `session_id + archive_token` 授权边界生成 Markdown 或 JSON 导出文件。
+- 本步不新增数据库 migration，复用现有 `meeting_session`、`transcript_segment`、`export_file` 和 `usage_event` 表；正式导出内容仍只来自 final 片段，不读取 raw audio、interim 文本或前端私有信息。
+- 新增 `exports` 模块作为后端导出业务边界：负责 token 校验、retention 判断、final 片段排序、Markdown/JSON 渲染、COS 私有对象上传、短期下载地址生成、`export_file` 写入和导出事件记录。
+- `ArchiveExportService` 复用 Step 22 的信息隐藏策略：缺 token 是 401；session 不存在、token 错误、归档过期统一 404；归档存在但没有 final 片段返回 409；COS 配置缺失、上传失败、签名失败或数据库写入失败返回 503。
+- COS 访问通过 `ArchiveObjectStorage` 协议隔离，生产实现为 `TencentCosArchiveObjectStorage`，使用 `cos-python-sdk-v5`；单元测试使用 fake storage，不依赖真实 COS 密钥。
+- 导出 object key 由后端生成，格式为 `TENCENT_COS_EXPORT_PREFIX/{session_id}/{export_id}.md|json`；API 响应不暴露 object key，只返回短期下载地址、过期时间和导出元数据。
+- `export_file` 成为导出审计和清理入口：记录导出格式、COS object key、当前短期 URL 字段、创建时间和导出保留时间；COS 对象仍保持私有。
+- `usage_event` 新增 `export_created` 和 `export_failed`，继续作为观测数据。写入失败不影响导出成功响应，导出失败也只记录安全元数据。
+- 前端归档页在已加载 archive response 上增加导出工具区：Markdown/JSON 按钮、空归档禁用态、成功下载链接和失败提示。导出成功不会自动跳转，也不会清空搜索、复制或已加载归档内容。
+- Step 25 未开始：当前没有 final 翻译重试、补译任务、重试 API、重试 UI 或失败片段自动刷新。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/exports.py` | Step 24 新增的导出核心模块。定义导出请求/响应模型、导出异常、Markdown/JSON renderer、COS storage 协议、Tencent COS 实现、`ExportFileRepository` 协议、SQLAlchemy `export_file` 写入器和 `ArchiveExportService`。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 入口。新增 `get_archive_export_service()` 依赖和 `POST /api/archives/{session_id}/exports` 路由；负责把缺 token、授权失败、空归档和导出临时不可用映射为 401/404/409/503。 |
+| `backend/src/meeting_mvp_backend/usage_events.py` | usage event 核心模块。Step 24 新增 `export_created`、`export_failed` 和 `STEP_24_USAGE_EVENT_TYPES`，并扩展 payload 安全校验，拒绝下载 URL、签名 URL、COS URL、object key、token、正文、音频和密钥字段。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 数据库模型。Step 24 复用既有 `ExportFile` 与 `ExportFormat(markdown/json)`，不新增 schema；`export_file` 保存 COS 私有对象 key、短期 URL 字段和保留时间。 |
+| `backend/pyproject.toml` / `backend/uv.lock` | 后端依赖锁。Step 24 新增 `cos-python-sdk-v5`，用于生产 Tencent COS 上传和签名 URL 生成。 |
+| `backend/tests/test_exports.py` | 后端导出测试。覆盖 Markdown/JSON 渲染、成功导出、`export_file` 写入、`export_created`、空归档拒绝、COS 失败、授权复用和 API 状态码。 |
+| `backend/tests/test_usage_events.py` | usage event 测试。覆盖 Step 24 allowlist 扩展，以及下载 URL、签名 URL、COS URL、object key 等敏感字段拒绝。 |
+| `frontend/src/api/archives.ts` | 前端归档 API client。Step 24 新增 `ArchiveExportResponse`、`ArchiveExportFormat`、`buildArchiveExportApiUrl()` 和 `createArchiveExport()`；导出 POST body 只包含格式。 |
+| `frontend/src/archive/ArchivePage.tsx` | 前端归档页。Step 24 新增导出工具区、Markdown/JSON 按钮、空归档禁用态、成功下载链接和导出失败提示。 |
+| `frontend/src/api/archives.test.ts` | 前端 API client 测试。覆盖导出 URL、POST body、响应解析和 HTTP 错误映射。 |
+| `frontend/src/archive/ArchivePage.test.tsx` | 归档页组件测试。覆盖导出按钮、空归档禁用、成功链接、409/503 失败提示和归档内容保留。 |
+| `frontend/e2e/archive.spec.ts` | Playwright 归档页 smoke test。Mock 导出 API，验证搜索、复制、导出 JSON 和页面无水平溢出。 |
+
+### 数据与安全边界
+- Markdown / JSON 导出文件会包含 session 元数据和双语 final 正文，因此只写入后端受控的私有 COS 对象；前端不接触 COS 密钥，也不生成 object key。
+- `POST /api/archives/{session_id}/exports` 的 request body 只允许 `format`；archive token 仍只作为授权 query 参数，且不写入 body、响应模型、usage event 或日志。
+- `export_created` payload 只保存 `format`、`segment_count`、`file_size_bytes`、`translation_failed_count`、`signed_url_ttl_seconds`。
+- `export_failed` payload 只保存 `format`、`stage`、`error_type`、`segment_count`；不保存异常正文、COS object key、短期下载地址、token、正文、译文或密钥。
+- `export_file.cos_object_key` 是数据库内部清理和审计字段，不返回给前端；`export_file.cos_url` 是短期 URL 字段，不应视为永久公开地址。
+- 空归档不会生成文件，也不会写 `export_file`；前端禁用导出按钮，后端仍保留 409 防线。
+
+### 验证结论
+- Step 24 已按 TDD 先跑 RED：后端缺少 Step 24 事件集合和 `exports` 模块，前端缺少导出 API client 与导出控件；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 141 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、101 个测试通过，E2E 为 10 个 Chromium 测试通过。
+- 真实 COS smoke 未在 Windows 本地执行；应在 Lighthouse 后端容器中使用安全环境变量 gated 运行，且不得输出密钥或短期签名 URL。
+- Step 25 未开始；当前没有 final 翻译重试或补译链路。

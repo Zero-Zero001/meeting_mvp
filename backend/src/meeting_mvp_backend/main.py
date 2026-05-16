@@ -29,6 +29,16 @@ from meeting_mvp_backend.archives import (
 )
 from meeting_mvp_backend.config import AppEnv, Settings, load_settings, settings_status
 from meeting_mvp_backend.db.session import create_engine, create_session_factory
+from meeting_mvp_backend.exports import (
+    ArchiveExportConfigurationError,
+    ArchiveExportEmpty,
+    ArchiveExportRequest,
+    ArchiveExportResponse,
+    ArchiveExportService,
+    ArchiveExportUnavailable,
+    SQLAlchemyExportFileRepository,
+    create_tencent_cos_storage_from_settings,
+)
 from meeting_mvp_backend.quota import create_quota_service_from_settings
 from meeting_mvp_backend.stt_providers import (
     create_qwen_realtime_asr_provider_from_settings,
@@ -134,6 +144,45 @@ def get_archive_service(
         repository=SQLAlchemyArchiveRepository(
             request.app.state.db_session_factory,
         ),
+        usage_event_recorder=SQLAlchemyUsageEventRecorder(
+            session_factory=request.app.state.db_session_factory,
+        ),
+    )
+
+
+def get_archive_export_service(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> ArchiveExportService:
+    if not settings.database_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DATABASE_URL is required to export archives",
+        )
+
+    if not hasattr(request.app.state, "db_session_factory"):
+        engine = create_engine(settings.database_url)
+        request.app.state.db_engine = engine
+        request.app.state.db_session_factory = create_session_factory(engine)
+
+    try:
+        storage = create_tencent_cos_storage_from_settings(settings)
+    except ArchiveExportConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Archive export storage is not configured",
+        ) from exc
+
+    return ArchiveExportService(
+        archive_repository=SQLAlchemyArchiveRepository(
+            request.app.state.db_session_factory,
+        ),
+        export_prefix=settings.tencent_cos_export_prefix or "exports/",
+        export_repository=SQLAlchemyExportFileRepository(
+            request.app.state.db_session_factory,
+        ),
+        signed_url_ttl_seconds=settings.cos_signed_url_ttl_seconds,
+        storage=storage,
         usage_event_recorder=SQLAlchemyUsageEventRecorder(
             session_factory=request.app.state.db_session_factory,
         ),
@@ -268,6 +317,44 @@ async def record_archive_event(
             detail="Archive not found or expired",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post(
+    "/api/archives/{session_id}/exports",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_archive_export(
+    session_id: UUID,
+    payload: ArchiveExportRequest,
+    service: Annotated[ArchiveExportService, Depends(get_archive_export_service)],
+    token: str | None = Query(default=None),
+) -> ArchiveExportResponse:
+    if token is None or token.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Archive token is required",
+        )
+    try:
+        return await service.create_export(
+            request=payload,
+            session_id=session_id,
+            token=token,
+        )
+    except ArchiveAccessDenied as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Archive not found or expired",
+        ) from exc
+    except ArchiveExportEmpty as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Archive has no exportable final segments",
+        ) from exc
+    except ArchiveExportUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Archive export is temporarily unavailable",
+        ) from exc
 
 
 @app.websocket("/ws")

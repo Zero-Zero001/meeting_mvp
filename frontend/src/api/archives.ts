@@ -34,8 +34,20 @@ const archiveResponseSchema = z.object({
   segments: z.array(archiveSegmentSchema),
 })
 
+const archiveExportResponseSchema = z.object({
+  export_id: z.string(),
+  session_id: z.string(),
+  format: z.enum(['markdown', 'json']),
+  download_url: z.string(),
+  download_url_expires_at: z.string(),
+  retention_expires_at: z.string(),
+  created_at: z.string(),
+})
+
 export type ArchiveSegment = z.infer<typeof archiveSegmentSchema>
 export type ArchiveResponse = z.infer<typeof archiveResponseSchema>
+export type ArchiveExportResponse = z.infer<typeof archiveExportResponseSchema>
+export type ArchiveExportFormat = ArchiveExportResponse['format']
 export type ArchiveSearchEvent = {
   event_type: 'archive_searched'
   query_length: number
@@ -96,6 +108,24 @@ export function buildArchiveEventApiUrl({
   return `${apiBaseUrl.replace(/\/$/, '')}${archivePath}`
 }
 
+export function buildArchiveExportApiUrl({
+  apiBaseUrl = publicConfig.apiBaseUrl,
+  sessionId,
+  token,
+}: {
+  apiBaseUrl?: string
+  sessionId: string
+  token: string
+}): string {
+  const archivePath = `/api/archives/${encodeURIComponent(
+    sessionId,
+  )}/exports?token=${encodeURIComponent(token)}`
+  if (apiBaseUrl.trim() === '') {
+    return archivePath
+  }
+  return `${apiBaseUrl.replace(/\/$/, '')}${archivePath}`
+}
+
 export async function fetchArchive({
   apiBaseUrl = publicConfig.apiBaseUrl,
   fetchFn = fetch,
@@ -119,6 +149,38 @@ export async function fetchArchive({
   }
 
   return archiveResponseSchema.parse(await response.json())
+}
+
+export async function createArchiveExport({
+  apiBaseUrl = publicConfig.apiBaseUrl,
+  fetchFn = fetch,
+  format,
+  sessionId,
+  token,
+}: {
+  apiBaseUrl?: string
+  fetchFn?: FetchLike
+  format: ArchiveExportFormat
+  sessionId: string
+  token: string
+}): Promise<ArchiveExportResponse> {
+  const response = await fetchFn(
+    buildArchiveExportApiUrl({ apiBaseUrl, sessionId, token }),
+    {
+      body: JSON.stringify({ format }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    },
+  )
+
+  if (!response.ok) {
+    throw new ArchiveAccessError({
+      message: await responseErrorMessage(response),
+      status: response.status,
+    })
+  }
+
+  return archiveExportResponseSchema.parse(await response.json())
 }
 
 export async function recordArchiveEvent({

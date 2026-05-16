@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import ArchivePage from './ArchivePage'
 import {
   ArchiveAccessError,
+  type ArchiveExportResponse,
   type ArchiveResponse,
   type ArchiveSegment,
 } from '@/api/archives'
@@ -46,6 +47,16 @@ const secondSegment: ArchiveSegment = {
   speaker_label: null,
   start_ms: 4100,
   translation_status: 'completed',
+}
+
+const exportResponse: ArchiveExportResponse = {
+  created_at: '2026-05-16T10:09:00Z',
+  download_url: 'https://cos.example.test/private-download',
+  download_url_expires_at: '2026-05-16T11:09:00Z',
+  export_id: '44444444-4444-4444-8444-444444444444',
+  format: 'markdown',
+  retention_expires_at: '2026-06-15T10:00:00Z',
+  session_id: '11111111-1111-4111-8111-111111111111',
 }
 
 describe('ArchivePage', () => {
@@ -98,6 +109,8 @@ describe('ArchivePage', () => {
     )
 
     expect(await screen.findByText('暂无 final 片段')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '导出 Markdown' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '导出 JSON' })).toBeDisabled()
   })
 
   it('shows clear guidance when token is missing', () => {
@@ -290,5 +303,91 @@ describe('ArchivePage', () => {
     expect(
       screen.getByText('We need to align on the launch timeline before Friday.'),
     ).toBeInTheDocument()
+  })
+
+  it('creates a Markdown export and shows a short-lived download link', async () => {
+    const user = userEvent.setup()
+    const createArchiveExportFn = vi.fn().mockResolvedValue(exportResponse)
+
+    render(
+      <ArchivePage
+        createArchiveExportFn={createArchiveExportFn}
+        fetchArchiveFn={vi.fn().mockResolvedValue(archiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '导出 Markdown' }))
+
+    expect(createArchiveExportFn).toHaveBeenCalledWith({
+      format: 'markdown',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+    const downloadLink = await screen.findByRole('link', { name: '下载 Markdown' })
+    expect(downloadLink).toHaveAttribute(
+      'href',
+      'https://cos.example.test/private-download',
+    )
+    expect(screen.getByText('导出已生成')).toBeInTheDocument()
+  })
+
+  it('shows export failure guidance without clearing archive content', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ArchivePage
+        createArchiveExportFn={vi.fn().mockRejectedValue(
+          new ArchiveAccessError({
+            message: 'Archive export is temporarily unavailable',
+            status: 503,
+          }),
+        )}
+        fetchArchiveFn={vi.fn().mockResolvedValue(archiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '导出 JSON' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '导出暂时不可用，请稍后重试',
+    )
+    expect(
+      screen.getByText('We need to align on the launch timeline before Friday.'),
+    ).toBeInTheDocument()
+  })
+
+  it('shows empty export rejection guidance without clearing archive content', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ArchivePage
+        createArchiveExportFn={vi.fn().mockRejectedValue(
+          new ArchiveAccessError({
+            message: 'Archive has no exportable final segments',
+            status: 409,
+          }),
+        )}
+        fetchArchiveFn={vi.fn().mockResolvedValue(archiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '导出 JSON' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '暂无可导出的 final 片段',
+    )
+    expect(screen.getByText('我们需要在周五前对齐上线时间。')).toBeInTheDocument()
   })
 })

@@ -11,6 +11,7 @@ from meeting_mvp_backend.db.models import UsageEvent
 from meeting_mvp_backend.usage_events import (
     STEP_21_USAGE_EVENT_TYPES,
     STEP_23_USAGE_EVENT_TYPES,
+    STEP_24_USAGE_EVENT_TYPES,
     SQLAlchemyUsageEventRecorder,
     UnsafeUsageEventPayload,
     UsageEventRecord,
@@ -96,6 +97,14 @@ def test_step_23_event_types_extend_usage_event_allowlist() -> None:
     }
 
 
+def test_step_24_event_types_extend_usage_event_allowlist() -> None:
+    assert {event_type.value for event_type in STEP_24_USAGE_EVENT_TYPES} == {
+        *{event_type.value for event_type in STEP_23_USAGE_EVENT_TYPES},
+        "export_created",
+        "export_failed",
+    }
+
+
 def test_build_usage_event_record_populates_required_fields_for_each_event() -> None:
     client_id = str(uuid.uuid4())
     session_id = uuid.uuid4()
@@ -129,6 +138,11 @@ def test_build_usage_event_record_populates_required_fields_for_each_event() -> 
         {"text": "raw meeting text"},
         {"english_text": "We need to align."},
         {"chinese_text": "我们需要对齐。"},
+        {"download_url": "https://example.test/export.md"},
+        {"signed_url": "https://example.test/export.md"},
+        {"cos_url": "https://example.test/export.md"},
+        {"object_key": "exports/session/export.md"},
+        {"cos_object_key": "exports/session/export.md"},
         {"frame": b"\x00\x01"},
         {"items": [{"private_key": "secret-value"}]},
     ],
@@ -147,12 +161,14 @@ def test_usage_event_payload_keeps_safe_observability_metadata() -> None:
             "allowed": True,
             "provider": "qwen_final_translation",
             "nested": {"text_length": 42, "has_confidence": False},
+            "signed_url_ttl_seconds": 3600,
         },
     ) == {
         "remaining_seconds_today": 1800,
         "allowed": True,
         "provider": "qwen_final_translation",
         "nested": {"text_length": 42, "has_confidence": False},
+        "signed_url_ttl_seconds": 3600,
     }
 
 

@@ -4,6 +4,8 @@ import {
   ArchiveAccessError,
   buildArchiveApiUrl,
   buildArchiveEventApiUrl,
+  buildArchiveExportApiUrl,
+  createArchiveExport,
   fetchArchive,
   recordArchiveEvent,
 } from './archives'
@@ -160,6 +162,79 @@ describe('archives API', () => {
       new ArchiveAccessError({
         message: 'Archive not found or expired',
         status: 404,
+      }),
+    )
+  })
+
+  it('builds archive export URLs from public API base and encoded token', () => {
+    expect(
+      buildArchiveExportApiUrl({
+        apiBaseUrl: 'https://api.example.test/',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'token with spaces',
+      }),
+    ).toBe(
+      'https://api.example.test/api/archives/11111111-1111-4111-8111-111111111111/exports?token=token%20with%20spaces',
+    )
+  })
+
+  it('creates archive exports without token or archive text in the POST body', async () => {
+    const exportPayload = {
+      created_at: '2026-05-16T10:09:00Z',
+      download_url: 'https://cos.example.test/private-download',
+      download_url_expires_at: '2026-05-16T11:09:00Z',
+      export_id: '44444444-4444-4444-8444-444444444444',
+      format: 'markdown',
+      retention_expires_at: '2026-06-15T10:00:00Z',
+      session_id: '11111111-1111-4111-8111-111111111111',
+    }
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(exportPayload), {
+        headers: { 'content-type': 'application/json' },
+        status: 201,
+      }),
+    )
+
+    const result = await createArchiveExport({
+      apiBaseUrl: '',
+      fetchFn,
+      format: 'markdown',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+
+    expect(result.download_url).toBe(exportPayload.download_url)
+    expect(fetchFn).toHaveBeenCalledWith(
+      '/api/archives/11111111-1111-4111-8111-111111111111/exports?token=archive-token',
+      expect.objectContaining({
+        body: JSON.stringify({ format: 'markdown' }),
+        method: 'POST',
+      }),
+    )
+    const [, init] = fetchFn.mock.calls[0]
+    expect(String(init.body)).not.toContain('archive-token')
+    expect(String(init.body)).not.toContain('launch timeline')
+  })
+
+  it('reports export HTTP errors as typed archive access errors', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Archive export is temporarily unavailable' }), {
+        headers: { 'content-type': 'application/json' },
+        status: 503,
+      }),
+    )
+
+    await expect(
+      createArchiveExport({
+        fetchFn,
+        format: 'json',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'archive-token',
+      }),
+    ).rejects.toMatchObject(
+      new ArchiveAccessError({
+        message: 'Archive export is temporarily unavailable',
+        status: 503,
       }),
     )
   })

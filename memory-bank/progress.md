@@ -1233,6 +1233,7 @@
 | 前端单元测试 | `npm run test` | 13 个测试文件、88 个测试通过 |
 | 前端生产构建 | `npm run build` | 通过 |
 | 前端 E2E | `npm run test:e2e` | 10 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
 
 ### 后续注意
 
@@ -1297,3 +1298,58 @@
 - 搜索事件只记录搜索词长度和命中统计，不记录搜索词原文。
 - 复制事件只在浏览器 clipboard 写入成功后上报；后端只记录 segment 元数据和文本长度，不记录英文/中文正文。
 - `usage_event` 仍是观测数据，写入失败不得影响归档查看、搜索或复制主流程。
+
+## 2026-05-16 Step 24：F12 Markdown / JSON 导出
+
+### 本次完成
+
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 24，未开始 Step 25；本步不新增 final 翻译重试、导出历史列表、COS 管理页、数据库 migration、成本看板、重点句/时间线增强或前端公开埋点 API。
+- 新增后端 `backend/src/meeting_mvp_backend/exports.py`：
+  - 定义 `ArchiveExportRequest`、`ArchiveExportResponse`、`ArchiveExportService`、导出文件仓储协议、COS storage 协议、SQLAlchemy `export_file` 写入器和 Tencent COS storage 实现。
+  - `POST /api/archives/{session_id}/exports?token=...` 复用 archive token 授权边界：缺 token 返回 401；session 不存在、错误 token、过期归档统一 404；空归档返回 409；COS 配置或导出临时不可用返回 503。
+  - 按 final 片段 `sequence` 升序生成 Markdown 和 JSON，内容包含 session 元数据和双语 final 片段；空中文 final 使用“中文 final 暂不可用”占位。
+  - 使用 `TENCENT_COS_EXPORT_PREFIX/{session_id}/{export_id}.md|json` 形式生成 COS object key，并上传私有对象；返回短期签名下载地址，但不在 API 响应中暴露 object key。
+  - 写入 `export_file` 的 `format`、`cos_object_key`、`cos_url`、`created_at` 和 `retention_expires_at`，不新增 migration。
+- 后端依赖新增 `cos-python-sdk-v5`，并已更新 `backend/pyproject.toml` 与 `backend/uv.lock`；本地测试通过 fake storage，不依赖真实 COS 密钥。
+- 扩展 `backend/src/meeting_mvp_backend/usage_events.py`：
+  - 新增 `export_created`、`export_failed` 和 `STEP_24_USAGE_EVENT_TYPES`。
+  - `export_created` payload 只记录格式、片段数、文件字节数、翻译失败数和签名 URL TTL。
+  - `export_failed` payload 只记录格式、失败阶段、错误类型和安全统计。
+  - payload 安全校验新增拒绝 `download_url`、`signed_url`、`cos_url`、`object_key`、`cos_object_key` 等字段，继续禁止 token、正文、音频和密钥进入 `usage_event`。
+- 扩展前端 `frontend/src/api/archives.ts`：
+  - 新增 `ArchiveExportResponse`、`ArchiveExportFormat`、`buildArchiveExportApiUrl()` 和 `createArchiveExport()`。
+  - 导出 POST body 只包含 `{format}`，token 只作为既有归档授权 query 参数发送，不进入 JSON body。
+- 扩展前端 `frontend/src/archive/ArchivePage.tsx`：
+  - 在归档 ready 状态新增 Markdown 与 JSON 导出按钮。
+  - 无 final 片段时禁用导出按钮并保留空归档提示。
+  - 导出成功后显示“导出已生成”和短期下载链接；不会自动跳转，不清空归档内容。
+  - 导出失败时显示可访问 `role="alert"` 提示；409 显示“暂无可导出的 final 片段”，503 或网络错误显示“导出暂时不可用，请稍后重试”。
+- 扩展测试文件：
+  - `backend/tests/test_exports.py`
+  - `backend/tests/test_usage_events.py`
+  - `frontend/src/api/archives.test.ts`
+  - `frontend/src/archive/ArchivePage.test.tsx`
+  - `frontend/e2e/archive.spec.ts`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 24 后端 RED | `uv run pytest tests/test_usage_events.py tests/test_exports.py -q` | 首次 2 errors：缺少 `STEP_24_USAGE_EVENT_TYPES` 和 `meeting_mvp_backend.exports` |
+| Step 24 后端目标 GREEN | `uv run pytest tests/test_usage_events.py tests/test_exports.py -q` | 35 passed |
+| Step 24 前端 RED | `npm run test -- src/api/archives.test.ts src/archive/ArchivePage.test.tsx` | 首次 7 failed：缺少导出 API client、导出按钮和导出状态 |
+| Step 24 前端目标 GREEN | 同上 | 2 个测试文件、21 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 38 source files` |
+| 后端 pytest | `uv run pytest` | 141 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 13 个测试文件、101 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 10 个 Chromium 测试通过 |
+
+### 后续注意
+
+- Step 25 必须等待用户明确允许后再开始；当前没有 final 翻译重试、重试次数、重试 API、后台补译或失败片段自动更新。
+- 本地没有运行真实 COS smoke；真实 COS 上传和短期签名 URL 仍需在 Lighthouse 后端容器中使用安全环境变量执行 gated smoke，不能在本地或文档中输出任何密钥或签名 URL。
+- `export_created` / `export_failed` 只保存安全元数据；不得把 COS object key、短期下载地址、archive token、会议正文、译文、IP/User-Agent 明文或密钥写入 usage event。
+- `export_file.cos_url` 存放本次生成的短期访问地址字段；COS 对象仍保持私有，前端只能通过后端返回的短期下载地址下载。

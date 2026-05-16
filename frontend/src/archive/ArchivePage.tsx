@@ -5,6 +5,8 @@ import {
   Check,
   Clock3,
   Copy,
+  Download,
+  FileText,
   Languages,
   Search,
   ShieldCheck,
@@ -12,8 +14,11 @@ import {
 
 import {
   ArchiveAccessError,
+  createArchiveExport,
   fetchArchive,
   recordArchiveEvent,
+  type ArchiveExportFormat,
+  type ArchiveExportResponse,
   type ArchiveResponse,
   type ArchiveSegment,
   type ArchiveEvent,
@@ -30,9 +35,15 @@ type RecordArchiveEventFn = (options: {
   token: string
   event: ArchiveEvent
 }) => Promise<void>
+type CreateArchiveExportFn = (options: {
+  sessionId: string
+  token: string
+  format: ArchiveExportFormat
+}) => Promise<ArchiveExportResponse>
 type WriteClipboardTextFn = (text: string) => Promise<void>
 
 type ArchivePageProps = {
+  createArchiveExportFn?: CreateArchiveExportFn
   fetchArchiveFn?: FetchArchiveFn
   location?: LocationLike
   recordArchiveEventFn?: RecordArchiveEventFn
@@ -43,8 +54,14 @@ type ArchiveState =
   | { status: 'idle' | 'loading' }
   | { status: 'ready'; archive: ArchiveResponse }
   | { status: 'error'; message: string }
+type ExportState =
+  | { status: 'idle' }
+  | { status: 'creating'; format: ArchiveExportFormat }
+  | { status: 'success'; exportResponse: ArchiveExportResponse }
+  | { status: 'error'; message: string }
 
 function ArchivePage({
+  createArchiveExportFn = createArchiveExport,
   fetchArchiveFn = fetchArchive,
   location = window.location,
   recordArchiveEventFn = recordArchiveEvent,
@@ -55,6 +72,7 @@ function ArchivePage({
   const [searchQuery, setSearchQuery] = useState('')
   const [copiedSegmentId, setCopiedSegmentId] = useState<string | null>(null)
   const [clipboardError, setClipboardError] = useState<string | null>(null)
+  const [exportState, setExportState] = useState<ExportState>({ status: 'idle' })
 
   useEffect(() => {
     if (!access.ok) {
@@ -140,6 +158,26 @@ function ArchivePage({
     }
   }
 
+  async function handleCreateExport(format: ArchiveExportFormat): Promise<void> {
+    if (!access.ok) {
+      return
+    }
+    setExportState({ format, status: 'creating' })
+    try {
+      const exportResponse = await createArchiveExportFn({
+        format,
+        sessionId: access.sessionId,
+        token: access.token,
+      })
+      setExportState({ exportResponse, status: 'success' })
+    } catch (error: unknown) {
+      setExportState({
+        message: exportErrorMessage(error),
+        status: 'error',
+      })
+    }
+  }
+
   return (
     <main className="min-h-svh bg-zinc-50 text-foreground">
       <section className="mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-4 px-4 py-4 sm:px-5 lg:px-6">
@@ -175,6 +213,8 @@ function ArchivePage({
             archive={state.archive}
             clipboardError={clipboardError}
             copiedSegmentId={copiedSegmentId}
+            exportState={exportState}
+            onCreateExport={(format) => void handleCreateExport(format)}
             onCopySegment={(segment) => void handleCopySegment(segment)}
             onSearchQueryChange={setSearchQuery}
             searchQuery={searchQuery}
@@ -189,6 +229,8 @@ function ArchiveContent({
   archive,
   clipboardError,
   copiedSegmentId,
+  exportState,
+  onCreateExport,
   onCopySegment,
   onSearchQueryChange,
   searchQuery,
@@ -196,6 +238,8 @@ function ArchiveContent({
   archive: ArchiveResponse
   clipboardError: string | null
   copiedSegmentId: string | null
+  exportState: ExportState
+  onCreateExport: (format: ArchiveExportFormat) => void
   onCopySegment: (segment: ArchiveSegment) => void
   onSearchQueryChange: (query: string) => void
   searchQuery: string
@@ -229,6 +273,12 @@ function ArchiveContent({
           value={formatDateTime(archive.retention_expires_at)}
         />
       </section>
+
+      <ArchiveExportPanel
+        exportState={exportState}
+        hasExportableSegments={archive.segments.length > 0}
+        onCreateExport={onCreateExport}
+      />
 
       <section
         aria-label="归档搜索"
@@ -283,6 +333,73 @@ function ArchiveContent({
         )}
       </section>
     </>
+  )
+}
+
+function ArchiveExportPanel({
+  exportState,
+  hasExportableSegments,
+  onCreateExport,
+}: {
+  exportState: ExportState
+  hasExportableSegments: boolean
+  onCreateExport: (format: ArchiveExportFormat) => void
+}) {
+  const isCreating = exportState.status === 'creating'
+  return (
+    <section
+      aria-label="归档导出"
+      className="grid gap-3 rounded-md border border-border bg-background p-3"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          aria-label="导出 Markdown"
+          disabled={!hasExportableSegments || isCreating}
+          onClick={() => onCreateExport('markdown')}
+          type="button"
+          variant="outline"
+        >
+          <FileText className="size-4" />
+          {isCreating && exportState.format === 'markdown'
+            ? '生成中'
+            : '导出 Markdown'}
+        </Button>
+        <Button
+          aria-label="导出 JSON"
+          disabled={!hasExportableSegments || isCreating}
+          onClick={() => onCreateExport('json')}
+          type="button"
+          variant="outline"
+        >
+          <Download className="size-4" />
+          {isCreating && exportState.format === 'json' ? '生成中' : '导出 JSON'}
+        </Button>
+      </div>
+      {exportState.status === 'success' ? (
+        <div
+          className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-950"
+          role="status"
+        >
+          <span>导出已生成</span>
+          <a
+            className="font-medium underline underline-offset-4"
+            href={exportState.exportResponse.download_url}
+            rel="noreferrer"
+            target="_blank"
+          >
+            下载 {exportFormatLabel(exportState.exportResponse.format)}
+          </a>
+        </div>
+      ) : null}
+      {exportState.status === 'error' ? (
+        <div
+          className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950"
+          role="alert"
+        >
+          {exportState.message}
+        </div>
+      ) : null}
+    </section>
   )
 }
 
@@ -403,6 +520,20 @@ function accessErrorMessage(status: number): string {
     return '归档不存在或访问链接已失效'
   }
   return '归档暂时无法加载'
+}
+
+function exportErrorMessage(error: unknown): string {
+  if (error instanceof ArchiveAccessError && error.status === 409) {
+    return '暂无可导出的 final 片段'
+  }
+  if (error instanceof ArchiveAccessError && error.status === 404) {
+    return '归档不存在或访问链接已失效'
+  }
+  return '导出暂时不可用，请稍后重试'
+}
+
+function exportFormatLabel(format: ArchiveExportFormat): string {
+  return format === 'markdown' ? 'Markdown' : 'JSON'
 }
 
 function endReasonLabel(reason: string): string {

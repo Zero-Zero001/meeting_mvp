@@ -32,8 +32,13 @@ _FORBIDDEN_PAYLOAD_KEY_PARTS = (
 )
 _FORBIDDEN_EXACT_PAYLOAD_KEYS = (
     "chinese_text",
+    "cos_object_key",
+    "cos_url",
+    "download_url",
     "english_text",
+    "object_key",
     "query",
+    "signed_url",
     "text",
 )
 
@@ -57,6 +62,8 @@ class UsageEventType(StrEnum):
     SESSION_CLOSED = "session_closed"
     ARCHIVE_SEARCHED = "archive_searched"
     SEGMENT_COPIED = "segment_copied"
+    EXPORT_CREATED = "export_created"
+    EXPORT_FAILED = "export_failed"
 
 
 STEP_21_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
@@ -81,6 +88,11 @@ STEP_23_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
     *STEP_21_USAGE_EVENT_TYPES,
     UsageEventType.ARCHIVE_SEARCHED,
     UsageEventType.SEGMENT_COPIED,
+)
+STEP_24_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
+    *STEP_23_USAGE_EVENT_TYPES,
+    UsageEventType.EXPORT_CREATED,
+    UsageEventType.EXPORT_FAILED,
 )
 
 
