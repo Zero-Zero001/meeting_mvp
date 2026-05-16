@@ -10,6 +10,7 @@ test('renders archive page from session id and token', async ({ page }) => {
         },
       },
     })
+    let archiveFetchCount = 0
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.includes('/exports')) {
@@ -40,6 +41,8 @@ test('renders archive page from session id and token', async ({ page }) => {
         }
         return new Response(null, { status: 204 })
       }
+      const includeCompletedRetry = archiveFetchCount > 0
+      archiveFetchCount += 1
       return new Response(
         JSON.stringify({
           capture_mode: 'tab_audio',
@@ -71,6 +74,19 @@ test('renders archive page from session id and token', async ({ page }) => {
               speaker_label: null,
               start_ms: 4100,
               translation_status: 'completed',
+            },
+            {
+              chinese_text_final: includeCompletedRetry ? 'Retried Chinese final' : '',
+              end_ms: 9800,
+              english_text_final: 'We should revisit the customer escalation.',
+              is_key_sentence: false,
+              segment_id: '55555555-5555-4555-8555-555555555555',
+              sequence: 3,
+              speaker_label: null,
+              start_ms: 7600,
+              translation_retry_attempts: 1,
+              translation_retry_exhausted: false,
+              translation_status: includeCompletedRetry ? 'completed' : 'failed',
             },
           ],
           session_id: '11111111-1111-4111-8111-111111111111',
@@ -118,6 +134,70 @@ test('renders archive page from session id and token', async ({ page }) => {
     'href',
     'https://cos.example.test/private-download',
   )
+
+  const hasHorizontalOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  )
+  expect(hasHorizontalOverflow).toBe(false)
+})
+
+test('refreshes archive content when a background final retry completes', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    let archiveFetchCount = 0
+    window.fetch = async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/events')) {
+        return new Response(null, { status: 204 })
+      }
+      const retryCompleted = archiveFetchCount > 0
+      archiveFetchCount += 1
+      return new Response(
+        JSON.stringify({
+          capture_mode: 'tab_audio',
+          duration_seconds: 420,
+          end_reason: 'user_stopped',
+          ended_at: '2026-05-16T10:07:00Z',
+          quota_seconds_consumed: 420,
+          retention_expires_at: '2026-06-15T10:00:00Z',
+          segments: [
+            {
+              chinese_text_final: retryCompleted ? 'Retried Chinese final' : '',
+              end_ms: 9800,
+              english_text_final: 'We should revisit the customer escalation.',
+              is_key_sentence: false,
+              segment_id: '55555555-5555-4555-8555-555555555555',
+              sequence: 3,
+              speaker_label: null,
+              start_ms: 7600,
+              translation_retry_attempts: 1,
+              translation_retry_exhausted: false,
+              translation_status: retryCompleted ? 'completed' : 'failed',
+            },
+          ],
+          session_id: '11111111-1111-4111-8111-111111111111',
+          source_platform: 'google_meet',
+          started_at: '2026-05-16T10:00:00Z',
+          status: 'ended',
+        }),
+        {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        },
+      )
+    }
+  })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/archive/11111111-1111-4111-8111-111111111111?token=archive-token')
+
+  await expect(
+    page.getByText('We should revisit the customer escalation.'),
+  ).toBeVisible()
+  await expect(page.getByText('Retried Chinese final')).toBeVisible({
+    timeout: 7000,
+  })
 
   const hasHorizontalOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth > document.documentElement.clientWidth,

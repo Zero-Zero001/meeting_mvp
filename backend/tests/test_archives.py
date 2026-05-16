@@ -157,6 +157,8 @@ def make_segment(
     session_id: uuid.UUID,
     sequence: int,
     translation_status: TranslationStatus = TranslationStatus.COMPLETED,
+    translation_retry_attempts: int = 0,
+    translation_retry_exhausted: bool = False,
 ) -> ArchiveTranscriptSegmentRecord:
     return ArchiveTranscriptSegmentRecord(
         segment_id=uuid.uuid4(),
@@ -168,6 +170,8 @@ def make_segment(
         sequence=sequence,
         speaker_label=None,
         start_ms=(sequence - 1) * 2000,
+        translation_retry_attempts=translation_retry_attempts,
+        translation_retry_exhausted=translation_retry_exhausted,
         translation_status=translation_status,
     )
 
@@ -184,6 +188,8 @@ async def test_archive_service_returns_ordered_segments_and_view_event() -> None
             make_segment(
                 session_id=session.session_id,
                 sequence=3,
+                translation_retry_attempts=3,
+                translation_retry_exhausted=True,
                 translation_status=TranslationStatus.FAILED,
             ),
         ],
@@ -207,6 +213,8 @@ async def test_archive_service_returns_ordered_segments_and_view_event() -> None
     assert [segment.sequence for segment in archive.segments] == [1, 2, 3]
     assert archive.segments[0].english_text_final == "English final 1"
     assert archive.segments[2].translation_status == TranslationStatus.FAILED
+    assert archive.segments[2].translation_retry_attempts == 3
+    assert archive.segments[2].translation_retry_exhausted is True
     assert usage_events.records == [
         UsageEventRecord(
             client_id=session.client_id,
@@ -437,6 +445,10 @@ async def test_archive_endpoint_returns_archive_response() -> None:
     assert http_response.json()["session_id"] == str(session.session_id)
     assert http_response.json()["segments"][0]["english_text_final"] == (
         "English final 1"
+    )
+    assert http_response.json()["segments"][0]["translation_retry_attempts"] == 0
+    assert (
+        http_response.json()["segments"][0]["translation_retry_exhausted"] is False
     )
     assert service.calls == [(session.session_id, "archive-token")]
 

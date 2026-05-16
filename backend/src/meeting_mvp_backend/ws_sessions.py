@@ -48,6 +48,10 @@ from meeting_mvp_backend.translation_providers import (
     FinalTranslationRequest,
     InterimTranslationProvider,
 )
+from meeting_mvp_backend.translation_retries import (
+    TranslationRetryJob,
+    TranslationRetryQueue,
+)
 from meeting_mvp_backend.usage_events import (
     UsageEventRecorder,
     UsageEventType,
@@ -369,6 +373,7 @@ class WebSocketSessionOrchestrator:
         final_translation_provider_factory: (
             FinalTranslationProviderFactory | None
         ) = None,
+        translation_retry_queue: TranslationRetryQueue | None = None,
         usage_event_recorder: UsageEventRecorder | None = None,
     ) -> None:
         self._repository = repository
@@ -381,6 +386,7 @@ class WebSocketSessionOrchestrator:
         self._translation_min_interval_seconds = translation_min_interval_seconds
         self._translation_provider_factory = translation_provider_factory
         self._final_translation_provider_factory = final_translation_provider_factory
+        self._translation_retry_queue = translation_retry_queue
         self._usage_event_recorder = usage_event_recorder
 
     async def _record_usage_event(
@@ -1061,6 +1067,10 @@ class WebSocketSessionOrchestrator:
                 "translation_status": TranslationStatus.FAILED.value,
             },
         )
+        await self._enqueue_failed_final_translation_retry(
+            segment_id=segment_id,
+            state=state,
+        )
         if send_warning:
             await _send_server_message(
                 websocket,
@@ -1069,6 +1079,30 @@ class WebSocketSessionOrchestrator:
                     code=QWEN_FINAL_TRANSLATION_FAILED_CODE,
                     message="中文正式翻译失败，英文 final 已归档待重试。",
                 ),
+            )
+
+    async def _enqueue_failed_final_translation_retry(
+        self,
+        *,
+        segment_id: uuid.UUID,
+        state: WebSocketSessionState,
+    ) -> None:
+        if self._translation_retry_queue is None:
+            return
+        try:
+            await self._translation_retry_queue.enqueue(
+                TranslationRetryJob(
+                    due_at=self._clock(),
+                    segment_id=segment_id,
+                    session_id=state.session_id,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "translation_retry_enqueue_failed",
+                error_type=exc.__class__.__name__,
+                segment_id=str(segment_id),
+                session_id=str(state.session_id),
             )
 
     def _schedule_interim_translation(

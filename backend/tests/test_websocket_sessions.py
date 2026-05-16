@@ -23,6 +23,7 @@ from meeting_mvp_backend.main import app, get_websocket_session_orchestrator
 from meeting_mvp_backend.quota import QuotaDecision, QuotaDenialReason
 from meeting_mvp_backend.stt_providers import SttEvent, SttFinalEvent, SttInterimEvent
 from meeting_mvp_backend.translation_providers import FinalTranslationRequest
+from meeting_mvp_backend.translation_retries import InMemoryTranslationRetryQueue
 from meeting_mvp_backend.usage_events import UsageEventRecord, UsageEventType
 from meeting_mvp_backend.ws_sessions import (
     InMemorySessionResumeRegistry,
@@ -347,6 +348,7 @@ def make_client(
     stt_provider: FakeSttProvider | None = None,
     translation_min_interval_seconds: float = 0,
     translation_provider: FakeInterimTranslationProvider | None = None,
+    translation_retry_queue: InMemoryTranslationRetryQueue | None = None,
     final_translation_provider: FakeFinalTranslationProvider | None = None,
     usage_event_recorder: FakeUsageEventRecorder | None = None,
 ) -> TestClient:
@@ -367,6 +369,7 @@ def make_client(
                 if final_translation_provider
                 else None
             ),
+            translation_retry_queue=translation_retry_queue,
             translation_provider_factory=(
                 (lambda: translation_provider) if translation_provider else None
             ),
@@ -879,12 +882,14 @@ def test_final_translation_failure_archives_failed_segment_and_continues() -> No
             "预算审查调整到周五。",
         ],
     )
+    translation_retry_queue = InMemoryTranslationRetryQueue()
 
     with make_client(
         repository=repository,
         quota_service=quota_service,
         stt_provider=stt_provider,
         final_translation_provider=final_translation_provider,
+        translation_retry_queue=translation_retry_queue,
     ) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(session_start_payload(client_id))
@@ -913,6 +918,14 @@ def test_final_translation_failure_archives_failed_segment_and_continues() -> No
     assert (
         repository.transcript_segments[1].translation_status
         is TranslationStatus.COMPLETED
+    )
+    queued_jobs = asyncio.run(
+        translation_retry_queue.pop_due(now=FIXED_NOW, limit=10),
+    )
+    assert len(queued_jobs) == 1
+    assert queued_jobs[0].session_id == uuid.UUID(str(session_id))
+    assert queued_jobs[0].segment_id == uuid.UUID(
+        repository.transcript_segments[0].segment_id,
     )
 
 

@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import ArchivePage from './ArchivePage'
 import {
@@ -28,6 +28,8 @@ const archiveResponse: ArchiveResponse = {
       sequence: 1,
       speaker_label: null,
       start_ms: 0,
+      translation_retry_attempts: 0,
+      translation_retry_exhausted: false,
       translation_status: 'completed',
     },
   ],
@@ -46,7 +48,37 @@ const secondSegment: ArchiveSegment = {
   sequence: 2,
   speaker_label: null,
   start_ms: 4100,
+  translation_retry_attempts: 0,
+  translation_retry_exhausted: false,
   translation_status: 'completed',
+}
+
+const failedRetryPendingSegment: ArchiveSegment = {
+  chinese_text_final: '',
+  end_ms: 9800,
+  english_text_final: 'We should revisit the customer escalation.',
+  is_key_sentence: false,
+  segment_id: '55555555-5555-4555-8555-555555555555',
+  sequence: 3,
+  speaker_label: null,
+  start_ms: 7600,
+  translation_retry_attempts: 1,
+  translation_retry_exhausted: false,
+  translation_status: 'failed',
+}
+
+const retryingSegment: ArchiveSegment = {
+  ...failedRetryPendingSegment,
+  segment_id: '66666666-6666-4666-8666-666666666666',
+  translation_retry_attempts: 2,
+  translation_status: 'retrying',
+}
+
+const failedRetryExhaustedSegment: ArchiveSegment = {
+  ...failedRetryPendingSegment,
+  segment_id: '77777777-7777-4777-8777-777777777777',
+  translation_retry_attempts: 3,
+  translation_retry_exhausted: true,
 }
 
 const exportResponse: ArchiveExportResponse = {
@@ -60,6 +92,10 @@ const exportResponse: ArchiveExportResponse = {
 }
 
 describe('ArchivePage', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('renders bilingual final archive segments', async () => {
     const fetchArchiveFn = vi.fn().mockResolvedValue(archiveResponse)
 
@@ -389,5 +425,101 @@ describe('ArchivePage', () => {
       '暂无可导出的 final 片段',
     )
     expect(screen.getByText('我们需要在周五前对齐上线时间。')).toBeInTheDocument()
+  })
+
+  it('shows background retry states for failed and retrying segments', async () => {
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue({
+          ...archiveResponse,
+          segments: [
+            failedRetryPendingSegment,
+            retryingSegment,
+            failedRetryExhaustedSegment,
+          ],
+        } satisfies ArchiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    expect(await screen.findByText('等待后台补译')).toBeInTheDocument()
+    expect(screen.getByText('后台补译中')).toBeInTheDocument()
+    expect(screen.getByText('补译失败')).toBeInTheDocument()
+    expect(screen.getAllByText('中文 final 暂不可用')).toHaveLength(3)
+  })
+
+  it('polls the archive while background retries are pending and fills Chinese final', async () => {
+    const fetchArchiveFn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...archiveResponse,
+        segments: [failedRetryPendingSegment],
+      } satisfies ArchiveResponse)
+      .mockResolvedValueOnce({
+        ...archiveResponse,
+        segments: [
+          {
+            ...failedRetryPendingSegment,
+            chinese_text_final: '我们应该重新评估客户升级问题。',
+            translation_retry_attempts: 1,
+            translation_retry_exhausted: false,
+            translation_status: 'completed',
+          },
+        ],
+      } satisfies ArchiveResponse)
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={fetchArchiveFn}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        retryPollingIntervalMs={10}
+      />,
+    )
+
+    expect(await screen.findByText('等待后台补译')).toBeInTheDocument()
+
+    await waitFor(() => expect(fetchArchiveFn).toHaveBeenCalledTimes(2))
+    expect(
+      await screen.findByText('我们应该重新评估客户升级问题。'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('翻译完成')).toBeInTheDocument()
+  })
+
+  it('keeps archive content when retry polling fails', async () => {
+    const fetchArchiveFn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ...archiveResponse,
+        segments: [retryingSegment],
+      } satisfies ArchiveResponse)
+      .mockRejectedValue(new Error('network down'))
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={fetchArchiveFn}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        retryPollingIntervalMs={10}
+      />,
+    )
+
+    expect(await screen.findByText('后台补译中')).toBeInTheDocument()
+
+    await waitFor(() =>
+      expect(fetchArchiveFn.mock.calls.length).toBeGreaterThanOrEqual(2),
+    )
+    expect(screen.getByText('后台补译中')).toBeInTheDocument()
+    expect(
+      screen.getByText('We should revisit the customer escalation.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('归档暂时无法加载')).not.toBeInTheDocument()
   })
 })

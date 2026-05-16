@@ -1349,7 +1349,67 @@
 
 ### 后续注意
 
-- Step 25 必须等待用户明确允许后再开始；当前没有 final 翻译重试、重试次数、重试 API、后台补译或失败片段自动更新。
+- Step 24 完成时 Step 25 仍需等待用户明确允许；后台自动补译、重试次数派生和失败片段自动刷新已在 Step 25 补齐，仍未新增公开手动 retry API。
 - 本地没有运行真实 COS smoke；真实 COS 上传和短期签名 URL 仍需在 Lighthouse 后端容器中使用安全环境变量执行 gated smoke，不能在本地或文档中输出任何密钥或签名 URL。
 - `export_created` / `export_failed` 只保存安全元数据；不得把 COS object key、短期下载地址、archive token、会议正文、译文、IP/User-Agent 明文或密钥写入 usage event。
 - `export_file.cos_url` 存放本次生成的短期访问地址字段；COS 对象仍保持私有，前端只能通过后端返回的短期下载地址下载。
+
+## 2026-05-16 Step 25：后台 Final 补译队列
+
+### 本次完成
+
+- 只推进用户明确指定的 Step 25，未开始 Step 26；本步不实现重点句增强、时间线增强、新导出能力、公开手动 retry API 或数据库 migration。
+- 新增后端 `backend/src/meeting_mvp_backend/translation_retries.py`：
+  - 定义 Redis-backed 补译队列、`TranslationRetryWorker`、`TranslationRetryProcessor`、SQLAlchemy repository、`InMemoryTranslationRetryQueue` 测试 fake 和安全 job 模型。
+  - Redis scheduled set key 固定为 `meeting_mvp:translation_retry:scheduled`，segment lock key 固定为 `meeting_mvp:translation_retry:lock:{segment_id}`。
+  - Redis job 只保存 `session_id`、`segment_id` 和 `due_at`，不保存英文正文、中文译文、token、URL、object key、密钥或用户隐私。
+  - 默认最多 3 次后台补译，固定退避为 30 秒、300 秒、900 秒；后续如需运营化再配置化。
+  - processor 从数据库读取 failed/retrying 片段，携带原英文 final 与目标片段前最近 5 条已完成双语上下文复用现有 Qwen final provider。
+  - 状态流转为 `failed -> retrying -> completed`；provider 失败时恢复 `failed`，未达最大次数则按退避重新入队，达到最大次数后停止自动重试。
+- 接入现有 WebSocket 链路：
+  - `backend/src/meeting_mvp_backend/ws_sessions.py` 在 Qwen final 首次失败并写入 failed `transcript_segment` 后，将该 `segment_id` 入队；入队失败只记录 warning，不中断 WebSocket 主流程。
+  - `backend/src/meeting_mvp_backend/main.py` 在 FastAPI lifespan 中按条件启动后台 worker：需要 `DATABASE_URL`、`REDIS_URL`、非 local 环境且 Qwen final 配置完整。
+  - worker 启动时会扫描未过期 session 下的 failed/retrying 片段并补加入队，覆盖进程重启、Redis job 丢失或历史失败片段。
+  - 应用关闭时会 cancel worker task 并关闭 Redis queue 资源。
+- 扩展 `backend/src/meeting_mvp_backend/usage_events.py`：
+  - 新增 `translation_final_retry_requested`、`translation_final_retry_failed` 和 `STEP_25_USAGE_EVENT_TYPES`。
+  - 补译成功沿用 `translation_final_completed`，payload 增加 `retry=true`、`attempt_number`、`segment_id`、`sequence`、`english_length`、`chinese_length`、`context_segment_count` 等安全元数据。
+  - 失败事件只记录 `attempt_number`、`stage`、`error_type`、`will_retry`、`max_attempts` 等安全元数据；usage event 写入失败不阻断补译主流程。
+  - payload 安全校验继续拒绝 token、archive URL、下载 URL、object key、正文、译文、provider 原始错误、密钥、音频和隐私字段。
+- 扩展归档 API 与前端归档页：
+  - `GET /api/archives/{session_id}` 的 segment 响应新增 `translation_retry_attempts` 和 `translation_retry_exhausted`，从 `usage_event` 派生，不新增表字段。
+  - `frontend/src/api/archives.ts` 的 Zod schema 支持新增字段；旧响应缺字段时默认 `0` / `false`。
+  - `frontend/src/archive/ArchivePage.tsx` 对 `retrying` 显示“后台补译中”，对 `failed` 且未 exhausted 显示“等待后台补译”，对 exhausted 显示“补译失败”。
+  - 归档页在存在 failed/retrying 且未 exhausted 片段时轻量 polling 重新拉取归档；polling 失败保留当前归档内容，不影响搜索、复制和导出。
+- 扩展测试文件：
+  - `backend/tests/test_translation_retries.py`
+  - `backend/tests/test_usage_events.py`
+  - `backend/tests/test_archives.py`
+  - `backend/tests/test_websocket_sessions.py`
+  - `frontend/src/api/archives.test.ts`
+  - `frontend/src/archive/ArchivePage.test.tsx`
+  - `frontend/e2e/archive.spec.ts`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 25 后端 RED | `uv run pytest tests/test_usage_events.py tests/test_archives.py tests/test_translation_retries.py -q` | 首次 2 errors：缺少 `STEP_25_USAGE_EVENT_TYPES` 和 `meeting_mvp_backend.translation_retries` |
+| Step 25 后端目标 GREEN | 同上 | 47 passed |
+| WebSocket 入队目标测试 | `uv run pytest tests/test_websocket_sessions.py::test_final_translation_failure_archives_failed_segment_and_continues -q` | 1 passed |
+| Step 25 前端目标测试 | `npm run test -- src/api/archives.test.ts src/archive/ArchivePage.test.tsx` | 2 个测试文件、25 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 40 source files` |
+| 后端 pytest | `uv run pytest` | 151 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 13 个测试文件、105 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 26 必须等待用户明确允许后再开始；当前没有重点句增强、时间线增强或新的导出能力。
+- Step 25 不新增公开手动 retry API；自动补译触发源是后端 final 失败入队、worker 启动扫描和 Redis 到期 job。
+- retry attempt 次数和 exhausted 状态从安全 `usage_event` 派生；`transcript_segment` 只复用既有 `translation_status=failed|retrying|completed`。
+- 本地 local 环境默认不启动真实 Qwen worker；真实后台补译仍需在 Lighthouse/生产后端容器中通过安全环境变量和非 local 环境验证。

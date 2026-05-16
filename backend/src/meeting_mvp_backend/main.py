@@ -1,5 +1,6 @@
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Annotated, cast
 from uuid import UUID
 
@@ -47,6 +48,12 @@ from meeting_mvp_backend.translation_providers import (
     create_qwen_final_translation_provider_from_settings,
     create_qwen_interim_translation_provider_from_settings,
 )
+from meeting_mvp_backend.translation_retries import (
+    SQLAlchemyTranslationRetryRepository,
+    TranslationRetryProcessor,
+    TranslationRetryWorker,
+    create_redis_translation_retry_queue_from_settings,
+)
 from meeting_mvp_backend.usage_events import SQLAlchemyUsageEventRecorder
 from meeting_mvp_backend.ws_sessions import (
     SQLAlchemyMeetingSessionRepository,
@@ -64,10 +71,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_engine(settings.database_url)
         app.state.db_engine = engine
         app.state.db_session_factory = create_session_factory(engine)
+    if _should_start_translation_retry_worker(settings) and hasattr(
+        app.state,
+        "db_session_factory",
+    ):
+        retry_queue = create_redis_translation_retry_queue_from_settings(settings)
+        app.state.translation_retry_queue = retry_queue
+        retry_processor = TranslationRetryProcessor(
+            final_translation_provider_factory=(
+                lambda: create_qwen_final_translation_provider_from_settings(settings)
+            ),
+            queue=retry_queue,
+            repository=SQLAlchemyTranslationRetryRepository(
+                app.state.db_session_factory,
+            ),
+            usage_event_recorder=SQLAlchemyUsageEventRecorder(
+                session_factory=app.state.db_session_factory,
+            ),
+        )
+        retry_worker = TranslationRetryWorker(
+            processor=retry_processor,
+            queue=retry_queue,
+        )
+        app.state.translation_retry_worker_task = asyncio.create_task(
+            retry_worker.run_forever(),
+        )
     logger.info("settings_loaded", settings=settings_status(settings))
     try:
         yield
     finally:
+        if hasattr(app.state, "translation_retry_worker_task"):
+            retry_task = app.state.translation_retry_worker_task
+            retry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retry_task
+        if hasattr(app.state, "translation_retry_queue"):
+            await app.state.translation_retry_queue.close()
         if hasattr(app.state, "db_engine"):
             await app.state.db_engine.dispose()
 
@@ -241,6 +280,11 @@ def get_websocket_session_orchestrator(
             if settings.app_env is AppEnv.LOCAL
             else lambda: create_qwen_final_translation_provider_from_settings(settings)
         ),
+        translation_retry_queue=getattr(
+            websocket.app.state,
+            "translation_retry_queue",
+            None,
+        ),
         translation_provider_factory=(
             (lambda: create_qwen_interim_translation_provider_from_settings(settings))
             if settings.app_env is not AppEnv.LOCAL and settings.qwen_interim_enabled
@@ -366,3 +410,16 @@ async def websocket_session_endpoint(
     ],
 ) -> None:
     await orchestrator.handle(websocket)
+
+
+def _should_start_translation_retry_worker(settings: Settings) -> bool:
+    return (
+        settings.app_env is not AppEnv.LOCAL
+        and settings.database_url is not None
+        and settings.redis_url is not None
+        and settings.qwen_api_key is not None
+        and settings.qwen_api_key.strip() != ""
+        and settings.qwen_base_url is not None
+        and settings.qwen_base_url.strip() != ""
+        and settings.qwen_final_model.strip() != ""
+    )

@@ -970,7 +970,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `export_file` 成为导出审计和清理入口：记录导出格式、COS object key、当前短期 URL 字段、创建时间和导出保留时间；COS 对象仍保持私有。
 - `usage_event` 新增 `export_created` 和 `export_failed`，继续作为观测数据。写入失败不影响导出成功响应，导出失败也只记录安全元数据。
 - 前端归档页在已加载 archive response 上增加导出工具区：Markdown/JSON 按钮、空归档禁用态、成功下载链接和失败提示。导出成功不会自动跳转，也不会清空搜索、复制或已加载归档内容。
-- Step 25 未开始：当前没有 final 翻译重试、补译任务、重试 API、重试 UI 或失败片段自动刷新。
+- Step 24 完成时尚未实现 final 翻译重试、补译任务、重试 UI 或失败片段自动刷新；后台自动补译已在 Step 25 补齐，且仍未新增公开手动 retry API。
 
 ### 文件作用
 
@@ -1002,4 +1002,56 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 141 passed，13 integration deselected。
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、101 个测试通过，E2E 为 10 个 Chromium 测试通过。
 - 真实 COS smoke 未在 Windows 本地执行；应在 Lighthouse 后端容器中使用安全环境变量 gated 运行，且不得输出密钥或短期签名 URL。
-- Step 25 未开始；当前没有 final 翻译重试或补译链路。
+- Step 24 验证时尚未开始 final 翻译重试；后台自动补译链路已在 Step 25 补齐。
+
+## 2026-05-16 Step 25 后台 Final 补译队列
+
+### 架构状态
+- Step 25 实现 F13 的后台自动补译路径：Qwen final 首次失败后，后端把 failed `transcript_segment` 自动入队，由后台 worker 复用现有 Qwen final provider 补译，成功后更新归档。
+- 本步不新增数据库 migration、不新增公开手动 retry API、不新增前端事件上报 API；重试次数、失败原因和 exhausted 状态只从安全 `usage_event` 元数据派生。
+- 新增 `translation_retries` 模块作为补译队列边界，包含 Redis queue、worker、processor、SQLAlchemy repository 和测试 fake；本地 local 环境默认不启动真实 worker。
+- Redis scheduled set key 固定为 `meeting_mvp:translation_retry:scheduled`；segment lock key 固定为 `meeting_mvp:translation_retry:lock:{segment_id}`，用于避免多个 worker 并发处理同一片段。
+- Redis job 只保存 `session_id`、`segment_id`、`due_at`，不保存英文正文、中文译文、archive token、archive URL、COS object key、签名 URL、密钥或用户隐私。
+- 补译 processor 从 PostgreSQL 读取 failed/retrying 片段，携带原英文 final 与目标片段前最近 5 条已完成双语上下文调用 `FinalTranslationProvider`；不会从 Redis job 或 usage event 读取正文。
+- 状态流转复用既有 `transcript_segment.translation_status`：`failed -> retrying -> completed`；provider 失败时恢复 `failed`，未达 3 次上限则按固定退避重新入队，达到上限后停止自动重试。
+- FastAPI lifespan 只在 `DATABASE_URL`、`REDIS_URL`、非 local 环境且 Qwen final 配置完整时启动 worker；启动时扫描未过期 session 下的 failed/retrying 片段并补加入队，关闭应用时 cancel worker 并释放 Redis queue。
+- WebSocket 会话编排在 Qwen final 首次失败并写入 failed 片段后入队；入队失败只记录 warning，不影响 WebSocket、归档或额度结算主流程。
+- 归档 API segment 响应新增 `translation_retry_attempts` 与 `translation_retry_exhausted`，均从 `usage_event` 派生，不新增表字段。
+- 前端归档页继续使用现有 GET API：显示等待后台补译、后台补译中、补译失败和翻译完成状态；存在 pending/retrying 片段时 polling 重新拉取归档，失败时保留当前内容。
+- Step 26 未开始：当前没有重点句增强、时间线增强或新的导出能力。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/translation_retries.py` | Step 25 后端补译核心模块。定义 `TranslationRetryJob`、Redis-backed queue、`TranslationRetryWorker`、`TranslationRetryProcessor`、SQLAlchemy repository、测试 fake、Redis key 常量、最大尝试次数和固定退避策略。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | WebSocket 会话编排层。Step 25 在 Qwen final 首次失败并归档 failed 片段后调用补译 queue 入队；入队失败只记录脱敏 warning，不阻断会话主流程。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI ASGI 入口。Step 25 在 lifespan 中按配置条件创建 Redis queue、SQLAlchemy repository、Qwen final provider factory 和 worker task；关闭时 cancel worker 并关闭 queue。 |
+| `backend/src/meeting_mvp_backend/archives.py` | 后端归档业务模块。Step 25 在 segment 响应中增加 retry metadata，并通过 `usage_event` 派生 retry attempts/exhausted；归档片段顺序仍按 `sequence` 升序。 |
+| `backend/src/meeting_mvp_backend/usage_events.py` | usage event 核心模块。Step 25 新增 `translation_final_retry_requested`、`translation_final_retry_failed` 和 `STEP_25_USAGE_EVENT_TYPES`，并继续执行 payload 安全校验。 |
+| `backend/src/meeting_mvp_backend/translation_providers.py` | Qwen final provider 所在模块。Step 25 processor 复用既有 `FinalTranslationProvider`、`FinalTranslationRequest` 和最近 5 条上下文结构，不新增 provider 协议。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 数据库模型。Step 25 复用既有 `TranscriptSegment.translation_status=failed|retrying|completed`、`UsageEvent` 和 `MeetingSession.retention_expires_at`，不新增 schema。 |
+| `backend/tests/test_translation_retries.py` | 补译队列/processor 单元测试。覆盖安全 job、去重、到期拉取、segment lock、成功补译、provider 失败重入队、最大次数停止、启动扫描和 usage event best-effort。 |
+| `backend/tests/test_archives.py` | 归档服务/API 测试。Step 25 扩展覆盖 `translation_retry_attempts` 和 `translation_retry_exhausted` 派生字段。 |
+| `backend/tests/test_usage_events.py` | usage event 测试。覆盖 Step 25 allowlist 和 token、正文、译文、URL、object key、密钥、音频字段拒绝。 |
+| `backend/tests/test_websocket_sessions.py` | WebSocket 会话测试。Step 25 扩展 Qwen final 失败场景，确认 failed segment 会被补译 queue 接收。 |
+| `frontend/src/api/archives.ts` | 前端归档 API client。Step 25 扩展 Zod schema 支持 retry metadata；旧后端响应缺字段时使用默认值。 |
+| `frontend/src/archive/ArchivePage.tsx` | 前端归档页。Step 25 展示补译等待/进行中/失败/完成状态，并在有未 exhausted 的 failed/retrying 片段时 polling 拉取最新归档。 |
+| `frontend/src/api/archives.test.ts` | 前端 API client 测试。覆盖 retry metadata 解析和旧响应默认值。 |
+| `frontend/src/archive/ArchivePage.test.tsx` | 归档页组件测试。覆盖补译状态文案、polling 成功补齐中文 final、polling 失败保留内容。 |
+| `frontend/e2e/archive.spec.ts` | Playwright 归档页 smoke test。Step 25 增加 failed 片段自动刷新为 completed 的浏览器路径验证，并继续检查无水平溢出。 |
+
+### 数据与安全边界
+- `translation_final_retry_requested` payload 只保存 `attempt_number`、`segment_id`、`sequence`、`english_length`、`context_segment_count`、`max_attempts` 等元数据，不保存英文正文或上下文正文。
+- 补译成功沿用 `translation_final_completed`，payload 新增 `retry=true`、`attempt_number`、`segment_id`、`sequence`、`english_length`、`chinese_length`、`context_segment_count` 等安全元数据。
+- `translation_final_retry_failed` payload 只保存 `attempt_number`、`stage`、`error_type`、`will_retry`、`max_attempts` 等元数据，不保存 provider 原始错误正文、URL、token、正文、译文或密钥。
+- retry attempts 和 exhausted 状态来自 `usage_event` 聚合，因此不会改变 `transcript_segment` schema；归档 API 只返回派生整数和布尔值。
+- usage event 写入失败不影响补译主流程；队列入队失败不影响 WebSocket 主流程；polling 失败不影响归档阅读、搜索、复制或导出。
+- Redis 只保存短期调度元数据，PostgreSQL 仍是正式 final 文本和归档来源；第一版仍默认不保存原始会议音频。
+
+### 验证结论
+- Step 25 已按 TDD 先跑 RED：后端缺少 Step 25 事件集合和 `translation_retries` 模块，前端缺少 retry metadata 和 polling 行为；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 151 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、105 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
+- Step 26 未开始；当前没有重点句增强、时间线增强或新的导出能力。

@@ -12,6 +12,7 @@ from meeting_mvp_backend.usage_events import (
     STEP_21_USAGE_EVENT_TYPES,
     STEP_23_USAGE_EVENT_TYPES,
     STEP_24_USAGE_EVENT_TYPES,
+    STEP_25_USAGE_EVENT_TYPES,
     SQLAlchemyUsageEventRecorder,
     UnsafeUsageEventPayload,
     UsageEventRecord,
@@ -105,6 +106,14 @@ def test_step_24_event_types_extend_usage_event_allowlist() -> None:
     }
 
 
+def test_step_25_event_types_extend_usage_event_allowlist() -> None:
+    assert {event_type.value for event_type in STEP_25_USAGE_EVENT_TYPES} == {
+        *{event_type.value for event_type in STEP_24_USAGE_EVENT_TYPES},
+        "translation_final_retry_requested",
+        "translation_final_retry_failed",
+    }
+
+
 def test_build_usage_event_record_populates_required_fields_for_each_event() -> None:
     client_id = str(uuid.uuid4())
     session_id = uuid.uuid4()
@@ -143,6 +152,8 @@ def test_build_usage_event_record_populates_required_fields_for_each_event() -> 
         {"cos_url": "https://example.test/export.md"},
         {"object_key": "exports/session/export.md"},
         {"cos_object_key": "exports/session/export.md"},
+        {"translation_text": "正式译文"},
+        {"raw_provider_error": "Qwen returned a verbose error"},
         {"frame": b"\x00\x01"},
         {"items": [{"private_key": "secret-value"}]},
     ],
@@ -162,6 +173,8 @@ def test_usage_event_payload_keeps_safe_observability_metadata() -> None:
             "provider": "qwen_final_translation",
             "nested": {"text_length": 42, "has_confidence": False},
             "signed_url_ttl_seconds": 3600,
+            "attempt_number": 2,
+            "will_retry": True,
         },
     ) == {
         "remaining_seconds_today": 1800,
@@ -169,6 +182,8 @@ def test_usage_event_payload_keeps_safe_observability_metadata() -> None:
         "provider": "qwen_final_translation",
         "nested": {"text_length": 42, "has_confidence": False},
         "signed_url_ttl_seconds": 3600,
+        "attempt_number": 2,
+        "will_retry": True,
     }
 
 

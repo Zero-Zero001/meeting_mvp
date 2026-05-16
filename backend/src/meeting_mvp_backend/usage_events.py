@@ -38,8 +38,10 @@ _FORBIDDEN_EXACT_PAYLOAD_KEYS = (
     "english_text",
     "object_key",
     "query",
+    "raw_provider_error",
     "signed_url",
     "text",
+    "translation_text",
 )
 
 
@@ -64,6 +66,8 @@ class UsageEventType(StrEnum):
     SEGMENT_COPIED = "segment_copied"
     EXPORT_CREATED = "export_created"
     EXPORT_FAILED = "export_failed"
+    TRANSLATION_FINAL_RETRY_REQUESTED = "translation_final_retry_requested"
+    TRANSLATION_FINAL_RETRY_FAILED = "translation_final_retry_failed"
 
 
 STEP_21_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
@@ -93,6 +97,11 @@ STEP_24_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
     *STEP_23_USAGE_EVENT_TYPES,
     UsageEventType.EXPORT_CREATED,
     UsageEventType.EXPORT_FAILED,
+)
+STEP_25_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
+    *STEP_24_USAGE_EVENT_TYPES,
+    UsageEventType.TRANSLATION_FINAL_RETRY_REQUESTED,
+    UsageEventType.TRANSLATION_FINAL_RETRY_FAILED,
 )
 
 

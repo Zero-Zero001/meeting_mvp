@@ -61,6 +61,8 @@ class ArchiveTranscriptSegmentRecord:
     chinese_text_final: str
     translation_status: TranslationStatus
     is_key_sentence: bool
+    translation_retry_attempts: int = 0
+    translation_retry_exhausted: bool = False
 
 
 class ArchiveSegmentResponse(BaseModel):
@@ -75,6 +77,8 @@ class ArchiveSegmentResponse(BaseModel):
     chinese_text_final: str
     translation_status: TranslationStatus
     is_key_sentence: bool
+    translation_retry_attempts: int = 0
+    translation_retry_exhausted: bool = False
 
 
 class ArchiveResponse(BaseModel):
@@ -174,6 +178,10 @@ class SQLAlchemyArchiveRepository:
                 .order_by(TranscriptSegment.sequence),
             )
             models = list(result)
+            retry_metadata = await _translation_retry_metadata_by_segment_id(
+                session=session,
+                session_id=session_id,
+            )
         return [
             ArchiveTranscriptSegmentRecord(
                 chinese_text_final=model.chinese_text_final,
@@ -185,6 +193,11 @@ class SQLAlchemyArchiveRepository:
                 session_id=model.session_id,
                 speaker_label=model.speaker_label,
                 start_ms=model.start_ms,
+                translation_retry_attempts=retry_metadata.get(model.id, (0, False))[0],
+                translation_retry_exhausted=retry_metadata.get(
+                    model.id,
+                    (0, False),
+                )[1],
                 translation_status=model.translation_status,
             )
             for model in models
@@ -255,6 +268,8 @@ class ArchiveService:
                     sequence=segment.sequence,
                     speaker_label=segment.speaker_label,
                     start_ms=segment.start_ms,
+                    translation_retry_attempts=segment.translation_retry_attempts,
+                    translation_retry_exhausted=segment.translation_retry_exhausted,
                     translation_status=segment.translation_status,
                 )
                 for segment in segments
@@ -365,3 +380,45 @@ class ArchiveService:
 
 def _now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+async def _translation_retry_metadata_by_segment_id(
+    *,
+    session: AsyncSession,
+    session_id: uuid.UUID,
+) -> dict[uuid.UUID, tuple[int, bool]]:
+    result = await session.scalars(
+        select(UsageEvent).where(
+            UsageEvent.session_id == session_id,
+            UsageEvent.event_type.in_(
+                [
+                    UsageEventType.TRANSLATION_FINAL_RETRY_REQUESTED.value,
+                    UsageEventType.TRANSLATION_FINAL_RETRY_FAILED.value,
+                ],
+            ),
+        ),
+    )
+    metadata: dict[uuid.UUID, tuple[int, bool]] = {}
+    for event in result:
+        if not isinstance(event.payload, dict):
+            continue
+        raw_segment_id = event.payload.get("segment_id")
+        if not isinstance(raw_segment_id, str):
+            continue
+        try:
+            segment_id = uuid.UUID(raw_segment_id)
+        except ValueError:
+            continue
+        raw_attempt_number = event.payload.get("attempt_number")
+        attempt_number = (
+            raw_attempt_number
+            if isinstance(raw_attempt_number, int) and raw_attempt_number >= 0
+            else 0
+        )
+        current_attempts, current_exhausted = metadata.get(segment_id, (0, False))
+        exhausted = current_exhausted or (
+            event.event_type == UsageEventType.TRANSLATION_FINAL_RETRY_FAILED.value
+            and event.payload.get("will_retry") is False
+        )
+        metadata[segment_id] = (max(current_attempts, attempt_number), exhausted)
+    return metadata

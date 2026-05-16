@@ -47,6 +47,7 @@ type ArchivePageProps = {
   fetchArchiveFn?: FetchArchiveFn
   location?: LocationLike
   recordArchiveEventFn?: RecordArchiveEventFn
+  retryPollingIntervalMs?: number
   writeClipboardTextFn?: WriteClipboardTextFn
 }
 
@@ -65,6 +66,7 @@ function ArchivePage({
   fetchArchiveFn = fetchArchive,
   location = window.location,
   recordArchiveEventFn = recordArchiveEvent,
+  retryPollingIntervalMs = 5000,
   writeClipboardTextFn = writeClipboardText,
 }: ArchivePageProps) {
   const access = useMemo(() => parseArchiveLocation(location), [location])
@@ -136,6 +138,45 @@ function ArchivePage({
       window.clearTimeout(timeoutId)
     }
   }, [access, recordArchiveEventFn, searchQuery, state])
+
+  useEffect(() => {
+    if (
+      !access.ok ||
+      state.status !== 'ready' ||
+      !hasPendingTranslationRetries(state.archive)
+    ) {
+      return
+    }
+
+    let ignore = false
+    let requestInFlight = false
+    const intervalId = window.setInterval(() => {
+      if (requestInFlight) {
+        return
+      }
+      requestInFlight = true
+      void Promise.resolve(
+        fetchArchiveFn({
+          sessionId: access.sessionId,
+          token: access.token,
+        }),
+      )
+        .then((archive) => {
+          if (!ignore) {
+            setState({ archive, status: 'ready' })
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          requestInFlight = false
+        })
+    }, retryPollingIntervalMs)
+
+    return () => {
+      ignore = true
+      window.clearInterval(intervalId)
+    }
+  }, [access, fetchArchiveFn, retryPollingIntervalMs, state])
 
   async function handleCopySegment(segment: ArchiveSegment): Promise<void> {
     if (!access.ok) {
@@ -420,7 +461,7 @@ function ArchiveSegmentArticle({
       <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3 text-xs text-muted-foreground">
         <span>{formatTimestamp(segment.start_ms)} - {formatTimestamp(segment.end_ms)}</span>
         <span>片段 {segment.sequence}</span>
-        <span>{translationStatusLabel(segment.translation_status)}</span>
+        <span>{translationStatusLabel(segment)}</span>
         {segment.is_key_sentence ? (
           <span className="rounded-sm border border-zinc-300 px-2 py-0.5 font-medium text-zinc-950">
             重点句
@@ -573,16 +614,25 @@ function sourcePlatformLabel(platform: ArchiveResponse['source_platform']): stri
 }
 
 function translationStatusLabel(
-  status: ArchiveSegment['translation_status'],
+  segment: ArchiveSegment,
 ): string {
-  switch (status) {
+  switch (segment.translation_status) {
     case 'completed':
       return '翻译完成'
     case 'failed':
-      return '翻译失败'
+      return segment.translation_retry_exhausted ? '补译失败' : '等待后台补译'
     case 'retrying':
-      return '重试中'
+      return '后台补译中'
   }
+}
+
+function hasPendingTranslationRetries(archive: ArchiveResponse): boolean {
+  return archive.segments.some(
+    (segment) =>
+      segment.translation_status === 'retrying' ||
+      (segment.translation_status === 'failed' &&
+        !segment.translation_retry_exhausted),
+  )
 }
 
 function formatDuration(seconds: number): string {

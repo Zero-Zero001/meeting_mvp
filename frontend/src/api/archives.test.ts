@@ -71,6 +71,41 @@ describe('archives API', () => {
     expect(archive.session_id).toBe('11111111-1111-4111-8111-111111111111')
     expect(archive.segments[0].sequence).toBe(1)
     expect(archive.segments[0].english_text_final).toContain('launch timeline')
+    expect(archive.segments[0].translation_retry_attempts).toBe(0)
+    expect(archive.segments[0].translation_retry_exhausted).toBe(false)
+  })
+
+  it('parses retry metadata when backend reports background translation status', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...archivePayload,
+          segments: [
+            {
+              ...archivePayload.segments[0],
+              chinese_text_final: '',
+              translation_retry_attempts: 2,
+              translation_retry_exhausted: true,
+              translation_status: 'failed',
+            },
+          ],
+        }),
+        {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        },
+      ),
+    )
+
+    const archive = await fetchArchive({
+      fetchFn,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+
+    expect(archive.segments[0].translation_status).toBe('failed')
+    expect(archive.segments[0].translation_retry_attempts).toBe(2)
+    expect(archive.segments[0].translation_retry_exhausted).toBe(true)
   })
 
   it('throws a typed access error for non-2xx responses', async () => {

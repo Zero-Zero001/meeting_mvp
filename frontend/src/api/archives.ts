@@ -12,6 +12,8 @@ const archiveSegmentSchema = z.object({
   chinese_text_final: z.string(),
   translation_status: z.enum(['completed', 'failed', 'retrying']),
   is_key_sentence: z.boolean(),
+  translation_retry_attempts: z.number().int().nonnegative().default(0),
+  translation_retry_exhausted: z.boolean().default(false),
 })
 
 const archiveResponseSchema = z.object({
