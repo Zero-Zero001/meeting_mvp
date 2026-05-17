@@ -12,6 +12,8 @@ from httpx import ASGITransport, AsyncClient
 from meeting_mvp_backend.archive_tokens import hash_archive_token
 from meeting_mvp_backend.archives import (
     ArchiveAccessDenied,
+    ArchiveExceptionTimelineRecord,
+    ArchiveExportTimelineRecord,
     ArchiveRepository,
     ArchiveSessionRecord,
     ArchiveTranscriptSegmentRecord,
@@ -92,6 +94,18 @@ class FakeArchiveRepository:
         session_id: uuid.UUID,
     ) -> str | None:
         return self.latest_close_reason
+
+    async def list_export_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExportTimelineRecord]:
+        return []
+
+    async def list_exception_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExceptionTimelineRecord]:
+        return []
 
 
 @dataclass

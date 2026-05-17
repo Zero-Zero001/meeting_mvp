@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -11,6 +11,8 @@ from httpx import ASGITransport, AsyncClient
 from meeting_mvp_backend.archive_tokens import hash_archive_token
 from meeting_mvp_backend.archives import (
     ArchiveAccessDenied,
+    ArchiveExceptionTimelineRecord,
+    ArchiveExportTimelineRecord,
     ArchiveKeySentenceUpdateRequest,
     ArchiveResponse,
     ArchiveSearchEventRequest,
@@ -18,11 +20,13 @@ from meeting_mvp_backend.archives import (
     ArchiveSegmentResponse,
     ArchiveService,
     ArchiveSessionRecord,
+    ArchiveTimelineItemResponse,
     ArchiveTranscriptSegmentRecord,
 )
 from meeting_mvp_backend.config import get_settings
 from meeting_mvp_backend.db.models import (
     CaptureMode,
+    ExportFormat,
     MeetingSessionStatus,
     SourcePlatform,
     TranslationStatus,
@@ -37,6 +41,12 @@ FIXED_NOW = datetime(2026, 5, 16, 10, 0, tzinfo=UTC)
 class FakeArchiveRepository:
     session: ArchiveSessionRecord | None
     segments: list[ArchiveTranscriptSegmentRecord]
+    export_timeline_records: list[ArchiveExportTimelineRecord] = field(
+        default_factory=list,
+    )
+    exception_timeline_records: list[ArchiveExceptionTimelineRecord] = field(
+        default_factory=list,
+    )
     latest_close_reason: str | None = None
 
     async def get_session(
@@ -60,6 +70,26 @@ class FakeArchiveRepository:
         session_id: uuid.UUID,
     ) -> str | None:
         return self.latest_close_reason
+
+    async def list_export_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExportTimelineRecord]:
+        return [
+            record
+            for record in self.export_timeline_records
+            if record.session_id == session_id
+        ]
+
+    async def list_exception_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExceptionTimelineRecord]:
+        return [
+            record
+            for record in self.exception_timeline_records
+            if record.session_id == session_id
+        ]
 
     async def set_segment_key_sentence(
         self,
@@ -248,6 +278,24 @@ async def test_archive_service_returns_ordered_segments_and_view_event() -> None
                 translation_status=TranslationStatus.FAILED,
             ),
         ],
+        export_timeline_records=[
+            ArchiveExportTimelineRecord(
+                created_at=(session.started_at or FIXED_NOW) + timedelta(minutes=8),
+                export_format=ExportFormat.MARKDOWN,
+                export_id=uuid.UUID("44444444-4444-4444-8444-444444444444"),
+                session_id=session.session_id,
+            ),
+        ],
+        exception_timeline_records=[
+            ArchiveExceptionTimelineRecord(
+                code="qwen_final_translation_failed",
+                created_at=(session.started_at or FIXED_NOW)
+                + timedelta(seconds=20),
+                event_id=uuid.UUID("99999999-9999-4999-8999-999999999999"),
+                segment_id=None,
+                session_id=session.session_id,
+            ),
+        ],
         latest_close_reason="user_stopped",
     )
     usage_events = FakeUsageEventRecorder()
@@ -270,6 +318,21 @@ async def test_archive_service_returns_ordered_segments_and_view_event() -> None
     assert archive.segments[2].translation_status == TranslationStatus.FAILED
     assert archive.segments[2].translation_retry_attempts == 3
     assert archive.segments[2].translation_retry_exhausted is True
+    assert [item.item_type for item in archive.timeline_items] == [
+        "segment_final",
+        "key_sentence",
+        "segment_final",
+        "segment_final",
+        "exception",
+        "export_created",
+    ]
+    assert archive.timeline_items[0].segment_id == archive.segments[0].segment_id
+    assert archive.timeline_items[1].segment_id == archive.segments[0].segment_id
+    assert archive.timeline_items[4].text == "中文正式翻译失败，已进入后台补译"
+    assert archive.timeline_items[5].id == (
+        "export-created-44444444-4444-4444-8444-444444444444"
+    )
+    assert archive.timeline_items[5].text == "已生成 Markdown 导出"
     assert usage_events.records == [
         UsageEventRecord(
             client_id=session.client_id,
@@ -552,6 +615,15 @@ async def test_archive_endpoint_returns_archive_response() -> None:
         source_platform=session.source_platform,
         started_at=session.started_at,
         status=session.status,
+        timeline_items=[
+            ArchiveTimelineItemResponse(
+                id="segment-final-22222222-2222-4222-8222-222222222222",
+                item_type="segment_final",
+                segment_id=uuid.UUID("22222222-2222-4222-8222-222222222222"),
+                text="中文 final 1",
+                timestamp_ms=3200,
+            ),
+        ],
     )
     service = FakeArchiveService(response=response)
     app.dependency_overrides[get_archive_service] = lambda: service
@@ -574,6 +646,15 @@ async def test_archive_endpoint_returns_archive_response() -> None:
     assert (
         http_response.json()["segments"][0]["translation_retry_exhausted"] is False
     )
+    assert http_response.json()["timeline_items"] == [
+        {
+            "id": "segment-final-22222222-2222-4222-8222-222222222222",
+            "item_type": "segment_final",
+            "timestamp_ms": 3200,
+            "text": "中文 final 1",
+            "segment_id": "22222222-2222-4222-8222-222222222222",
+        },
+    ]
     assert service.calls == [(session.session_id, "archive-token")]
 
 

@@ -8,6 +8,7 @@ import {
   Download,
   FileText,
   Languages,
+  ListChecks,
   Search,
   ShieldCheck,
   Star,
@@ -23,6 +24,7 @@ import {
   type ArchiveExportResponse,
   type ArchiveResponse,
   type ArchiveSegment,
+  type ArchiveTimelineItem,
   type ArchiveEvent,
 } from '@/api/archives'
 import { Button } from '@/components/ui/button'
@@ -49,6 +51,18 @@ type UpdateArchiveSegmentKeySentenceFn = (options: {
   isKeySentence: boolean
 }) => Promise<ArchiveSegment>
 type WriteClipboardTextFn = (text: string) => Promise<void>
+type TimelineFilter = 'all' | ArchiveTimelineItem['item_type']
+
+const TIMELINE_FILTERS: Array<{
+  label: string
+  value: TimelineFilter
+}> = [
+  { label: '全部', value: 'all' },
+  { label: 'final', value: 'segment_final' },
+  { label: '重点句', value: 'key_sentence' },
+  { label: '导出', value: 'export_created' },
+  { label: '异常', value: 'exception' },
+]
 
 type ArchivePageProps = {
   createArchiveExportFn?: CreateArchiveExportFn
@@ -226,6 +240,21 @@ function ArchivePage({
         token: access.token,
       })
       setExportState({ exportResponse, status: 'success' })
+      setState((currentState) => {
+        if (currentState.status !== 'ready') {
+          return currentState
+        }
+        return {
+          archive: {
+            ...currentState.archive,
+            timeline_items: upsertTimelineItem(
+              currentState.archive.timeline_items,
+              exportTimelineItemFromResponse(exportResponse, currentState.archive),
+            ),
+          },
+          status: 'ready',
+        }
+      })
     } catch (error: unknown) {
       setExportState({
         message: exportErrorMessage(error),
@@ -356,6 +385,7 @@ function ArchiveContent({
   showKeyOnly: boolean
   updatingKeySegmentId: string | null
 }) {
+  const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all')
   const filteredSegments = filterArchiveSegments(
     archive.segments,
     searchQuery,
@@ -395,6 +425,15 @@ function ArchiveContent({
         exportState={exportState}
         hasExportableSegments={archive.segments.length > 0}
         onCreateExport={onCreateExport}
+      />
+
+      <ArchiveTimelinePanel
+        activeFilter={timelineFilter}
+        items={archive.timeline_items}
+        onFilterChange={setTimelineFilter}
+        onSelectSegment={(segmentId) =>
+          scrollToElement(archiveSegmentElementId(segmentId))
+        }
       />
 
       <section
@@ -545,6 +584,129 @@ function ArchiveExportPanel({
   )
 }
 
+function ArchiveTimelinePanel({
+  activeFilter,
+  items,
+  onFilterChange,
+  onSelectSegment,
+}: {
+  activeFilter: TimelineFilter
+  items: ArchiveTimelineItem[]
+  onFilterChange: (filter: TimelineFilter) => void
+  onSelectSegment: (segmentId: string) => void
+}) {
+  return (
+    <section
+      aria-label="归档时间线"
+      className="grid gap-3 rounded-md border border-border bg-background p-3"
+    >
+      <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+        <ListChecks className="size-4 shrink-0" />
+        <span>会议时间线</span>
+      </div>
+      {items.length > 0 ? (
+        <>
+          <TimelineFilterButtons
+            activeFilter={activeFilter}
+            ariaLabel="筛选归档时间线"
+            onFilterChange={onFilterChange}
+          />
+          <TimelineEventList
+            emptyMessage="当前筛选下暂无归档事件。"
+            items={filterTimelineItems(items, activeFilter)}
+            onSelectSegment={onSelectSegment}
+          />
+        </>
+      ) : (
+        <p className="text-sm leading-6 text-muted-foreground">
+          暂无时间线事件。
+        </p>
+      )}
+    </section>
+  )
+}
+
+function TimelineFilterButtons({
+  activeFilter,
+  ariaLabel,
+  onFilterChange,
+}: {
+  activeFilter: TimelineFilter
+  ariaLabel: string
+  onFilterChange: (filter: TimelineFilter) => void
+}) {
+  return (
+    <div
+      aria-label={ariaLabel}
+      className="inline-flex w-full rounded-md border border-border bg-background p-1 sm:w-auto"
+      role="group"
+    >
+      {TIMELINE_FILTERS.map((filter) => (
+        <Button
+          aria-pressed={activeFilter === filter.value}
+          className="flex-1 sm:flex-none"
+          key={filter.value}
+          onClick={() => onFilterChange(filter.value)}
+          size="sm"
+          type="button"
+          variant={activeFilter === filter.value ? 'secondary' : 'ghost'}
+        >
+          {filter.label}
+        </Button>
+      ))}
+    </div>
+  )
+}
+
+function TimelineEventList({
+  emptyMessage,
+  items,
+  onSelectSegment,
+}: {
+  emptyMessage: string
+  items: ArchiveTimelineItem[]
+  onSelectSegment: (segmentId: string) => void
+}) {
+  if (items.length === 0) {
+    return <p className="text-sm leading-6 text-muted-foreground">{emptyMessage}</p>
+  }
+
+  return (
+    <ol className="grid gap-3 text-sm">
+      {items.map((item) => (
+        <li className="border-l-2 border-zinc-300 pl-3 leading-6" key={item.id}>
+          {item.segment_id ? (
+            <button
+              aria-label={`${timelineTypeLabel(item.item_type)} ${item.text}`}
+              className="grid w-full gap-1 text-left"
+              onClick={() => onSelectSegment(item.segment_id as string)}
+              type="button"
+            >
+              <TimelineEventContent item={item} />
+            </button>
+          ) : (
+            <TimelineEventContent item={item} />
+          )}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function TimelineEventContent({ item }: { item: ArchiveTimelineItem }) {
+  return (
+    <>
+      <p className="text-xs font-medium text-muted-foreground">
+        {timelineTypeLabel(item.item_type)}
+      </p>
+      <p className="font-medium text-zinc-950">{item.text}</p>
+      <p className="text-xs text-muted-foreground">
+        {formatTimestamp(item.timestamp_ms)}
+      </p>
+    </>
+  )
+}
+
 function ArchiveSegmentArticle({
   copied,
   onCopy,
@@ -562,6 +724,7 @@ function ArchiveSegmentArticle({
     <article
       aria-label={`片段 ${segment.sequence}`}
       className="rounded-md border border-border bg-background p-4"
+      id={archiveSegmentElementId(segment.segment_id)}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3 text-xs text-muted-foreground">
         <span>{formatTimestamp(segment.start_ms)} - {formatTimestamp(segment.end_ms)}</span>
@@ -753,6 +916,94 @@ function hasPendingTranslationRetries(archive: ArchiveResponse): boolean {
       (segment.translation_status === 'failed' &&
         !segment.translation_retry_exhausted),
   )
+}
+
+function filterTimelineItems(
+  items: ArchiveTimelineItem[],
+  activeFilter: TimelineFilter,
+): ArchiveTimelineItem[] {
+  if (activeFilter === 'all') {
+    return items
+  }
+  return items.filter((item) => item.item_type === activeFilter)
+}
+
+function timelineTypeLabel(itemType: ArchiveTimelineItem['item_type']): string {
+  switch (itemType) {
+    case 'segment_final':
+      return 'final'
+    case 'key_sentence':
+      return '重点句'
+    case 'export_created':
+      return '导出事件'
+    case 'exception':
+      return '异常'
+  }
+}
+
+function exportTimelineItemFromResponse(
+  exportResponse: ArchiveExportResponse,
+  archive: ArchiveResponse,
+): ArchiveTimelineItem {
+  return {
+    id: `export-created-${exportResponse.export_id}`,
+    item_type: 'export_created',
+    text: `已生成 ${exportFormatLabel(exportResponse.format)} 导出`,
+    timestamp_ms: exportTimelineTimestampMs(exportResponse, archive),
+  }
+}
+
+function exportTimelineTimestampMs(
+  exportResponse: ArchiveExportResponse,
+  archive: ArchiveResponse,
+): number {
+  if (!archive.started_at) {
+    return Math.max(archive.duration_seconds, 0) * 1000
+  }
+  return Math.max(
+    Math.floor(
+      new Date(exportResponse.created_at).getTime() -
+        new Date(archive.started_at).getTime(),
+    ),
+    0,
+  )
+}
+
+function upsertTimelineItem(
+  items: ArchiveTimelineItem[],
+  nextItem: ArchiveTimelineItem,
+): ArchiveTimelineItem[] {
+  const filteredItems = items.filter((item) => item.id !== nextItem.id)
+  return [...filteredItems, nextItem].sort((first, second) => {
+    if (first.timestamp_ms !== second.timestamp_ms) {
+      return first.timestamp_ms - second.timestamp_ms
+    }
+    return timelineSortOrder(first.item_type) - timelineSortOrder(second.item_type)
+  })
+}
+
+function timelineSortOrder(itemType: ArchiveTimelineItem['item_type']): number {
+  switch (itemType) {
+    case 'segment_final':
+      return 0
+    case 'key_sentence':
+      return 1
+    case 'exception':
+      return 2
+    case 'export_created':
+      return 3
+  }
+}
+
+function archiveSegmentElementId(segmentId: string): string {
+  return `archive-segment-${segmentId}`
+}
+
+function scrollToElement(elementId: string): void {
+  document.getElementById(elementId)?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'center',
+  })
 }
 
 function formatDuration(seconds: number): string {

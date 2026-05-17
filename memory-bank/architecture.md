@@ -1106,3 +1106,56 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 163 passed，13 integration deselected。
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、111 个测试通过，E2E 为 11 个 Chromium 测试通过。
 - Step 27 未开始；当前没有会议时间线增强。
+
+## 2026-05-17 Step 27 会议时间线增强
+
+### 架构状态
+
+- Step 27 实现 F18 的轻量时间线增强：后端继续复用既有 `timeline_update` wire schema，归档 API 在既有响应上追加 `timeline_items`，不新增数据库字段、Provider、环境变量或真实 smoke。
+- 新增 `timeline` 模块作为时间线节点构建边界，统一生成 `segment_final`、`key_sentence`、`export_created` 和 `exception` 节点；节点只包含 `id`、`item_type`、`timestamp_ms`、`text` 和可选 `segment_id`。
+- WebSocket final 成功路径在 `segment_final` 推送和归档写入后追加时间线节点；若该 final 命中重点句，则继续发送 `key_sentence_update` 并追加 `key_sentence` 时间线节点。
+- Qwen interim/final warning 和 Qwen ASR error 会追加 `exception` 时间线节点；异常节点文本只由错误 code 映射为安全摘要，不使用 provider 原始异常正文。
+- local mock provider 改为复用同一套时间线构建函数，保持本地 mock 与生产路径在 `timeline_update` 行为上的一致性。
+- 归档 API `GET /api/archives/{session_id}?token=...` 新增 `timeline_items`：从 `transcript_segment` 派生 final/重点句节点，从 `export_file` 派生导出节点，从安全 usage event 元数据派生异常节点。
+- 导出时间线节点只暴露导出类型、相对时间和摘要，不返回 COS object key、短期下载 URL、archive token 或正文。
+- 前端实时会议页的会议时间线区增加“全部 / final / 重点句 / 导出 / 异常”筛选；关联 `segment_id` 的节点可以滚动定位到英文/中文 final 片段。
+- 前端归档页新增“归档时间线”导航，消费 `archive.timeline_items` 并支持同类筛选和点击定位；旧 API 响应缺少 `timeline_items` 时默认空数组。
+- 导出成功后归档页本地 upsert 一个 `export_created` 节点，避免等待重新拉取；导出失败继续保留既有可访问错误提示，不清空归档内容。
+- Step 28 未开始：当前没有使用量与成本看板、成本聚合 API、运营漏斗页面或新指标 UI。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/timeline.py` | Step 27 新增时间线规则模块。集中定义时间线 item 类型、安全异常 code 文案、相对时间计算、final/重点句/导出/异常节点构建和排序函数。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | WebSocket 会话编排层。Step 27 在 final 成功、重点句命中、warning/error 发生时构建并推送 `timeline_update`；mock provider 也复用同一构建路径。 |
+| `backend/src/meeting_mvp_backend/archives.py` | 归档业务模块。Step 27 在 `ArchiveResponse` 中加入 `timeline_items`，并通过 repository 查询 segment、export_file 和 usage_event 安全元数据来派生归档时间线。 |
+| `backend/src/meeting_mvp_backend/db/models.py` | 数据库模型。Step 27 复用既有 `TranscriptSegment.is_key_sentence`、`ExportFile` 和 `UsageEvent`，不新增 migration。 |
+| `backend/tests/test_websocket_sessions.py` | WebSocket 会话测试。Step 27 覆盖 final、重点句和异常场景的 `timeline_update` 推送。 |
+| `backend/tests/test_archives.py` | 归档服务/API 测试。Step 27 覆盖 final、重点句、导出和异常四类归档 `timeline_items` 派生，以及缺 token/错误 token 边界保持不变。 |
+| `backend/tests/test_exports.py` | 导出服务测试。Step 27 扩展 fake repository 以满足归档时间线协议，不改变导出主流程。 |
+| `frontend/src/api/archives.ts` | 前端归档 API client。Step 27 增加 `ArchiveTimelineItem` schema 和 `timeline_items` 默认空数组，兼容旧后端响应。 |
+| `frontend/src/App.tsx` | 前端实时会议工作台。Step 27 给会议时间线区增加筛选、节点类型展示、摘要展示和关联 final 片段滚动定位。 |
+| `frontend/src/archive/ArchivePage.tsx` | 前端归档页。Step 27 新增归档时间线导航，消费 `archive.timeline_items`，支持筛选、点击定位和导出成功后本地 upsert 导出节点。 |
+| `frontend/src/App.test.tsx` | 实时会议页组件测试。Step 27 覆盖时间线筛选和点击定位。 |
+| `frontend/src/api/archives.test.ts` | 前端归档 API client 测试。Step 27 覆盖 `timeline_items` 解析、旧 API 默认空数组和安全字段边界。 |
+| `frontend/src/archive/ArchivePage.test.tsx` | 归档页组件测试。Step 27 覆盖归档时间线渲染、筛选、点击定位和导出成功本地节点更新。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 27 记录完成内容、RED/GREEN 过程、完整验证结果和 Step 28 未开始边界。 |
+| `memory-bank/architecture.md` | 架构记录。Step 27 记录时间线节点来源、WebSocket 推送、归档 API 派生、前端筛选/跳转和安全约束。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 27 同步项目状态、文件职责摘要和 Step 28 等待用户明确允许。 |
+
+### 数据与安全边界
+
+- `timeline_update` 和 `archive.timeline_items` 都只使用短摘要和安全元数据；不承载英文正文、中文译文、archive token、COS object key、下载 URL、密钥或音频。
+- `segment_final` 和 `key_sentence` 节点的正文摘要来自已允许展示的 final/重点句展示文本，但 usage event 仍不保存正文；归档响应本身已有授权边界。
+- `exception` 节点不透传异常正文，只从固定 code 映射到中文安全摘要；未知 code fallback 为“会议处理出现异常”。
+- `export_created` 节点从 `export_file` 或导出成功响应的安全字段派生，只显示导出格式，不暴露存储内部标识或签名地址。
+- `timeline_items` 是派生字段，不改变 PostgreSQL schema；PostgreSQL 仍保存正式 final、重点句标记、导出记录和 usage event 元数据。
+- 前端实时页只消费服务端 `timeline_update.items`，不从 `segment_final` 自行派生实时节点，保持服务端权威。
+
+### 验证结论
+
+- Step 27 已按 TDD 先跑 RED：后端缺少归档时间线结构，前端缺少 `timeline_items` schema、筛选和跳转 UI；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 163 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、114 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- Step 28 未开始；当前没有使用量与成本看板。

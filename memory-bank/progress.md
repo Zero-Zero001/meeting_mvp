@@ -1471,3 +1471,57 @@
 - Step 26 的自动重点句识别是确定性规则，不调用模型；如果后续改为模型提取，仍需保持不保存正文到 `usage_event` 的安全边界。
 - 归档人工标记直接更新 PostgreSQL `transcript_segment.is_key_sentence`，因此后续 polling、导出和归档重载都会看到相同状态。
 - `key_sentence_update` 只由服务端显式推送；前端仍不从 `segment_final` 自行派生当前重点句。
+
+## 2026-05-17 Step 27：F18 会议时间线增强
+
+### 本次完成
+
+- 只推进用户明确指定的 Step 27，未开始 Step 28；本步不新增数据库 migration、不新增 Provider、不新增环境变量，也不运行真实 Qwen/COS/Lighthouse smoke。
+- 新增后端 `backend/src/meeting_mvp_backend/timeline.py`：
+  - 统一定义时间线 item 类型 `segment_final`、`key_sentence`、`export_created`、`exception` 和确定性节点构建函数。
+  - 时间线异常文本只由错误 code 映射为安全摘要，不包含 provider 原始异常、正文、token、URL、密钥或音频。
+- 扩展 WebSocket 会话编排：
+  - final 成功归档后发送 `timeline_update`，追加 `segment_final` 节点；命中重点句时继续发送 `key_sentence_update` 并追加 `key_sentence` 节点。
+  - Qwen interim/final warning 和 Qwen ASR error 追加 `exception` 节点；mock provider 也改用同一时间线构建路径，避免 mock 与生产行为分叉。
+  - `timeline_update` 仍复用既有 wire schema，前端不从 `segment_final` 自行派生实时节点。
+- 扩展归档 API：
+  - `GET /api/archives/{session_id}?token=...` 响应新增 `timeline_items`，从 `transcript_segment`、`is_key_sentence`、`export_file` 和安全 usage event metadata 派生。
+  - 导出节点只暴露导出类型、相对时间和安全摘要，不暴露 COS object key、下载 URL、token 或正文。
+  - 前端 schema 对旧响应缺失 `timeline_items` 默认 `[]`。
+- 扩展前端实时会议页：
+  - 会议时间线区增加“全部 / final / 重点句 / 导出 / 异常”筛选。
+  - 节点显示类型、时间和摘要；有 `segment_id` 的节点可点击并滚动定位到对应 final 片段。
+- 扩展前端归档页：
+  - 新增“归档时间线”区域，复用同类筛选和点击定位。
+  - 导出成功后本地 upsert `export_created` 节点；导出失败保留既有错误提示和归档内容。
+- 扩展测试文件：
+  - `backend/tests/test_websocket_sessions.py`
+  - `backend/tests/test_archives.py`
+  - `backend/tests/test_exports.py`
+  - `frontend/src/api/archives.test.ts`
+  - `frontend/src/App.test.tsx`
+  - `frontend/src/archive/ArchivePage.test.tsx`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 27 后端 RED | `uv run pytest tests/test_websocket_sessions.py tests/test_archives.py tests/test_exports.py tests/test_usage_events.py -q` | 首次 ImportError：缺少 `ArchiveExceptionTimelineRecord` 等 Step 27 时间线归档结构 |
+| Step 27 前端 RED | `npm run test -- src/protocol/websocket-messages.test.ts src/stores/session-store.test.ts src/App.test.tsx src/api/archives.test.ts src/archive/ArchivePage.test.tsx` | 首次 5 failed：缺少归档 `timeline_items` schema、实时/归档时间线筛选和跳转 UI |
+| Step 27 后端目标 GREEN | `uv run pytest tests/test_websocket_sessions.py tests/test_archives.py tests/test_exports.py tests/test_usage_events.py -q` | 89 passed |
+| Step 27 前端目标 GREEN | `npm run test -- src/protocol/websocket-messages.test.ts src/stores/session-store.test.ts src/App.test.tsx src/api/archives.test.ts src/archive/ArchivePage.test.tsx` | 5 个测试文件、72 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 43 source files` |
+| 后端 pytest | `uv run pytest` | 163 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 13 个测试文件、114 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 28 必须等待用户明确允许后再开始；当前没有使用量与成本看板。
+- `timeline_update` 是实时页的服务端权威快照，前端不从 final 自行派生实时节点。
+- 时间线异常节点只使用 code 映射摘要；不得写入异常正文、正文、URL、token、密钥或音频。
+- 归档时间线派生自现有表和安全事件元数据，不新增 schema；后续扩展事件源时继续只使用安全元数据。

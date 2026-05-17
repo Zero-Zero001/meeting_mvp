@@ -16,6 +16,19 @@ const archiveSegmentSchema = z.object({
   translation_retry_exhausted: z.boolean().default(false),
 })
 
+const archiveTimelineItemSchema = z.object({
+  id: z.string().min(1),
+  item_type: z.enum([
+    'segment_final',
+    'key_sentence',
+    'export_created',
+    'exception',
+  ]),
+  timestamp_ms: z.number().int().nonnegative(),
+  text: z.string(),
+  segment_id: z.string().min(1).nullable().optional(),
+})
+
 const archiveResponseSchema = z.object({
   session_id: z.string(),
   source_platform: z.enum([
@@ -34,6 +47,7 @@ const archiveResponseSchema = z.object({
   quota_seconds_consumed: z.number(),
   retention_expires_at: z.string(),
   segments: z.array(archiveSegmentSchema),
+  timeline_items: z.array(archiveTimelineItemSchema).default([]),
 })
 
 const archiveExportResponseSchema = z.object({
@@ -47,6 +61,7 @@ const archiveExportResponseSchema = z.object({
 })
 
 export type ArchiveSegment = z.infer<typeof archiveSegmentSchema>
+export type ArchiveTimelineItem = z.infer<typeof archiveTimelineItemSchema>
 export type ArchiveResponse = z.infer<typeof archiveResponseSchema>
 export type ArchiveExportResponse = z.infer<typeof archiveExportResponseSchema>
 export type ArchiveExportFormat = ArchiveExportResponse['format']

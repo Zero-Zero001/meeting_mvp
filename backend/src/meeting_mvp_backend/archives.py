@@ -14,12 +14,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from meeting_mvp_backend.archive_tokens import hash_archive_token
 from meeting_mvp_backend.db.models import (
     CaptureMode,
+    ExportFile,
+    ExportFormat,
     MeetingSession,
     MeetingSessionStatus,
     SourcePlatform,
     TranscriptSegment,
     TranslationStatus,
     UsageEvent,
+)
+from meeting_mvp_backend.timeline import (
+    TimelineItemType,
+    build_archive_exception_timeline_item,
+    build_export_created_timeline_item,
+    build_key_sentence_timeline_item,
+    build_segment_final_timeline_item,
+    relative_timestamp_ms,
+    sort_timeline_items,
 )
 from meeting_mvp_backend.usage_events import (
     UsageEventRecorder,
@@ -65,6 +76,23 @@ class ArchiveTranscriptSegmentRecord:
     translation_retry_exhausted: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveExportTimelineRecord:
+    export_id: uuid.UUID
+    session_id: uuid.UUID
+    export_format: ExportFormat
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveExceptionTimelineRecord:
+    event_id: uuid.UUID
+    session_id: uuid.UUID
+    code: str
+    created_at: datetime
+    segment_id: uuid.UUID | None = None
+
+
 class ArchiveSegmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -81,6 +109,16 @@ class ArchiveSegmentResponse(BaseModel):
     translation_retry_exhausted: bool = False
 
 
+class ArchiveTimelineItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    item_type: TimelineItemType
+    timestamp_ms: int = Field(ge=0)
+    text: str
+    segment_id: uuid.UUID | None = None
+
+
 class ArchiveResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -95,6 +133,7 @@ class ArchiveResponse(BaseModel):
     quota_seconds_consumed: int
     retention_expires_at: datetime
     segments: list[ArchiveSegmentResponse]
+    timeline_items: list[ArchiveTimelineItemResponse] = Field(default_factory=list)
 
 
 class ArchiveSearchEventRequest(BaseModel):
@@ -135,6 +174,16 @@ class ArchiveRepository(Protocol):
         self,
         session_id: uuid.UUID,
     ) -> list[ArchiveTranscriptSegmentRecord]: ...
+
+    async def list_export_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExportTimelineRecord]: ...
+
+    async def list_exception_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExceptionTimelineRecord]: ...
 
     async def set_segment_key_sentence(
         self,
@@ -202,6 +251,57 @@ class SQLAlchemyArchiveRepository:
                 retry_metadata=retry_metadata.get(model.id, (0, False)),
             )
             for model in models
+        ]
+
+    async def list_export_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExportTimelineRecord]:
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(ExportFile)
+                .where(ExportFile.session_id == session_id)
+                .order_by(ExportFile.created_at),
+            )
+            models = list(result)
+        return [
+            ArchiveExportTimelineRecord(
+                created_at=model.created_at,
+                export_format=model.format,
+                export_id=model.id,
+                session_id=model.session_id,
+            )
+            for model in models
+        ]
+
+    async def list_exception_timeline_records(
+        self,
+        session_id: uuid.UUID,
+    ) -> list[ArchiveExceptionTimelineRecord]:
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(UsageEvent)
+                .where(
+                    UsageEvent.session_id == session_id,
+                    UsageEvent.event_type.in_(
+                        [
+                            UsageEventType.BUDGET_FUSE_TRIGGERED.value,
+                            UsageEventType.EXPORT_FAILED.value,
+                            UsageEventType.PROVIDER_ERROR.value,
+                            UsageEventType.QUOTA_EXHAUSTED.value,
+                        ],
+                    ),
+                )
+                .order_by(UsageEvent.created_at),
+            )
+            models = list(result)
+        return [
+            record
+            for model in models
+            if (
+                record := _archive_exception_timeline_record_from_usage_event(model)
+            )
+            is not None
         ]
 
     async def set_segment_key_sentence(
@@ -280,6 +380,12 @@ class ArchiveService:
         end_reason = (
             await self._repository.latest_session_closed_reason(session_id)
         ) or session.status.value
+        export_timeline_records = (
+            await self._repository.list_export_timeline_records(session_id)
+        )
+        exception_timeline_records = (
+            await self._repository.list_exception_timeline_records(session_id)
+        )
         archive = ArchiveResponse(
             capture_mode=session.capture_mode,
             duration_seconds=session.duration_seconds,
@@ -307,6 +413,12 @@ class ArchiveService:
             source_platform=session.source_platform,
             started_at=session.started_at,
             status=session.status,
+            timeline_items=_archive_timeline_items(
+                exception_records=exception_timeline_records,
+                export_records=export_timeline_records,
+                segments=segments,
+                session=session,
+            ),
         )
         await record_usage_event_best_effort(
             recorder=self._usage_event_recorder,
@@ -463,6 +575,72 @@ def _archive_segment_response_from_record(
     )
 
 
+def _archive_timeline_items(
+    *,
+    exception_records: list[ArchiveExceptionTimelineRecord],
+    export_records: list[ArchiveExportTimelineRecord],
+    segments: list[ArchiveTranscriptSegmentRecord],
+    session: ArchiveSessionRecord,
+) -> list[ArchiveTimelineItemResponse]:
+    timeline_records = []
+    for segment in segments:
+        timeline_records.append(
+            build_segment_final_timeline_item(
+                chinese_text_final=segment.chinese_text_final,
+                english_text_final=segment.english_text_final,
+                end_ms=segment.end_ms,
+                segment_id=segment.segment_id,
+            ),
+        )
+        if segment.is_key_sentence:
+            timeline_records.append(
+                build_key_sentence_timeline_item(
+                    chinese_text_final=segment.chinese_text_final,
+                    english_text_final=segment.english_text_final,
+                    end_ms=segment.end_ms,
+                    segment_id=segment.segment_id,
+                ),
+            )
+
+    for exception_record in exception_records:
+        timeline_records.append(
+            build_archive_exception_timeline_item(
+                code=exception_record.code,
+                event_id=exception_record.event_id,
+                segment_id=exception_record.segment_id,
+                timestamp_ms=relative_timestamp_ms(
+                    created_at=exception_record.created_at,
+                    session_duration_seconds=session.duration_seconds,
+                    session_started_at=session.started_at,
+                ),
+            ),
+        )
+
+    for export_record in export_records:
+        timeline_records.append(
+            build_export_created_timeline_item(
+                export_format=export_record.export_format,
+                export_id=export_record.export_id,
+                timestamp_ms=relative_timestamp_ms(
+                    created_at=export_record.created_at,
+                    session_duration_seconds=session.duration_seconds,
+                    session_started_at=session.started_at,
+                ),
+            ),
+        )
+
+    return [
+        ArchiveTimelineItemResponse(
+            id=timeline_record.id,
+            item_type=timeline_record.item_type,
+            segment_id=timeline_record.segment_id,
+            text=timeline_record.text,
+            timestamp_ms=timeline_record.timestamp_ms,
+        )
+        for timeline_record in sort_timeline_items(timeline_records)
+    ]
+
+
 def _archive_segment_record_from_model(
     model: TranscriptSegment,
     *,
@@ -482,6 +660,47 @@ def _archive_segment_record_from_model(
         translation_retry_exhausted=retry_metadata[1],
         translation_status=model.translation_status,
     )
+
+
+def _archive_exception_timeline_record_from_usage_event(
+    event: UsageEvent,
+) -> ArchiveExceptionTimelineRecord | None:
+    if event.session_id is None or not isinstance(event.payload, dict):
+        return None
+    code = _exception_code_from_usage_event(event)
+    if code is None:
+        return None
+    return ArchiveExceptionTimelineRecord(
+        code=code,
+        created_at=event.created_at,
+        event_id=event.id,
+        segment_id=_segment_id_from_payload(event.payload),
+        session_id=event.session_id,
+    )
+
+
+def _exception_code_from_usage_event(event: UsageEvent) -> str | None:
+    payload = event.payload
+    raw_code = payload.get("code")
+    if isinstance(raw_code, str) and raw_code.strip() != "":
+        return raw_code
+    if event.event_type == UsageEventType.EXPORT_FAILED.value:
+        return "archive_export_failed"
+    if event.event_type == UsageEventType.QUOTA_EXHAUSTED.value:
+        return "daily_quota_exhausted"
+    if event.event_type == UsageEventType.BUDGET_FUSE_TRIGGERED.value:
+        return "budget_fuse_triggered"
+    return None
+
+
+def _segment_id_from_payload(payload: dict[str, object]) -> uuid.UUID | None:
+    raw_segment_id = payload.get("segment_id")
+    if not isinstance(raw_segment_id, str):
+        return None
+    try:
+        return uuid.UUID(raw_segment_id)
+    except ValueError:
+        return None
 
 
 async def _translation_retry_metadata_by_segment_id(

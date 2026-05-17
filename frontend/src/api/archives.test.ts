@@ -37,6 +37,21 @@ const archivePayload = {
   source_platform: 'google_meet',
   started_at: '2026-05-16T10:00:00Z',
   status: 'ended',
+  timeline_items: [
+    {
+      id: 'segment-final-22222222-2222-4222-8222-222222222222',
+      item_type: 'segment_final',
+      segment_id: '22222222-2222-4222-8222-222222222222',
+      text: '我们需要在周五前对齐上线时间线。',
+      timestamp_ms: 3200,
+    },
+    {
+      id: 'export-created-44444444-4444-4444-8444-444444444444',
+      item_type: 'export_created',
+      text: '已生成 Markdown 导出',
+      timestamp_ms: 540000,
+    },
+  ],
 }
 
 describe('archives API', () => {
@@ -75,6 +90,29 @@ describe('archives API', () => {
     expect(archive.segments[0].english_text_final).toContain('launch timeline')
     expect(archive.segments[0].translation_retry_attempts).toBe(0)
     expect(archive.segments[0].translation_retry_exhausted).toBe(false)
+    expect(archive.timeline_items).toHaveLength(2)
+    expect(archive.timeline_items[0].item_type).toBe('segment_final')
+    expect(archive.timeline_items[1].segment_id).toBeUndefined()
+  })
+
+  it('defaults archive timeline items to an empty list for older API responses', async () => {
+    const legacyPayload = Object.fromEntries(
+      Object.entries(archivePayload).filter(([key]) => key !== 'timeline_items'),
+    )
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(legacyPayload), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    )
+
+    const archive = await fetchArchive({
+      fetchFn,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+
+    expect(archive.timeline_items).toEqual([])
   })
 
   it('parses retry metadata when backend reports background translation status', async () => {

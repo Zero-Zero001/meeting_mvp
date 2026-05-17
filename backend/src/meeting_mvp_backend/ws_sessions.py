@@ -46,6 +46,12 @@ from meeting_mvp_backend.stt_providers import (
     SttFinalEvent,
     SttInterimEvent,
 )
+from meeting_mvp_backend.timeline import (
+    TimelineItemRecord,
+    build_exception_timeline_item,
+    build_key_sentence_timeline_item,
+    build_segment_final_timeline_item,
+)
 from meeting_mvp_backend.translation_providers import (
     FinalTranslationContextSegment,
     FinalTranslationProvider,
@@ -197,6 +203,8 @@ class WebSocketSessionState:
     pending_final_translations: list[SttFinalEvent] = field(default_factory=list)
     current_final_translation: SttFinalEvent | None = None
     archived_final_sequences: set[int] = field(default_factory=set)
+    timeline_exception_counts: dict[str, int] = field(default_factory=dict)
+    timeline_items: list[TimelineItem] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -407,6 +415,46 @@ class WebSocketSessionOrchestrator:
             session_id=session_id,
             event_type=event_type,
             payload=payload,
+        )
+
+    async def _append_timeline_items(
+        self,
+        websocket: WebSocket | None,
+        state: WebSocketSessionState,
+        *items: TimelineItemRecord,
+    ) -> None:
+        if not items:
+            return
+        state.timeline_items.extend(_timeline_message_item(item) for item in items)
+        await _send_server_message(
+            websocket,
+            TimelineUpdateMessage(type="timeline_update", items=state.timeline_items),
+        )
+
+    async def _append_exception_timeline_item(
+        self,
+        *,
+        code: str,
+        segment_id: uuid.UUID | None = None,
+        state: WebSocketSessionState,
+        timestamp_ms: int | None = None,
+        websocket: WebSocket | None,
+    ) -> None:
+        occurrence_index = state.timeline_exception_counts.get(code, 0)
+        state.timeline_exception_counts[code] = occurrence_index + 1
+        await self._append_timeline_items(
+            websocket,
+            state,
+            build_exception_timeline_item(
+                code=code,
+                occurrence_index=occurrence_index,
+                segment_id=segment_id,
+                timestamp_ms=(
+                    timestamp_ms
+                    if timestamp_ms is not None
+                    else _current_timeline_timestamp_ms(state, now=self._clock())
+                ),
+            ),
         )
 
     async def handle(self, websocket: WebSocket) -> None:
@@ -855,6 +903,7 @@ class WebSocketSessionOrchestrator:
                 state=state,
                 reason=QWEN_ASR_ERROR_REASON,
                 message=exc.__class__.__name__,
+                timeline_exception_code=QWEN_ASR_ERROR_REASON,
             )
 
     def _schedule_final_translation(
@@ -1047,6 +1096,24 @@ class WebSocketSessionOrchestrator:
                     ),
                 ),
             )
+        timeline_items = [
+            build_segment_final_timeline_item(
+                chinese_text_final=translated_text,
+                english_text_final=event.text,
+                end_ms=event.end_ms,
+                segment_id=segment_id,
+            ),
+        ]
+        if is_key_sentence:
+            timeline_items.append(
+                build_key_sentence_timeline_item(
+                    chinese_text_final=translated_text,
+                    english_text_final=event.text,
+                    end_ms=event.end_ms,
+                    segment_id=segment_id,
+                ),
+            )
+        await self._append_timeline_items(websocket, state, *timeline_items)
 
     async def _archive_failed_final_translation(
         self,
@@ -1098,6 +1165,13 @@ class WebSocketSessionOrchestrator:
                     code=QWEN_FINAL_TRANSLATION_FAILED_CODE,
                     message="中文正式翻译失败，英文 final 已归档待重试。",
                 ),
+            )
+            await self._append_exception_timeline_item(
+                code=QWEN_FINAL_TRANSLATION_FAILED_CODE,
+                segment_id=segment_id,
+                state=state,
+                timestamp_ms=event.end_ms,
+                websocket=websocket,
             )
 
     async def _enqueue_failed_final_translation_retry(
@@ -1209,6 +1283,11 @@ class WebSocketSessionOrchestrator:
                         message="中文临时理解暂时不可用，英文转写会继续。",
                     ),
                 )
+                await self._append_exception_timeline_item(
+                    code=QWEN_INTERIM_TRANSLATION_FAILED_CODE,
+                    state=state,
+                    websocket=websocket,
+                )
                 continue
 
             translated_text = translated_text.strip()
@@ -1270,6 +1349,11 @@ class WebSocketSessionOrchestrator:
                 code=script.warning_code,
                 message=script.warning_message,
             ),
+        )
+        await self._append_exception_timeline_item(
+            code=script.warning_code,
+            state=state,
+            websocket=websocket,
         )
         await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
         await self._record_usage_event(
@@ -1358,20 +1442,27 @@ class WebSocketSessionOrchestrator:
             ),
         )
         await asyncio.sleep(MOCK_PROVIDER_STEP_DELAY_SECONDS)
-        await _send_server_message(
-            websocket,
-            TimelineUpdateMessage(
-                type="timeline_update",
-                items=[
-                    TimelineItem(
-                        id=f"segment-{segment_id}",
-                        item_type="segment_final",
-                        timestamp_ms=final_segment.end_ms,
-                        text=final_segment.chinese_text_final,
-                        segment_id=str(segment_id),
-                    ),
-                ],
+        timeline_items = [
+            build_segment_final_timeline_item(
+                chinese_text_final=final_segment.chinese_text_final,
+                english_text_final=final_segment.english_text_final,
+                end_ms=final_segment.end_ms,
+                segment_id=segment_id,
             ),
+        ]
+        if final_segment.is_key_sentence:
+            timeline_items.append(
+                build_key_sentence_timeline_item(
+                    chinese_text_final=final_segment.chinese_text_final,
+                    english_text_final=final_segment.english_text_final,
+                    end_ms=final_segment.end_ms,
+                    segment_id=segment_id,
+                ),
+            )
+        await self._append_timeline_items(
+            websocket,
+            state,
+            *timeline_items,
         )
 
     async def _finalize_session(
@@ -1453,11 +1544,18 @@ class WebSocketSessionOrchestrator:
         state: WebSocketSessionState | None,
         reason: str,
         message: str | None = None,
+        timeline_exception_code: str | None = None,
     ) -> None:
         await _send_server_message(
             websocket,
             ErrorMessage(type="error", code=reason, message=message),
         )
+        if state is not None and timeline_exception_code is not None:
+            await self._append_exception_timeline_item(
+                code=timeline_exception_code,
+                state=state,
+                websocket=websocket,
+            )
         await self._finalize_session(
             state,
             reason=reason,
@@ -1567,6 +1665,26 @@ def _elapsed_seconds(started_at: datetime | None, ended_at: datetime) -> int:
     if started_at is None:
         return 0
     return max(int((ended_at - started_at).total_seconds()), 0)
+
+
+def _current_timeline_timestamp_ms(
+    state: WebSocketSessionState,
+    *,
+    now: datetime,
+) -> int:
+    if state.active_started_at is None:
+        return 0
+    return max(int((now - state.active_started_at).total_seconds() * 1000), 0)
+
+
+def _timeline_message_item(item: TimelineItemRecord) -> TimelineItem:
+    return TimelineItem(
+        id=item.id,
+        item_type=item.item_type,
+        segment_id=str(item.segment_id) if item.segment_id is not None else None,
+        text=item.text,
+        timestamp_ms=item.timestamp_ms,
+    )
 
 
 def _decimal_confidence(value: float | None) -> Decimal | None:

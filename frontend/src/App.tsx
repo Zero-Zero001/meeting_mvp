@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   Activity,
   Captions,
@@ -23,8 +23,27 @@ import {
   type CaptureStatus,
   type ServerSyncStatus,
   type SourcePlatform,
+  type TimelineItem,
   type WebSocketStatus,
 } from '@/stores/session-store'
+
+type TimelineItemType =
+  | 'segment_final'
+  | 'key_sentence'
+  | 'export_created'
+  | 'exception'
+type TimelineFilter = 'all' | TimelineItemType
+
+const TIMELINE_FILTERS: Array<{
+  label: string
+  value: TimelineFilter
+}> = [
+  { label: '全部', value: 'all' },
+  { label: 'final', value: 'segment_final' },
+  { label: '重点句', value: 'key_sentence' },
+  { label: '导出', value: 'export_created' },
+  { label: '异常', value: 'exception' },
+]
 
 const SOURCE_PLATFORM_OPTIONS: Array<{
   label: string
@@ -155,6 +174,7 @@ function App() {
 }
 
 function MeetingWorkspace() {
+  const [timelineFilter, setTimelineFilter] = useState<TimelineFilter>('all')
   const {
     activeNotice,
     anonymousClientError,
@@ -499,6 +519,7 @@ function MeetingWorkspace() {
                 {finalSegments.map((segment) => (
                   <article
                     className="max-w-3xl border-l-2 border-zinc-300 pl-3"
+                    id={realtimeSegmentElementId(segment.segment_id)}
                     key={segment.segment_id}
                   >
                     <p className="text-sm leading-6 text-zinc-950">
@@ -538,6 +559,7 @@ function MeetingWorkspace() {
                 {finalSegments.map((segment) => (
                   <article
                     className="max-w-3xl border-l-2 border-zinc-300 pl-3"
+                    data-segment-id={segment.segment_id}
                     key={segment.segment_id}
                   >
                     <p className="text-sm leading-6 text-zinc-950">
@@ -583,28 +605,30 @@ function MeetingWorkspace() {
                 <ListChecks className="size-4 text-muted-foreground" />
               </div>
               <dl className="mt-4 grid gap-3 text-sm">
-                <TimelineItem label="会议平台" value={sourcePlatformLabel(sourcePlatform)} />
-                <TimelineItem label="捕获模式" value={captureModeLabel(captureMode)} />
-                <TimelineItem label="音频状态" value={audioLabel} />
-                <TimelineItem label="WebSocket" value={webSocketLabel} />
-                <TimelineItem label="有效音频" value={effectiveAudioLabel} />
-                <TimelineItem label="ASR" value={asrStatusLabel} />
-                <TimelineItem label="翻译" value={translationStatusLabel} />
+                <TimelineStatusItem label="会议平台" value={sourcePlatformLabel(sourcePlatform)} />
+                <TimelineStatusItem label="捕获模式" value={captureModeLabel(captureMode)} />
+                <TimelineStatusItem label="音频状态" value={audioLabel} />
+                <TimelineStatusItem label="WebSocket" value={webSocketLabel} />
+                <TimelineStatusItem label="有效音频" value={effectiveAudioLabel} />
+                <TimelineStatusItem label="ASR" value={asrStatusLabel} />
+                <TimelineStatusItem label="翻译" value={translationStatusLabel} />
               </dl>
               {timelineItems.length > 0 ? (
-                <ol className="mt-4 grid gap-3 text-sm">
-                  {timelineItems.map((item) => (
-                    <li
-                      className="border-l-2 border-zinc-300 pl-3 leading-6"
-                      key={item.id}
-                    >
-                      <p className="font-medium text-zinc-950">{item.text}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatTimestamp(item.timestamp_ms)}
-                      </p>
-                    </li>
-                  ))}
-                </ol>
+                <>
+                  <TimelineFilterButtons
+                    activeFilter={timelineFilter}
+                    ariaLabel="筛选会议时间线"
+                    className="mt-4"
+                    onFilterChange={setTimelineFilter}
+                  />
+                  <TimelineEventList
+                    emptyMessage="当前筛选下暂无会议事件。"
+                    items={filterTimelineItems(timelineItems, timelineFilter)}
+                    onSelectSegment={(segmentId) =>
+                      scrollToElement(realtimeSegmentElementId(segmentId))
+                    }
+                  />
+                </>
               ) : (
                 <p className="mt-4 text-sm leading-6 text-muted-foreground">
                   暂无会议事件。
@@ -645,13 +669,138 @@ function StatusItem({
   )
 }
 
-function TimelineItem({ label, value }: { label: string; value: string }) {
+function TimelineStatusItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="font-medium">{value}</dd>
     </div>
   )
+}
+
+function TimelineFilterButtons({
+  activeFilter,
+  ariaLabel,
+  className,
+  onFilterChange,
+}: {
+  activeFilter: TimelineFilter
+  ariaLabel: string
+  className?: string
+  onFilterChange: (filter: TimelineFilter) => void
+}) {
+  return (
+    <div
+      aria-label={ariaLabel}
+      className={`inline-flex w-full rounded-md border border-border bg-background p-1 sm:w-auto ${
+        className ?? ''
+      }`}
+      role="group"
+    >
+      {TIMELINE_FILTERS.map((filter) => (
+        <Button
+          aria-pressed={activeFilter === filter.value}
+          className="flex-1 sm:flex-none"
+          key={filter.value}
+          onClick={() => onFilterChange(filter.value)}
+          size="sm"
+          type="button"
+          variant={activeFilter === filter.value ? 'secondary' : 'ghost'}
+        >
+          {filter.label}
+        </Button>
+      ))}
+    </div>
+  )
+}
+
+function TimelineEventList({
+  emptyMessage,
+  items,
+  onSelectSegment,
+}: {
+  emptyMessage: string
+  items: TimelineItem[]
+  onSelectSegment: (segmentId: string) => void
+}) {
+  if (items.length === 0) {
+    return (
+      <p className="mt-4 text-sm leading-6 text-muted-foreground">
+        {emptyMessage}
+      </p>
+    )
+  }
+
+  return (
+    <ol className="mt-4 grid gap-3 text-sm">
+      {items.map((item) => (
+        <li className="border-l-2 border-zinc-300 pl-3 leading-6" key={item.id}>
+          {item.segment_id ? (
+            <button
+              aria-label={`${timelineTypeLabel(item.item_type)} ${item.text}`}
+              className="grid w-full gap-1 text-left"
+              onClick={() => onSelectSegment(item.segment_id as string)}
+              type="button"
+            >
+              <TimelineEventContent item={item} />
+            </button>
+          ) : (
+            <TimelineEventContent item={item} />
+          )}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function TimelineEventContent({ item }: { item: TimelineItem }) {
+  return (
+    <>
+      <p className="text-xs font-medium text-muted-foreground">
+        {timelineTypeLabel(item.item_type)}
+      </p>
+      <p className="font-medium text-zinc-950">{item.text}</p>
+      <p className="text-xs text-muted-foreground">
+        {formatTimestamp(item.timestamp_ms)}
+      </p>
+    </>
+  )
+}
+
+function filterTimelineItems(
+  items: TimelineItem[],
+  activeFilter: TimelineFilter,
+): TimelineItem[] {
+  if (activeFilter === 'all') {
+    return items
+  }
+  return items.filter((item) => item.item_type === activeFilter)
+}
+
+function timelineTypeLabel(itemType: string): string {
+  switch (itemType) {
+    case 'segment_final':
+      return 'final'
+    case 'key_sentence':
+      return '重点句'
+    case 'export_created':
+      return '导出事件'
+    case 'exception':
+      return '异常'
+    default:
+      return itemType
+  }
+}
+
+function realtimeSegmentElementId(segmentId: string): string {
+  return `realtime-segment-${segmentId}`
+}
+
+function scrollToElement(elementId: string): void {
+  document.getElementById(elementId)?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'center',
+  })
 }
 
 function isArchivePath(): boolean {

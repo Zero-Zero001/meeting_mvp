@@ -432,6 +432,74 @@ describe('App', () => {
     ).toBeInTheDocument()
   })
 
+  it('filters realtime timeline nodes and scrolls to linked final segments', async () => {
+    const user = userEvent.setup()
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    useSessionStore.setState({
+      ...useSessionStore.getState(),
+      finalSegments: [
+        {
+          chinese_text_final: '预算审查调整到周五。',
+          end_ms: 2400,
+          english_text_final: 'The budget review moved to Friday.',
+          segment_id: 'segment-1',
+          sequence: 1,
+          start_ms: 0,
+          type: 'segment_final',
+        },
+      ],
+      timelineItems: [
+        {
+          id: 'segment-final-segment-1',
+          item_type: 'segment_final',
+          segment_id: 'segment-1',
+          text: '预算审查调整到周五。',
+          timestamp_ms: 2400,
+        },
+        {
+          id: 'key-sentence-segment-1',
+          item_type: 'key_sentence',
+          segment_id: 'segment-1',
+          text: '预算审查调整到周五。',
+          timestamp_ms: 2400,
+        },
+        {
+          id: 'export-created-export-1',
+          item_type: 'export_created',
+          text: '已生成 Markdown 导出',
+          timestamp_ms: 540000,
+        },
+        {
+          id: 'exception-qwen_asr_error-0',
+          item_type: 'exception',
+          text: '英文转写服务异常',
+          timestamp_ms: 0,
+        },
+      ],
+    })
+
+    render(<App />)
+    const timelineRegion = within(
+      screen.getByRole('region', { name: '会议时间线区' }),
+    )
+
+    await user.click(timelineRegion.getByRole('button', { name: '导出' }))
+    expect(timelineRegion.getByText('已生成 Markdown 导出')).toBeInTheDocument()
+    expect(timelineRegion.queryByText('英文转写服务异常')).not.toBeInTheDocument()
+
+    await user.click(timelineRegion.getByRole('button', { name: '全部' }))
+    await user.click(timelineRegion.getAllByRole('button', { name: /预算审查/ })[0])
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'center',
+    })
+  })
+
   it('keeps Chinese interim visually distinct from final translation text', () => {
     useSessionStore.setState({
       ...useSessionStore.getState(),

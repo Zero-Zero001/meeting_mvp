@@ -37,6 +37,28 @@ const archiveResponse: ArchiveResponse = {
   source_platform: 'google_meet',
   started_at: '2026-05-16T10:00:00Z',
   status: 'ended',
+  timeline_items: [
+    {
+      id: 'segment-final-22222222-2222-4222-8222-222222222222',
+      item_type: 'segment_final',
+      segment_id: '22222222-2222-4222-8222-222222222222',
+      text: '我们需要在周五前对齐上线时间线。',
+      timestamp_ms: 3200,
+    },
+    {
+      id: 'key-sentence-22222222-2222-4222-8222-222222222222',
+      item_type: 'key_sentence',
+      segment_id: '22222222-2222-4222-8222-222222222222',
+      text: '我们需要在周五前对齐上线时间线。',
+      timestamp_ms: 3200,
+    },
+    {
+      id: 'exception-qwen_final_translation_failed-0',
+      item_type: 'exception',
+      text: '中文正式翻译失败，已进入后台补译',
+      timestamp_ms: 9800,
+    },
+  ],
 }
 
 const secondSegment: ArchiveSegment = {
@@ -126,6 +148,40 @@ describe('ArchivePage', () => {
       within(segment).getByText('我们需要在周五前对齐上线时间。'),
     ).toBeInTheDocument()
     expect(within(segment).getByText('重点句')).toBeInTheDocument()
+  })
+
+  it('renders archive timeline filters and scrolls to linked segments', async () => {
+    const user = userEvent.setup()
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(window.HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue(archiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    const timeline = within(await screen.findByRole('region', { name: '归档时间线' }))
+    expect(timeline.getByText('中文正式翻译失败，已进入后台补译')).toBeInTheDocument()
+
+    await user.click(timeline.getByRole('button', { name: '异常' }))
+    expect(timeline.getByText('中文正式翻译失败，已进入后台补译')).toBeInTheDocument()
+    expect(timeline.queryByText('我们需要在周五前对齐上线时间线。')).not.toBeInTheDocument()
+
+    await user.click(timeline.getByRole('button', { name: '全部' }))
+    await user.click(timeline.getAllByRole('button', { name: /上线时间线/ })[0])
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'center',
+    })
   })
 
   it('renders an empty archive state', async () => {
@@ -461,6 +517,11 @@ describe('ArchivePage', () => {
       'https://cos.example.test/private-download',
     )
     expect(screen.getByText('导出已生成')).toBeInTheDocument()
+    expect(
+      within(screen.getByRole('region', { name: '归档时间线' })).getByText(
+        '已生成 Markdown 导出',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('shows export failure guidance without clearing archive content', async () => {

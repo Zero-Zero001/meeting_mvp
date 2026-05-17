@@ -424,6 +424,19 @@ def usage_event_types(
     return [record.event_type for record in usage_event_recorder.records]
 
 
+def timeline_items_of_type(
+    timeline_update: dict[str, object],
+    item_type: str,
+) -> list[dict[str, object]]:
+    items = timeline_update["items"]
+    assert isinstance(items, list)
+    return [
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("item_type") == item_type
+    ]
+
+
 def test_session_start_returns_session_started_and_writes_pending_session() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
@@ -633,6 +646,7 @@ def test_valid_audio_frame_runs_mock_provider_and_archives_final_segment() -> No
             audio_status = websocket.receive_json()
             asr_interim = websocket.receive_json()
             warning = websocket.receive_json()
+            warning_timeline = websocket.receive_json()
             translation_interim = websocket.receive_json()
             segment_final = websocket.receive_json()
             key_sentence = websocket.receive_json()
@@ -651,6 +665,16 @@ def test_valid_audio_frame_runs_mock_provider_and_archives_final_segment() -> No
         "code": "mock_qwen_interim_retry",
         "message": "Mock interim provider recovered after a simulated retry.",
     }
+    assert warning_timeline["type"] == "timeline_update"
+    assert timeline_items_of_type(warning_timeline, "exception") == [
+        {
+            "id": "exception-mock_qwen_interim_retry-0",
+            "item_type": "exception",
+            "timestamp_ms": 0,
+            "text": "临时理解出现可恢复异常",
+            "segment_id": None,
+        },
+    ]
     assert translation_interim == {
         "type": "translation_interim",
         "text": "我们需要对齐上线时间线。",
@@ -672,7 +696,29 @@ def test_valid_audio_frame_runs_mock_provider_and_archives_final_segment() -> No
         "text": "我们需要在周五前对齐上线时间线。",
     }
     assert timeline_update["type"] == "timeline_update"
-    assert timeline_update["items"][0]["segment_id"] == segment_final["segment_id"]
+    assert [item["item_type"] for item in timeline_update["items"]] == [
+        "exception",
+        "segment_final",
+        "key_sentence",
+    ]
+    assert timeline_items_of_type(timeline_update, "segment_final") == [
+        {
+            "id": f"segment-final-{segment_final['segment_id']}",
+            "item_type": "segment_final",
+            "timestamp_ms": 3200,
+            "text": "我们需要在周五前对齐上线时间线。",
+            "segment_id": segment_final["segment_id"],
+        },
+    ]
+    assert timeline_items_of_type(timeline_update, "key_sentence") == [
+        {
+            "id": f"key-sentence-{segment_final['segment_id']}",
+            "item_type": "key_sentence",
+            "timestamp_ms": 3200,
+            "text": "我们需要在周五前对齐上线时间线。",
+            "segment_id": segment_final["segment_id"],
+        },
+    ]
 
     assert len(repository.transcript_segments) == 1
     stored_segment = repository.transcript_segments[0]
@@ -806,6 +852,30 @@ def test_stt_final_triggers_final_translation_and_archives_segment() -> None:
             "text": "我们需要在周五前对齐上线时间线。",
         },
     ]
+    timeline_updates = [
+        message
+        for message in remaining_messages
+        if message["type"] == "timeline_update"
+    ]
+    assert len(timeline_updates) == 1
+    assert timeline_items_of_type(timeline_updates[0], "segment_final") == [
+        {
+            "id": f"segment-final-{segment_final['segment_id']}",
+            "item_type": "segment_final",
+            "timestamp_ms": 3200,
+            "text": "我们需要在周五前对齐上线时间线。",
+            "segment_id": segment_final["segment_id"],
+        },
+    ]
+    assert timeline_items_of_type(timeline_updates[0], "key_sentence") == [
+        {
+            "id": f"key-sentence-{segment_final['segment_id']}",
+            "item_type": "key_sentence",
+            "timestamp_ms": 3200,
+            "text": "我们需要在周五前对齐上线时间线。",
+            "segment_id": segment_final["segment_id"],
+        },
+    ]
     assert len(repository.transcript_segments) == 1
     stored_segment = repository.transcript_segments[0]
     assert stored_segment.segment_id == segment_final["segment_id"]
@@ -915,11 +985,21 @@ def test_final_translation_failure_archives_failed_segment_and_continues() -> No
             websocket.send_bytes(b"\x00\x01")
             receive_until_message_type(websocket, "audio_status")
             warning = receive_until_message_type(websocket, "warning")
+            warning_timeline = receive_until_message_type(websocket, "timeline_update")
             segment_final = receive_until_message_type(websocket, "segment_final")
             websocket.send_json({"type": "session_stop", "session_id": session_id})
             closed = receive_until_message_type(websocket, "session_closed")
 
     assert warning["code"] == "qwen_final_translation_failed"
+    assert timeline_items_of_type(warning_timeline, "exception") == [
+        {
+            "id": "exception-qwen_final_translation_failed-0",
+            "item_type": "exception",
+            "timestamp_ms": 1200,
+            "text": "中文正式翻译失败，已进入后台补译",
+            "segment_id": repository.transcript_segments[0].segment_id,
+        },
+    ]
     assert segment_final["sequence"] == 2
     assert segment_final["chinese_text_final"] == "预算审查调整到周五。"
     assert closed == {"type": "session_closed", "reason": "user_stopped"}
@@ -1176,6 +1256,7 @@ def test_interim_translation_failure_sends_recoverable_warning() -> None:
             receive_until_message_type(websocket, "audio_status")
             asr_interim = receive_until_message_type(websocket, "asr_interim")
             warning = receive_until_message_type(websocket, "warning")
+            warning_timeline = receive_until_message_type(websocket, "timeline_update")
             websocket.send_json({"type": "session_stop", "session_id": session_id})
             closed = receive_until_message_type(websocket, "session_closed")
 
@@ -1185,6 +1266,15 @@ def test_interim_translation_failure_sends_recoverable_warning() -> None:
         "code": "qwen_interim_translation_failed",
         "message": "中文临时理解暂时不可用，英文转写会继续。",
     }
+    assert timeline_items_of_type(warning_timeline, "exception") == [
+        {
+            "id": "exception-qwen_interim_translation_failed-0",
+            "item_type": "exception",
+            "timestamp_ms": 0,
+            "text": "中文临时理解暂时不可用",
+            "segment_id": None,
+        },
+    ]
     assert closed == {"type": "session_closed", "reason": "user_stopped"}
     assert repository.transcript_segments == []
 
@@ -1239,10 +1329,20 @@ def test_qwen_asr_error_closes_session_and_releases_quota() -> None:
             websocket.send_bytes(b"\x00\x01")
             websocket.receive_json()
             error = websocket.receive_json()
+            timeline_update = websocket.receive_json()
             closed = websocket.receive_json()
 
     assert error["type"] == "error"
     assert error["code"] == "qwen_asr_error"
+    assert timeline_items_of_type(timeline_update, "exception") == [
+        {
+            "id": "exception-qwen_asr_error-0",
+            "item_type": "exception",
+            "timestamp_ms": 0,
+            "text": "英文转写服务异常",
+            "segment_id": None,
+        },
+    ]
     assert closed == {"type": "session_closed", "reason": "qwen_asr_error"}
     assert repository.sessions[session_id].status is MeetingSessionStatus.ERROR
     assert quota_service.released_session_ids == [session_id]
@@ -1320,11 +1420,7 @@ def test_stopping_session_cancels_mock_provider_after_preserving_segments() -> N
             session_id = started["session_id"]
 
             websocket.send_bytes(b"\x00\x01")
-            websocket.receive_json()
-            websocket.receive_json()
-            websocket.receive_json()
-            websocket.receive_json()
-            segment_final = websocket.receive_json()
+            segment_final = receive_until_message_type(websocket, "segment_final")
             websocket.send_json({"type": "session_stop", "session_id": session_id})
             while True:
                 message = websocket.receive_json()
