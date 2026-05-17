@@ -1,4 +1,5 @@
 import asyncio
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, cast
@@ -8,6 +9,7 @@ import structlog
 from fastapi import (
     Depends,
     FastAPI,
+    Header,
     HTTPException,
     Query,
     Request,
@@ -55,6 +57,11 @@ from meeting_mvp_backend.translation_retries import (
     TranslationRetryProcessor,
     TranslationRetryWorker,
     create_redis_translation_retry_queue_from_settings,
+)
+from meeting_mvp_backend.usage_dashboard import (
+    SQLAlchemyUsageDashboardRepository,
+    UsageDashboardResponse,
+    UsageDashboardService,
 )
 from meeting_mvp_backend.usage_events import SQLAlchemyUsageEventRecorder
 from meeting_mvp_backend.ws_sessions import (
@@ -227,6 +234,63 @@ def get_archive_export_service(
         usage_event_recorder=SQLAlchemyUsageEventRecorder(
             session_factory=request.app.state.db_session_factory,
         ),
+    )
+
+
+def authorize_usage_dashboard_admin(
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    authorization: str | None = Header(default=None),
+) -> None:
+    admin_token = settings.dashboard_admin_token
+    if admin_token is None or admin_token.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Usage dashboard is not configured",
+        )
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid dashboard admin token",
+        )
+    provided_token = authorization.removeprefix("Bearer ").strip()
+    if provided_token == "" or not secrets.compare_digest(
+        provided_token,
+        admin_token,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid dashboard admin token",
+        )
+
+
+def get_usage_dashboard_service(
+    request: Request,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+) -> UsageDashboardService:
+    if (
+        settings.dashboard_admin_token is None
+        or settings.dashboard_admin_token.strip() == ""
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Usage dashboard is not configured",
+        )
+    if not settings.database_url:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="DATABASE_URL is required to view usage dashboard",
+        )
+
+    if not hasattr(request.app.state, "db_session_factory"):
+        engine = create_engine(settings.database_url)
+        request.app.state.db_engine = engine
+        request.app.state.db_session_factory = create_session_factory(engine)
+
+    return UsageDashboardService(
+        repository=SQLAlchemyUsageDashboardRepository(
+            request.app.state.db_session_factory,
+        ),
+        settings=settings,
     )
 
 
@@ -428,6 +492,18 @@ async def create_archive_export(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Archive export is temporarily unavailable",
         ) from exc
+
+
+@app.get("/api/admin/usage-dashboard")
+async def view_usage_dashboard(
+    _admin: Annotated[None, Depends(authorize_usage_dashboard_admin)],
+    service: Annotated[
+        UsageDashboardService,
+        Depends(get_usage_dashboard_service),
+    ],
+    days: int = Query(default=30, ge=1, le=90),
+) -> UsageDashboardResponse:
+    return await service.build_dashboard(days=days)
 
 
 @app.websocket("/ws")

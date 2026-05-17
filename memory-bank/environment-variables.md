@@ -46,6 +46,11 @@
 | `MAX_ACTIVE_SESSIONS_PER_CLIENT` | `1` | 否 | 同一匿名用户最大活跃会议数。 |
 | `MONTHLY_BUDGET_RMB` | `500` | 否 | 月度预算参考值。 |
 | `BUDGET_FUSE_RMB` | `400` | 否 | 预算保险丝阈值。 |
+| `DASHBOARD_ADMIN_TOKEN` | 空 | 否 | 使用量与成本看板管理口令；只允许后端读取，必须通过 `Authorization: Bearer ...` 发送，不支持 query token。 |
+| `DASHBOARD_USD_TO_RMB` | `7.2` | 否 | 看板成本估算使用的美元兑人民币汇率。 |
+| `DASHBOARD_QWEN_ASR_USD_PER_SECOND` | `0.00009` | 否 | 看板估算 Qwen realtime ASR 成本的美元/秒单价。 |
+| `DASHBOARD_QWEN_TEXT_INPUT_USD_PER_1M_TOKENS` | `0.861` | 否 | 看板估算 Qwen 文本模型输入成本的美元/百万 token 单价。 |
+| `DASHBOARD_QWEN_TEXT_OUTPUT_USD_PER_1M_TOKENS` | `3.441` | 否 | 看板估算 Qwen 文本模型输出成本的美元/百万 token 单价。 |
 | `ARCHIVE_RETENTION_DAYS` | `30` | 否 | 会议归档和 COS 导出默认保留天数。 |
 | `COS_SIGNED_URL_TTL_SECONDS` | `3600` | 否 | COS 短期签名 URL 有效期。 |
 | `SESSION_RESUME_GRACE_SECONDS` | `30` | 否 | 浏览器断线后允许恢复同一业务 session 的宽限秒数。 |
@@ -82,3 +87,5 @@
 - `staging`、`production` 模式要求后端启动前具备数据库、Redis、Qwen realtime ASR、Qwen final/interim 和 COS 关键配置。
 - 后端启动日志只允许输出配置名和 `set` / `unset` 状态，不允许输出任何变量值。
 - 前端构建产物中不应包含 `QWEN_*`、`OPENAI_*`、`GOOGLE_*`、`DATABASE_URL`、`REDIS_URL`、`TENCENT_COS_*`。
+- `DASHBOARD_ADMIN_TOKEN` 是后端私有管理口令，不得写入前端 `.env`、localStorage、sessionStorage、URL query、日志、usage event 或项目记忆文档；示例文件只能使用空值或 placeholder。
+- 看板成本字段均为安全估算配置，不是账单对账来源；默认价格参考阿里云 Model Studio pricing 和 supported models 文档，生产可按实际采购价格覆盖。

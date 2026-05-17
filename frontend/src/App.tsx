@@ -16,6 +16,7 @@ import {
 
 import { Button } from '@/components/ui/button'
 import ArchivePage from '@/archive/ArchivePage'
+import UsageDashboardPage from '@/admin/UsageDashboardPage'
 import {
   useSessionStore,
   type AudioProcessingStatus,
@@ -166,6 +167,10 @@ function startButtonLabel({
 }
 
 function App() {
+  if (isUsageDashboardPath()) {
+    return <UsageDashboardPage />
+  }
+
   if (isArchivePath()) {
     return <ArchivePage />
   }
@@ -808,6 +813,13 @@ function isArchivePath(): boolean {
     return false
   }
   return window.location.pathname.startsWith('/archive/')
+}
+
+function isUsageDashboardPath(): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  return window.location.pathname === '/admin/usage-dashboard'
 }
 
 export default App

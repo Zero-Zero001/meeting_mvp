@@ -29,6 +29,11 @@ SETTINGS_ENV_NAMES = [
     "MAX_ACTIVE_SESSIONS_PER_CLIENT",
     "MONTHLY_BUDGET_RMB",
     "BUDGET_FUSE_RMB",
+    "DASHBOARD_ADMIN_TOKEN",
+    "DASHBOARD_QWEN_ASR_USD_PER_SECOND",
+    "DASHBOARD_QWEN_TEXT_INPUT_USD_PER_1M_TOKENS",
+    "DASHBOARD_QWEN_TEXT_OUTPUT_USD_PER_1M_TOKENS",
+    "DASHBOARD_USD_TO_RMB",
     "ARCHIVE_RETENTION_DAYS",
     "COS_SIGNED_URL_TTL_SECONDS",
     "ASR_PROVIDER",
@@ -72,6 +77,11 @@ def test_example_config_loads_local_mock_defaults(
     assert settings.app_env is AppEnv.LOCAL
     assert settings.archive_retention_days == 30
     assert settings.cos_signed_url_ttl_seconds == 3600
+    assert settings.dashboard_admin_token is None
+    assert settings.dashboard_qwen_asr_usd_per_second == 0.00009
+    assert settings.dashboard_qwen_text_input_usd_per_1m_tokens == 0.861
+    assert settings.dashboard_qwen_text_output_usd_per_1m_tokens == 3.441
+    assert settings.dashboard_usd_to_rmb == 7.2
     assert settings.asr_provider == "qwen_realtime"
     assert settings.qwen_asr_model == "qwen3-asr-flash-realtime"
     assert settings.qwen_asr_sample_rate_hz == 16000

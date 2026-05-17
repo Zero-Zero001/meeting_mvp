@@ -151,6 +151,7 @@ function installRealtimeMocks() {
 
 describe('App', () => {
   beforeEach(() => {
+    window.history.pushState({}, '', '/')
     useSessionStore.setState(initialSessionState)
     setReadyIdentity()
     installRealtimeMocks()
@@ -186,6 +187,20 @@ describe('App', () => {
     expect(screen.getByRole('region', { name: '中文翻译区' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '当前重点句区' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: '会议时间线区' })).toBeInTheDocument()
+  })
+
+  it('routes the admin usage dashboard without adding it to the meeting workspace', () => {
+    window.history.pushState({}, '', '/admin/usage-dashboard')
+
+    render(<App />)
+
+    expect(
+      screen.getByRole('heading', { name: '使用量与成本看板' }),
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('管理口令')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: '实时会议工作台' }),
+    ).not.toBeInTheDocument()
   })
 
   it('marks all realtime workspace regions as polite live regions', () => {

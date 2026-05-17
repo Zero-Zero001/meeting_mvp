@@ -1525,3 +1525,56 @@
 - `timeline_update` 是实时页的服务端权威快照，前端不从 final 自行派生实时节点。
 - 时间线异常节点只使用 code 映射摘要；不得写入异常正文、正文、URL、token、密钥或音频。
 - 归档时间线派生自现有表和安全事件元数据，不新增 schema；后续扩展事件源时继续只使用安全元数据。
+
+## 2026-05-17 Step 28：F14 使用量与成本看板
+
+### 本次完成
+
+- 只推进用户明确指定的 Step 28，未开始 Step 29；本步不新增数据库表、不新增 migration、不新增 Provider、不运行真实 Qwen/COS/Lighthouse smoke。
+- 新增后端 `backend/src/meeting_mvp_backend/usage_dashboard.py`：
+  - 从既有 `meeting_session` 和 `usage_event` 聚合 1..90 天看板数据，按 `Asia/Shanghai` 业务日期归档。
+  - 输出每日会议数、有效会议数、活跃匿名用户数、ASR 分钟、Qwen interim/final 请求数、估算 token、导出数、错误数、预算保险丝次数、每日/本月估算成本、漏斗和腾讯会议成功率。
+  - 成本估算使用安全元数据：`duration_seconds`、`quota_seconds_consumed`、`text_length`、`english_text_length`、`chinese_text_length`、`provider`、`code` 等；token 估算固定为 `ceil(text_length / 4)`。
+- 新增后端管理 API：
+  - `GET /api/admin/usage-dashboard?days=30`，`days` 限制为 `1..90`。
+  - 必须携带 `Authorization: Bearer <DASHBOARD_ADMIN_TOKEN>`；未配置返回 503，缺失或错误口令返回 401，不支持 query token。
+  - 响应只返回安全聚合数据，不返回正文、archive token、archive URL、COS object key、下载 URL、密钥、IP/User-Agent 明文或音频。
+- 扩展后端配置与示例：
+  - 新增私有配置 `DASHBOARD_ADMIN_TOKEN`。
+  - 新增可调估价配置 `DASHBOARD_USD_TO_RMB`、`DASHBOARD_QWEN_ASR_USD_PER_SECOND`、`DASHBOARD_QWEN_TEXT_INPUT_USD_PER_1M_TOKENS`、`DASHBOARD_QWEN_TEXT_OUTPUT_USD_PER_1M_TOKENS`。
+  - `DASHBOARD_ADMIN_TOKEN=` 空值会归一化为未配置，便于 local 示例文件保持无真实口令。
+- 新增前端管理看板：
+  - 新增 `frontend/src/api/usage-dashboard.ts`，只通过 Authorization header 发送口令，不把口令放进 URL 或 body。
+  - 新增 `frontend/src/admin/UsageDashboardPage.tsx`，路径为 `/admin/usage-dashboard`，不加入普通会议页或归档页入口。
+  - 页面口令只保存在 React state，不写入 localStorage/sessionStorage；支持 7/30/90 天切换、核心指标、每日趋势、首次使用/会议质量/价值验证漏斗、错误与质量、成本与预算展示。
+  - 401 显示“管理口令无效”，503 显示“看板未配置”，网络失败显示可访问错误提示。
+- 扩展测试文件：
+  - `backend/tests/test_usage_dashboard.py`
+  - `backend/tests/test_config.py`
+  - `frontend/src/api/usage-dashboard.test.ts`
+  - `frontend/src/admin/UsageDashboardPage.test.tsx`
+  - `frontend/src/App.test.tsx`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 28 后端 RED | `uv run pytest tests/test_usage_dashboard.py tests/test_config.py tests/test_usage_events.py -q` | 首次 ImportError：缺少 `get_usage_dashboard_service` / `meeting_mvp_backend.usage_dashboard` |
+| Step 28 前端 RED | `npm run test -- src/api/usage-dashboard.test.ts src/admin/UsageDashboardPage.test.tsx src/App.test.tsx` | 首次 3 failed：缺少看板 API client、看板页面和 `/admin/usage-dashboard` 路由 |
+| Step 28 后端目标 GREEN | `uv run pytest tests/test_usage_dashboard.py tests/test_config.py tests/test_usage_events.py -q` | 33 passed |
+| Step 28 前端目标 GREEN | `npm run test -- src/api/usage-dashboard.test.ts src/admin/UsageDashboardPage.test.tsx src/App.test.tsx` | 3 个测试文件、22 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 45 source files` |
+| 后端 pytest | `uv run pytest` | 167 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 15 个测试文件、123 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过，无空白错误 |
+
+### 后续注意
+
+- Step 29 必须等待用户明确允许后再开始；当前没有 Provider 开关、Provider 切换 UI、Provider 配置页或真实 OpenAI/Qwen 对比入口。
+- 管理看板是内部工具，应用层只提供 bearer 管理口令；生产是否额外限制路径访问应由部署/Caddy/运维策略决定。
+- 看板成本是基于安全元数据的估算，不是账单对账；如果后续加入真实 provider usage 表，需要继续禁止正文、token、URL、密钥和音频进入 usage event。
+- 前端口令仅保存在组件 state；后续不要把 `DASHBOARD_ADMIN_TOKEN` 变成 `VITE_*`、写入本地存储或拼进 URL。

@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +44,15 @@ ENV_FIELD_MAP = {
     "MAX_ACTIVE_SESSIONS_PER_CLIENT": "max_active_sessions_per_client",
     "MONTHLY_BUDGET_RMB": "monthly_budget_rmb",
     "BUDGET_FUSE_RMB": "budget_fuse_rmb",
+    "DASHBOARD_ADMIN_TOKEN": "dashboard_admin_token",
+    "DASHBOARD_QWEN_ASR_USD_PER_SECOND": "dashboard_qwen_asr_usd_per_second",
+    "DASHBOARD_QWEN_TEXT_INPUT_USD_PER_1M_TOKENS": (
+        "dashboard_qwen_text_input_usd_per_1m_tokens"
+    ),
+    "DASHBOARD_QWEN_TEXT_OUTPUT_USD_PER_1M_TOKENS": (
+        "dashboard_qwen_text_output_usd_per_1m_tokens"
+    ),
+    "DASHBOARD_USD_TO_RMB": "dashboard_usd_to_rmb",
     "ARCHIVE_RETENTION_DAYS": "archive_retention_days",
     "COS_SIGNED_URL_TTL_SECONDS": "cos_signed_url_ttl_seconds",
     "SESSION_RESUME_GRACE_SECONDS": "session_resume_grace_seconds",
@@ -135,6 +144,26 @@ class Settings(BaseSettings):
     )
     monthly_budget_rmb: int = Field(default=500, validation_alias="MONTHLY_BUDGET_RMB")
     budget_fuse_rmb: int = Field(default=400, validation_alias="BUDGET_FUSE_RMB")
+    dashboard_admin_token: str | None = Field(
+        default=None,
+        validation_alias="DASHBOARD_ADMIN_TOKEN",
+    )
+    dashboard_qwen_asr_usd_per_second: float = Field(
+        default=0.00009,
+        validation_alias="DASHBOARD_QWEN_ASR_USD_PER_SECOND",
+    )
+    dashboard_qwen_text_input_usd_per_1m_tokens: float = Field(
+        default=0.861,
+        validation_alias="DASHBOARD_QWEN_TEXT_INPUT_USD_PER_1M_TOKENS",
+    )
+    dashboard_qwen_text_output_usd_per_1m_tokens: float = Field(
+        default=3.441,
+        validation_alias="DASHBOARD_QWEN_TEXT_OUTPUT_USD_PER_1M_TOKENS",
+    )
+    dashboard_usd_to_rmb: float = Field(
+        default=7.2,
+        validation_alias="DASHBOARD_USD_TO_RMB",
+    )
     archive_retention_days: int = Field(
         default=30,
         validation_alias="ARCHIVE_RETENTION_DAYS",
@@ -225,6 +254,14 @@ class Settings(BaseSettings):
         default="exports/",
         validation_alias="TENCENT_COS_EXPORT_PREFIX",
     )
+
+    @field_validator("dashboard_admin_token", mode="before")
+    @classmethod
+    def empty_dashboard_admin_token_to_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped if stripped else None
+        return value
 
 
 def _is_set(value: object) -> bool:

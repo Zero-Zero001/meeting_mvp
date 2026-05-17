@@ -34,7 +34,8 @@
 - Step 24 已实现 F12 Markdown / JSON 导出：后端新增 `meeting_mvp_backend.exports`，复用 archive token 授权生成 Markdown/JSON，上传腾讯 COS 私有对象，写入 `export_file`，返回短期下载地址，并记录 `export_created` / `export_failed` 安全事件；前端归档页新增 Markdown/JSON 导出按钮、空归档禁用、成功下载链接和导出失败提示；新增 `cos-python-sdk-v5` 后端依赖；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 25 已实现后台 Final 补译队列：后端新增 `meeting_mvp_backend.translation_retries`，使用 Redis scheduled set 与 per-segment lock 调度 failed/retrying 片段，worker 复用 Qwen final provider 自动补译并更新 `transcript_segment.translation_status`；WebSocket final 首次失败后自动入队，FastAPI lifespan 在非 local 且 DB/Redis/Qwen final 配置完整时启动 worker；归档 API 返回 `translation_retry_attempts` / `translation_retry_exhausted`，前端归档页显示补译状态并自动 polling；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 26 已实现 F17 当前重点句增强：后端新增 `meeting_mvp_backend.key_sentences` 用确定性规则识别行动项、决策、截止时间、风险、预算、负责人、确认、上线等重点句；Qwen final 成功后写入 `transcript_segment.is_key_sentence` 并命中时推送 `key_sentence_update`；归档 API 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...` 支持人工标记/取消；`usage_event` 新增 `key_sentence_marked` 安全元数据事件；前端归档页新增“只看重点句”筛选和人工标记按钮；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 27 已实现 F18 会议时间线增强：后端新增 `meeting_mvp_backend.timeline` 统一生成 `segment_final`、`key_sentence`、`export_created`、`exception` 节点；WebSocket final/重点句/warning/error 路径推送 `timeline_update`；归档 API 新增 `timeline_items` 派生字段；前端实时页和归档页新增时间线筛选、类型展示和关联片段跳转；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 28。
+- Step 27 已实现 F18 会议时间线增强：后端新增 `meeting_mvp_backend.timeline` 统一生成 `segment_final`、`key_sentence`、`export_created`、`exception` 节点；WebSocket final/重点句/warning/error 路径推送 `timeline_update`；归档 API 新增 `timeline_items` 派生字段；前端实时页和归档页新增时间线筛选、类型展示和关联片段跳转；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 28 已实现 F14 使用量与成本看板：后端新增 `meeting_mvp_backend.usage_dashboard`，提供 `GET /api/admin/usage-dashboard?days=...`，使用 `DASHBOARD_ADMIN_TOKEN` bearer 鉴权，从 `meeting_session` 与 `usage_event` 安全元数据聚合会议数、有效会议、活跃匿名用户、ASR 分钟、Qwen 请求数、估算 token、导出、错误、漏斗、腾讯会议成功率和估算成本；前端新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，不写入本地存储或 URL；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 29。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -43,7 +44,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 27 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 28 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -250,7 +251,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -417,7 +418,7 @@ Step 25 后台 Final 补译队列已落地：
 - `backend/src/meeting_mvp_backend/usage_events.py` 新增 `translation_final_retry_requested`、`translation_final_retry_failed` 和 `STEP_25_USAGE_EVENT_TYPES`；补译成功沿用 `translation_final_completed` 并标记 `retry=true`，所有 payload 只保存 attempt、长度、sequence、segment id、上下文数量、错误类型等安全元数据。
 - `backend/src/meeting_mvp_backend/archives.py` 的 segment 响应新增 `translation_retry_attempts` 和 `translation_retry_exhausted`，从 `usage_event` 派生，不新增表字段。
 - `frontend/src/api/archives.ts` 支持 retry metadata 默认值；`frontend/src/archive/ArchivePage.tsx` 显示“等待后台补译”“后台补译中”“补译失败”和“翻译完成”，并在存在未 exhausted failed/retrying 片段时 polling 重新拉取归档；polling 失败保留页面内容，不影响搜索、复制和导出。
-- Step 25 不实现公开手动 retry API、重点句增强、时间线增强、新导出能力或数据库 migration；Step 26 已在后续补齐当前重点句增强，Step 27 已在后续补齐会议时间线增强，Step 28 必须等待用户明确允许后再开始。
+- Step 25 不实现公开手动 retry API、重点句增强、时间线增强、新导出能力或数据库 migration；Step 26 已在后续补齐当前重点句增强，Step 27 已在后续补齐会议时间线增强，Step 28 已在后续补齐使用量与成本看板。
 
 Step 26 当前重点句增强已落地：
 
@@ -435,7 +436,16 @@ Step 27 会议时间线增强已落地：
 - `backend/src/meeting_mvp_backend/archives.py` 的 `GET /api/archives/{session_id}?token=...` 响应新增 `timeline_items`，从 `transcript_segment`、`ExportFile` 和安全 `usage_event` 元数据派生 final、重点句、导出和异常节点。
 - 导出节点不暴露 COS object key、下载 URL、token 或正文；异常节点只使用错误 code 映射摘要，不透传 provider 原始异常正文。
 - `frontend/src/api/archives.ts` 支持 `timeline_items` schema 并对旧响应默认 `[]`；`frontend/src/App.tsx` 和 `frontend/src/archive/ArchivePage.tsx` 分别增加实时/归档时间线筛选、类型展示和关联 segment 跳转。
-- Step 27 不新增使用量与成本看板、成本聚合 API、运营漏斗页面或新指标 UI；Step 28 必须等待用户明确允许后再开始。
+- Step 27 不新增使用量与成本看板、成本聚合 API、运营漏斗页面或新指标 UI；Step 28 已在后续补齐使用量与成本看板。
+
+Step 28 使用量与成本看板已落地：
+
+- 新增 `backend/src/meeting_mvp_backend/usage_dashboard.py`，从既有 `meeting_session` 与安全 `usage_event` 元数据聚合每日会议数、有效会议数、活跃匿名用户、ASR 分钟、Qwen interim/final 请求数、估算 token、导出、错误、预算保险丝、漏斗、腾讯会议成功率和估算成本；不新增数据库表或 migration。
+- `backend/src/meeting_mvp_backend/main.py` 新增 `GET /api/admin/usage-dashboard?days=...`，`days` 限制 1..90；必须使用 `Authorization: Bearer <DASHBOARD_ADMIN_TOKEN>`，未配置返回 503，缺失/错误返回 401，不支持 query token。
+- `backend/src/meeting_mvp_backend/config.py`、`backend/.env.example`、`deploy/.env.example` 与 `memory-bank/environment-variables.md` 新增后端私有看板口令和成本估算配置；`DASHBOARD_ADMIN_TOKEN` 不得进入前端、URL、本地存储、日志、usage event 或项目记忆文档。
+- `frontend/src/api/usage-dashboard.ts` 新增看板 API client，只在 Authorization header 发送口令；`frontend/src/admin/UsageDashboardPage.tsx` 新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，展示 7/30/90 天指标、趋势、漏斗、错误质量和成本预算。
+- 看板响应只返回安全聚合数据，不返回英文/中文正文、archive token、archive URL、COS object key、下载 URL、密钥、IP/User-Agent 明文或音频。
+- Step 28 不新增 Provider 开关、Provider 配置页面、真实 Provider 对比入口或外部模型调用；Step 29 必须等待用户明确允许后再开始。
 
 核心 WebSocket 请求消息：
 
@@ -491,5 +501,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 28 必须等待用户明确允许后再开始；Step 27 只实现会议时间线节点、WebSocket 推送、归档派生、筛选和跳转，不新增使用量与成本看板、新 Provider、新环境变量或数据库 migration。
+- Step 29 必须等待用户明确允许后再开始；Step 28 只实现使用量与成本看板、管理口令鉴权、安全聚合和估算成本，不新增 Provider 开关、新数据库 migration 或真实 Provider 对比入口。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

@@ -1159,3 +1159,61 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 163 passed，13 integration deselected。
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、114 个测试通过，E2E 为 11 个 Chromium 测试通过。
 - Step 28 未开始；当前没有使用量与成本看板。
+
+## 2026-05-17 Step 28 使用量与成本看板
+
+### 架构状态
+
+- Step 28 实现 F14 的内部管理看板：后端提供 bearer 管理口令保护的安全聚合 API，前端新增独立管理页面 `/admin/usage-dashboard`，不加入普通会议或归档入口。
+- 本步不新增数据库表、migration、Provider、真实 smoke 或前端公开环境变量；看板完全从既有 `meeting_session` 和 `usage_event` 安全元数据派生。
+- 新增 `usage_dashboard` 模块作为聚合边界：SQLAlchemy repository 读取窗口内的 `meeting_session` 与 `usage_event`，`UsageDashboardService` 按 `APP_TIMEZONE` 聚合每日指标、总计、漏斗、质量和成本。
+- API 入口为 `GET /api/admin/usage-dashboard?days=30`，`days` 通过 FastAPI `Query(ge=1, le=90)` 限制；未配置 `DASHBOARD_ADMIN_TOKEN` 返回 503，缺失/错误 `Authorization: Bearer ...` 返回 401。
+- 管理口令只允许走 HTTP header，不支持 query token；后端使用 `secrets.compare_digest()` 比较，响应体不回显口令或任何配置值。
+- 成本估算只使用安全字段：
+  - ASR 秒数来自 `meeting_session.duration_seconds` / `quota_seconds_consumed` 的较大值。
+  - Qwen interim/final 请求数来自 `usage_event.event_type`。
+  - 文本 token 估算来自 `text_length`、`english_text_length`、`chinese_text_length` 等长度字段，规则固定为 `ceil(length / 4)`。
+  - 汇率和单价通过后端私有非密钥配置覆盖，默认使用 Step 28 锁定的 Model Studio 价格假设。
+- 漏斗数据仍基于既有 usage event：首次使用漏斗看 `client_created`、`capture_started`、`audio_detected`、`session_started`、首个 final；会议质量漏斗看 ASR/final/归档/查看；价值验证漏斗看归档查看、搜索、复制、导出和人工重点句。
+- 腾讯会议成功率从 `meeting_session.source_platform=tencent_meeting_web` 与 ended/effective duration 派生，用于粗略观测重点平台质量，不读取正文或音频。
+- 前端 `UsageDashboardPage` 只在 `/admin/usage-dashboard` 路径渲染；口令只保存在 React state，页面刷新即丢失，不写入 localStorage/sessionStorage。
+- 前端看板展示 7/30/90 天切换、核心指标、每日趋势表、首次使用/会议质量/价值验证三类漏斗、错误与质量、成本与预算；401/503/网络失败均用可访问 `role="alert"` 提示。
+- Step 29 未开始：当前没有 Provider 开关、Provider 配置页面、Provider 切换 API 或真实 OpenAI/Qwen 对比入口。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/usage_dashboard.py` | Step 28 新增看板核心模块。定义看板 repository 协议、SQLAlchemy 查询实现、聚合输入 record、响应 Pydantic model、漏斗/质量/成本计算和安全估算规则。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 入口。Step 28 新增 `authorize_usage_dashboard_admin()`、`get_usage_dashboard_service()` 和 `GET /api/admin/usage-dashboard`，负责 bearer 鉴权、未配置 503、DB session factory 注入和 service 调用。 |
+| `backend/src/meeting_mvp_backend/config.py` | 后端配置边界。Step 28 新增 `DASHBOARD_ADMIN_TOKEN` 与成本估算配置，并将空管理口令归一化为未配置；这些变量不进入前端。 |
+| `backend/.env.example` | 后端本地示例配置。Step 28 增加空管理口令和默认成本估算参数，仍不包含真实口令或密钥。 |
+| `deploy/.env.example` | 部署示例配置。Step 28 增加看板管理口令 placeholder 和成本估算参数，供生产安全环境文件按需覆盖。 |
+| `memory-bank/environment-variables.md` | 环境变量唯一清单。Step 28 记录看板口令、成本估算参数、前端禁止边界和安全使用规则。 |
+| `backend/tests/test_usage_dashboard.py` | 后端看板测试。覆盖固定样本聚合、日指标、漏斗、成本估算、预算阈值、腾讯会议成功率、401/503 鉴权边界和响应敏感字段排除。 |
+| `backend/tests/test_config.py` | 后端配置测试。Step 28 覆盖看板配置默认值、空 token 归一化和环境变量清单状态。 |
+| `frontend/src/api/usage-dashboard.ts` | 前端看板 API client。构造 `/api/admin/usage-dashboard?days=...`，只在 Authorization header 发送管理口令，解析安全响应并映射 HTTP 错误。 |
+| `frontend/src/admin/UsageDashboardPage.tsx` | 前端管理看板页。实现口令输入、7/30/90 天切换、指标/趋势/漏斗/质量/成本展示和可访问错误提示；口令只保存在组件 state。 |
+| `frontend/src/App.tsx` | 前端路由分流。Step 28 在 archive 路由之外新增 `/admin/usage-dashboard` 独立页面，不改变实时会议工作台入口。 |
+| `frontend/src/api/usage-dashboard.test.ts` | 前端 API client 测试。覆盖 URL、Authorization header、禁止 query/body token、days 校验和 401/503 错误映射。 |
+| `frontend/src/admin/UsageDashboardPage.test.tsx` | 管理看板组件测试。覆盖口令流、本地存储不写入、天数切换、指标渲染和错误提示。 |
+| `frontend/src/App.test.tsx` | 应用路由测试。Step 28 覆盖 `/admin/usage-dashboard` 只渲染管理看板，不渲染普通实时会议工作台。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 28 记录完成内容、RED/GREEN 过程、完整验证结果和 Step 29 未开始边界。 |
+| `memory-bank/architecture.md` | 架构记录。Step 28 记录看板聚合数据流、鉴权、安全边界和文件职责。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 28 同步项目状态、文件职责摘要和 Step 29 等待用户明确允许。 |
+
+### 数据与安全边界
+
+- 看板 API 响应只返回聚合数字、日期、比例、估算 token 和估算成本；不返回英文/中文正文、archive token、archive URL、COS object key、下载 URL、密钥、IP/User-Agent 明文或音频。
+- `usage_event.payload` 继续只允许安全元数据；Step 28 不新增正文采集，不改变 Step 21 的敏感字段拒绝策略。
+- `DASHBOARD_ADMIN_TOKEN` 是后端私有管理口令：不得加 `VITE_` 前缀，不得写入前端 env、本地存储、URL query、日志、usage event 或项目记忆。
+- 成本展示字段统一使用 `estimated_*` 语义；它依赖长度/次数/时长估算，不代表云厂商账单。
+- 管理页面隐藏在独立路径但不是网络边界；生产环境如需更强限制，应在 Caddy/运维层增加路径访问控制。
+
+### 验证结论
+
+- Step 28 已按 TDD 先跑 RED：后端缺少看板模块与 dependency，前端缺少 API client、页面和路由；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 167 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、123 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- `git diff --check` 已通过，无空白错误。
+- Step 29 未开始；当前没有 Provider 开关。
