@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from meeting_mvp_backend.archive_tokens import hash_archive_token
 from meeting_mvp_backend.archives import (
     ArchiveAccessDenied,
+    ArchiveKeySentenceUpdateRequest,
     ArchiveResponse,
     ArchiveSearchEventRequest,
     ArchiveSegmentCopiedEventRequest,
@@ -60,6 +61,33 @@ class FakeArchiveRepository:
     ) -> str | None:
         return self.latest_close_reason
 
+    async def set_segment_key_sentence(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+        is_key_sentence: bool,
+    ) -> ArchiveTranscriptSegmentRecord | None:
+        for index, segment in enumerate(self.segments):
+            if segment.session_id == session_id and segment.segment_id == segment_id:
+                updated_segment = ArchiveTranscriptSegmentRecord(
+                    chinese_text_final=segment.chinese_text_final,
+                    end_ms=segment.end_ms,
+                    english_text_final=segment.english_text_final,
+                    is_key_sentence=is_key_sentence,
+                    segment_id=segment.segment_id,
+                    sequence=segment.sequence,
+                    session_id=segment.session_id,
+                    speaker_label=segment.speaker_label,
+                    start_ms=segment.start_ms,
+                    translation_retry_attempts=segment.translation_retry_attempts,
+                    translation_retry_exhausted=segment.translation_retry_exhausted,
+                    translation_status=segment.translation_status,
+                )
+                self.segments[index] = updated_segment
+                return updated_segment
+        return None
+
 
 class FakeUsageEventRecorder:
     def __init__(self) -> None:
@@ -94,6 +122,7 @@ class FakeArchiveService:
         self.error = error
         self.calls: list[tuple[uuid.UUID, str]] = []
         self.event_calls: list[tuple[uuid.UUID, str, object]] = []
+        self.key_sentence_calls: list[tuple[uuid.UUID, uuid.UUID, str, bool]] = []
 
     async def view_archive(
         self,
@@ -106,6 +135,31 @@ class FakeArchiveService:
             raise self.error
         assert self.response is not None
         return self.response
+
+    async def set_segment_key_sentence(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+        token: str,
+        request: ArchiveKeySentenceUpdateRequest,
+    ) -> ArchiveSegmentResponse:
+        self.key_sentence_calls.append(
+            (session_id, segment_id, token, request.is_key_sentence),
+        )
+        if self.error is not None:
+            raise self.error
+        return ArchiveSegmentResponse(
+            chinese_text_final="中文 final 1",
+            end_ms=3200,
+            english_text_final="English final 1",
+            is_key_sentence=request.is_key_sentence,
+            segment_id=segment_id,
+            sequence=1,
+            speaker_label=None,
+            start_ms=0,
+            translation_status=TranslationStatus.COMPLETED,
+        )
 
     async def record_archive_event(
         self,
@@ -156,6 +210,7 @@ def make_segment(
     *,
     session_id: uuid.UUID,
     sequence: int,
+    is_key_sentence: bool | None = None,
     translation_status: TranslationStatus = TranslationStatus.COMPLETED,
     translation_retry_attempts: int = 0,
     translation_retry_exhausted: bool = False,
@@ -166,7 +221,7 @@ def make_segment(
         chinese_text_final=f"中文 final {sequence}",
         end_ms=sequence * 2000,
         english_text_final=f"English final {sequence}",
-        is_key_sentence=sequence == 1,
+        is_key_sentence=sequence == 1 if is_key_sentence is None else is_key_sentence,
         sequence=sequence,
         speaker_label=None,
         start_ms=(sequence - 1) * 2000,
@@ -387,6 +442,75 @@ async def test_archive_service_records_copy_event_with_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_archive_service_updates_key_sentence_and_records_safe_event() -> None:
+    session = make_archive_session()
+    segment = make_segment(
+        session_id=session.session_id,
+        sequence=2,
+        is_key_sentence=False,
+    )
+    usage_events = FakeUsageEventRecorder()
+    service = ArchiveService(
+        clock=lambda: FIXED_NOW,
+        repository=FakeArchiveRepository(session=session, segments=[segment]),
+        usage_event_recorder=usage_events,
+    )
+
+    updated_segment = await service.set_segment_key_sentence(
+        session_id=session.session_id,
+        segment_id=segment.segment_id,
+        token="archive-token",
+        request=ArchiveKeySentenceUpdateRequest(is_key_sentence=True),
+    )
+
+    assert updated_segment.is_key_sentence is True
+    assert usage_events.records == [
+        UsageEventRecord(
+            client_id=session.client_id,
+            created_at=FIXED_NOW,
+            event_type=UsageEventType.KEY_SENTENCE_MARKED,
+            payload={
+                "chinese_text_length": len(segment.chinese_text_final),
+                "english_text_length": len(segment.english_text_final),
+                "is_key_sentence": True,
+                "segment_id": str(segment.segment_id),
+                "sequence": 2,
+                "source": "archive_manual",
+                "translation_status": "completed",
+            },
+            session_id=session.session_id,
+        ),
+    ]
+    assert "english_text_final" not in usage_events.records[0].payload
+    assert "chinese_text_final" not in usage_events.records[0].payload
+    assert "token" not in usage_events.records[0].payload
+
+
+@pytest.mark.asyncio
+async def test_archive_service_rejects_key_sentence_update_outside_session() -> None:
+    session = make_archive_session()
+    usage_events = FakeUsageEventRecorder()
+    service = ArchiveService(
+        clock=lambda: FIXED_NOW,
+        repository=FakeArchiveRepository(
+            session=session,
+            segments=[make_segment(session_id=uuid.uuid4(), sequence=1)],
+        ),
+        usage_event_recorder=usage_events,
+    )
+
+    with pytest.raises(ArchiveAccessDenied):
+        await service.set_segment_key_sentence(
+            session_id=session.session_id,
+            segment_id=uuid.uuid4(),
+            token="archive-token",
+            request=ArchiveKeySentenceUpdateRequest(is_key_sentence=True),
+        )
+
+    assert usage_events.records == []
+
+
+@pytest.mark.asyncio
 async def test_archive_service_rejects_copy_event_for_segment_outside_session() -> None:
     session = make_archive_session()
     service = ArchiveService(
@@ -585,6 +709,80 @@ async def test_archive_event_endpoint_hides_denied_archive_as_404() -> None:
                 "query_length": 5,
                 "total_segment_count": 2,
             },
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_archive_key_sentence_endpoint_updates_segment() -> None:
+    service = FakeArchiveService(response=None)
+    app.dependency_overrides[get_archive_service] = lambda: service
+    transport = ASGITransport(app=app)
+    session_id = uuid.uuid4()
+    segment_id = uuid.UUID("22222222-2222-4222-8222-222222222222")
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        response = await client.patch(
+            f"/api/archives/{session_id}/segments/{segment_id}/key-sentence?token=archive-token",
+            json={"is_key_sentence": True},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["segment_id"] == str(segment_id)
+    assert response.json()["is_key_sentence"] is True
+    assert service.key_sentence_calls == [
+        (session_id, segment_id, "archive-token", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_archive_key_sentence_endpoint_rejects_missing_or_empty_token() -> None:
+    service = FakeArchiveService(response=None)
+    app.dependency_overrides[get_archive_service] = lambda: service
+    transport = ASGITransport(app=app)
+    session_id = uuid.uuid4()
+    segment_id = uuid.uuid4()
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        missing_response = await client.patch(
+            f"/api/archives/{session_id}/segments/{segment_id}/key-sentence",
+            json={"is_key_sentence": True},
+        )
+        empty_response = await client.patch(
+            f"/api/archives/{session_id}/segments/{segment_id}/key-sentence?token=",
+            json={"is_key_sentence": True},
+        )
+
+    assert missing_response.status_code == 401
+    assert empty_response.status_code == 401
+    assert service.key_sentence_calls == []
+
+
+@pytest.mark.asyncio
+async def test_archive_key_sentence_endpoint_hides_denied_archive_as_404() -> None:
+    service = FakeArchiveService(
+        response=None,
+        error=ArchiveAccessDenied("archive not found or expired"),
+    )
+    app.dependency_overrides[get_archive_service] = lambda: service
+    transport = ASGITransport(app=app)
+    session_id = uuid.uuid4()
+    segment_id = uuid.uuid4()
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as client:
+        response = await client.patch(
+            f"/api/archives/{session_id}/segments/{segment_id}/key-sentence?token=wrong-token",
+            json={"is_key_sentence": True},
         )
 
     assert response.status_code == 404

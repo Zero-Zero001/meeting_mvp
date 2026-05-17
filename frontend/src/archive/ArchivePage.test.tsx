@@ -280,6 +280,98 @@ describe('ArchivePage', () => {
     )
   })
 
+  it('filters archive segments to key sentences only', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue({
+          ...archiveResponse,
+          segments: [...archiveResponse.segments, secondSegment],
+        } satisfies ArchiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+      />,
+    )
+
+    await screen.findByRole('article', { name: '片段 1' })
+    expect(screen.getByRole('article', { name: '片段 2' })).toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('只看重点句'))
+
+    expect(screen.getByRole('article', { name: '片段 1' })).toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: '片段 2' })).not.toBeInTheDocument()
+  })
+
+  it('marks an archive segment as a key sentence and updates local state', async () => {
+    const user = userEvent.setup()
+    const updateArchiveSegmentKeySentenceFn = vi.fn().mockResolvedValue({
+      ...secondSegment,
+      is_key_sentence: true,
+    })
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue({
+          ...archiveResponse,
+          segments: [...archiveResponse.segments, secondSegment],
+        } satisfies ArchiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        updateArchiveSegmentKeySentenceFn={updateArchiveSegmentKeySentenceFn}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '标记片段 2 为重点句' }))
+
+    expect(updateArchiveSegmentKeySentenceFn).toHaveBeenCalledWith({
+      isKeySentence: true,
+      segmentId: '33333333-3333-4333-8333-333333333333',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+    const segment = await screen.findByRole('article', { name: '片段 2' })
+    expect(within(segment).getByText('重点句')).toBeInTheDocument()
+    expect(
+      within(segment).getByRole('button', { name: '取消片段 2 重点句' }),
+    ).toBeInTheDocument()
+  })
+
+  it('shows key sentence update failure without changing archive content', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ArchivePage
+        fetchArchiveFn={vi.fn().mockResolvedValue({
+          ...archiveResponse,
+          segments: [...archiveResponse.segments, secondSegment],
+        } satisfies ArchiveResponse)}
+        location={{
+          pathname: '/archive/11111111-1111-4111-8111-111111111111',
+          search: '?token=archive-token',
+        }}
+        updateArchiveSegmentKeySentenceFn={vi
+          .fn()
+          .mockRejectedValue(new Error('network down'))}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: '标记片段 2 为重点句' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '重点句更新失败，请稍后重试',
+    )
+    const segment = screen.getByRole('article', { name: '片段 2' })
+    expect(within(segment).queryByText('重点句')).not.toBeInTheDocument()
+    expect(
+      screen.getByText('The budget review will finish tomorrow.'),
+    ).toBeInTheDocument()
+  })
+
   it('copies a segment with time, English, and Chinese text, then records copy metadata', async () => {
     const user = userEvent.setup()
     const writeClipboardTextFn = vi.fn().mockResolvedValue(undefined)

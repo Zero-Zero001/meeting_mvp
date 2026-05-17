@@ -128,6 +128,28 @@ export function buildArchiveExportApiUrl({
   return `${apiBaseUrl.replace(/\/$/, '')}${archivePath}`
 }
 
+export function buildArchiveSegmentKeySentenceApiUrl({
+  apiBaseUrl = publicConfig.apiBaseUrl,
+  segmentId,
+  sessionId,
+  token,
+}: {
+  apiBaseUrl?: string
+  segmentId: string
+  sessionId: string
+  token: string
+}): string {
+  const archivePath = `/api/archives/${encodeURIComponent(
+    sessionId,
+  )}/segments/${encodeURIComponent(
+    segmentId,
+  )}/key-sentence?token=${encodeURIComponent(token)}`
+  if (apiBaseUrl.trim() === '') {
+    return archivePath
+  }
+  return `${apiBaseUrl.replace(/\/$/, '')}${archivePath}`
+}
+
 export async function fetchArchive({
   apiBaseUrl = publicConfig.apiBaseUrl,
   fetchFn = fetch,
@@ -151,6 +173,45 @@ export async function fetchArchive({
   }
 
   return archiveResponseSchema.parse(await response.json())
+}
+
+export async function updateArchiveSegmentKeySentence({
+  apiBaseUrl = publicConfig.apiBaseUrl,
+  fetchFn = fetch,
+  isKeySentence,
+  segmentId,
+  sessionId,
+  token,
+}: {
+  apiBaseUrl?: string
+  fetchFn?: FetchLike
+  isKeySentence: boolean
+  segmentId: string
+  sessionId: string
+  token: string
+}): Promise<ArchiveSegment> {
+  const response = await fetchFn(
+    buildArchiveSegmentKeySentenceApiUrl({
+      apiBaseUrl,
+      segmentId,
+      sessionId,
+      token,
+    }),
+    {
+      body: JSON.stringify({ is_key_sentence: isKeySentence }),
+      headers: { 'content-type': 'application/json' },
+      method: 'PATCH',
+    },
+  )
+
+  if (!response.ok) {
+    throw new ArchiveAccessError({
+      message: await responseErrorMessage(response),
+      status: response.status,
+    })
+  }
+
+  return archiveSegmentSchema.parse(await response.json())
 }
 
 export async function createArchiveExport({

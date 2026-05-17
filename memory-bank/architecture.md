@@ -1018,7 +1018,7 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - WebSocket 会话编排在 Qwen final 首次失败并写入 failed 片段后入队；入队失败只记录 warning，不影响 WebSocket、归档或额度结算主流程。
 - 归档 API segment 响应新增 `translation_retry_attempts` 与 `translation_retry_exhausted`，均从 `usage_event` 派生，不新增表字段。
 - 前端归档页继续使用现有 GET API：显示等待后台补译、后台补译中、补译失败和翻译完成状态；存在 pending/retrying 片段时 polling 重新拉取归档，失败时保留当前内容。
-- Step 26 未开始：当前没有重点句增强、时间线增强或新的导出能力。
+- Step 26 已在后续小节补齐当前重点句增强；Step 27 未开始，当前没有会议时间线增强。
 
 ### 文件作用
 
@@ -1054,4 +1054,55 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 151 passed，13 integration deselected。
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、105 个测试通过，E2E 为 11 个 Chromium 测试通过。
 - `git diff --check` 已通过，仅输出 Windows LF/CRLF 工作区提示，无空白错误。
-- Step 26 未开始；当前没有重点句增强、时间线增强或新的导出能力。
+- Step 26 已在后续小节补齐当前重点句增强；Step 27 未开始，当前没有会议时间线增强。
+
+## 2026-05-17 Step 26 当前重点句增强
+
+### 架构状态
+
+- Step 26 实现 F17 的低成本规则路径：Qwen final 成功后由后端用确定性关键词规则识别重点句，不新增模型调用、环境变量、数据库 migration 或外部服务。
+- 自动识别结果写入既有 `transcript_segment.is_key_sentence` 字段；PostgreSQL 仍是正式归档和重点句标记的唯一持久化来源。
+- WebSocket 成功 final 链路保持顺序：英文 `asr_final` 先推送，中文 final 成功后写入 `transcript_segment` 并推送 `segment_final`；若规则命中，再推送既有 `key_sentence_update`。本步不修改 wire schema。
+- Qwen final 失败链路保持 Step 25 行为：保存英文 final、空中文 final、`translation_status=failed` 并进入补译队列；失败片段不自动标记重点句，也不发送重点句更新。
+- 归档页新增人工标记能力，通过 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...` 修改同一字段；授权继续使用 `session_id + archive_token`，缺 token 返回 401，错误 token、过期归档或非法 segment 统一 404。
+- `usage_event` 新增 `key_sentence_marked`，只记录安全元数据；正文、译文、token、URL、密钥和音频继续被 payload 安全校验拒绝。
+- 前端归档页在已加载 final 片段上做本地“只看重点句”筛选，并允许人工标记/取消重点句；成功后更新本地 segment，失败时显示可访问错误提示并保留原归档内容。
+- Step 27 未开始：会议时间线仍只消费服务端显式 `timeline_update.items`，没有重点句节点、导出节点、异常节点、筛选或跳转能力。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/key_sentences.py` | Step 26 新增重点句规则模块。集中定义英文/中文关键词、`is_key_sentence_candidate()` 和 `key_sentence_display_text()`，用于 WebSocket final 成功路径判断和重点句展示文本选择。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | WebSocket 会话编排层。Step 26 在 Qwen final 成功归档前调用规则模块，写入 `is_key_sentence`；命中时发送 `key_sentence_update`，失败 final 不标记也不推送。 |
+| `backend/src/meeting_mvp_backend/archives.py` | 归档业务模块。Step 26 新增 `ArchiveKeySentenceUpdateRequest`、repository `set_segment_key_sentence()` 和 `ArchiveService.set_segment_key_sentence()`，复用 archive token 授权后更新 segment 并记录安全事件。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 入口。Step 26 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence`，负责 token 缺失 401、授权失败 404 和 segment 响应返回。 |
+| `backend/src/meeting_mvp_backend/usage_events.py` | usage event 核心模块。Step 26 新增 `key_sentence_marked` 和 `STEP_26_USAGE_EVENT_TYPES`，沿用 payload 安全校验禁止正文、token、URL、密钥和音频。 |
+| `backend/tests/test_key_sentences.py` | 重点句规则单元测试，覆盖行动项/决策/截止时间等命中、普通会议填充语不命中，以及展示文本优先中文 final。 |
+| `backend/tests/test_websocket_sessions.py` | WebSocket 会话测试。Step 26 扩展真实 final 翻译成功场景，确认重点句写入归档并推送 `key_sentence_update`。 |
+| `backend/tests/test_archives.py` | 归档服务/API 测试。Step 26 覆盖人工标记/取消重点句、非法 segment 拒绝、PATCH endpoint 401/404 和安全 usage event payload。 |
+| `backend/tests/test_usage_events.py` | usage event 测试。Step 26 覆盖 allowlist 扩展到 `STEP_26_USAGE_EVENT_TYPES`。 |
+| `backend/tests/test_exports.py` | 导出测试 fake repository 补齐 `set_segment_key_sentence()`，保持 Step 24 导出服务继续满足归档 repository 协议。 |
+| `frontend/src/api/archives.ts` | 前端归档 API client。Step 26 新增重点句 PATCH URL 构造和 `updateArchiveSegmentKeySentence()`；请求 body 只包含布尔标记，token 仍只在 query 中。 |
+| `frontend/src/archive/ArchivePage.tsx` | 前端归档页。Step 26 增加“只看重点句”筛选、片段标记/取消重点句按钮、失败提示和本地 segment 状态更新；polling 空响应不清空现有内容。 |
+| `frontend/src/api/archives.test.ts` | 前端 API client 测试。覆盖重点句 PATCH URL、body 安全边界、响应解析和 HTTP 错误映射。 |
+| `frontend/src/archive/ArchivePage.test.tsx` | 归档页组件测试。覆盖重点句筛选、人工标记成功、本地状态更新和标记失败保留内容。 |
+| `frontend/e2e/archive.spec.ts` | Playwright 归档页 smoke test。Step 26 mock PATCH endpoint，验证人工标记、只看重点句筛选、复制/导出既有流程和无水平溢出。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 26 记录本次完成内容、RED/GREEN 测试、完整验证结果和 Step 27 未开始的边界。 |
+| `memory-bank/architecture.md` | 架构记录。Step 26 记录当前重点句数据流、API/事件边界、安全约束和文件职责。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 26 同步项目状态、后续限制和 Step 27 等待用户明确允许。 |
+
+### 数据与安全边界
+
+- `transcript_segment.is_key_sentence` 是自动规则识别和归档人工标记的统一持久化字段，不新增 schema。
+- `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence` 的 request body 只允许 `is_key_sentence`；archive token 不进入 body、响应或 usage event。
+- `key_sentence_marked` payload 只保存 `segment_id`、`sequence`、`is_key_sentence`、`source=archive_manual`、`translation_status`、`english_text_length`、`chinese_text_length`。
+- 自动规则会读取当前英文/中文 final 正文做瞬时判断，但不会把正文写入 `usage_event` 或 Redis；Redis 不参与重点句持久化。
+- 前端只消费后端 API 和 WebSocket 显式消息，不在归档事件 body 中发送正文或 token。
+
+### 验证结论
+
+- Step 26 已按 TDD 先跑 RED：后端缺少规则模块、归档更新 request 和事件集合；前端缺少 PATCH client、筛选控件和人工标记按钮；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 163 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 13 个测试文件、111 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- Step 27 未开始；当前没有会议时间线增强。

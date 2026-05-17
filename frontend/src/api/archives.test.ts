@@ -5,9 +5,11 @@ import {
   buildArchiveApiUrl,
   buildArchiveEventApiUrl,
   buildArchiveExportApiUrl,
+  buildArchiveSegmentKeySentenceApiUrl,
   createArchiveExport,
   fetchArchive,
   recordArchiveEvent,
+  updateArchiveSegmentKeySentence,
 } from './archives'
 
 const archivePayload = {
@@ -270,6 +272,77 @@ describe('archives API', () => {
       new ArchiveAccessError({
         message: 'Archive export is temporarily unavailable',
         status: 503,
+      }),
+    )
+  })
+
+  it('builds segment key sentence URLs from public API base and encoded token', () => {
+    expect(
+      buildArchiveSegmentKeySentenceApiUrl({
+        apiBaseUrl: 'https://api.example.test/',
+        segmentId: '22222222-2222-4222-8222-222222222222',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'token with spaces',
+      }),
+    ).toBe(
+      'https://api.example.test/api/archives/11111111-1111-4111-8111-111111111111/segments/22222222-2222-4222-8222-222222222222/key-sentence?token=token%20with%20spaces',
+    )
+  })
+
+  it('updates segment key sentence state without token or archive text in the body', async () => {
+    const updatedSegment = {
+      ...archivePayload.segments[0],
+      is_key_sentence: true,
+    }
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(updatedSegment), {
+        headers: { 'content-type': 'application/json' },
+        status: 200,
+      }),
+    )
+
+    const result = await updateArchiveSegmentKeySentence({
+      apiBaseUrl: '',
+      fetchFn,
+      isKeySentence: true,
+      segmentId: '22222222-2222-4222-8222-222222222222',
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      token: 'archive-token',
+    })
+
+    expect(result.is_key_sentence).toBe(true)
+    expect(fetchFn).toHaveBeenCalledWith(
+      '/api/archives/11111111-1111-4111-8111-111111111111/segments/22222222-2222-4222-8222-222222222222/key-sentence?token=archive-token',
+      expect.objectContaining({
+        body: JSON.stringify({ is_key_sentence: true }),
+        method: 'PATCH',
+      }),
+    )
+    const [, init] = fetchFn.mock.calls[0]
+    expect(String(init.body)).not.toContain('archive-token')
+    expect(String(init.body)).not.toContain('launch timeline')
+  })
+
+  it('reports key sentence update HTTP errors as typed archive access errors', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Archive not found or expired' }), {
+        headers: { 'content-type': 'application/json' },
+        status: 404,
+      }),
+    )
+
+    await expect(
+      updateArchiveSegmentKeySentence({
+        fetchFn,
+        isKeySentence: false,
+        segmentId: '22222222-2222-4222-8222-222222222222',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        token: 'wrong-token',
+      }),
+    ).rejects.toMatchObject(
+      new ArchiveAccessError({
+        message: 'Archive not found or expired',
+        status: 404,
       }),
     )
   })

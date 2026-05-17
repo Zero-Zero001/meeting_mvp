@@ -32,7 +32,8 @@
 - Step 22 已实现 F10 基础双语归档页/API：后端新增 `meeting_mvp_backend.archive_tokens` 与 `meeting_mvp_backend.archives`，提供 `GET /api/archives/{session_id}?token=...`，复用 `meeting_session`、`transcript_segment` 和 `usage_event`，校验 archive token hash，按 `sequence` 返回双语 final 片段并记录 `archive_viewed`；前端新增 `frontend/src/api/archives.ts` 和 `frontend/src/archive/ArchivePage.tsx`，`App.tsx` 对 `/archive/:sessionId` 轻量分流；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 23 已实现 F11 搜索与复制：后端 `usage_events` 新增 `archive_searched`、`segment_copied` 和 `STEP_23_USAGE_EVENT_TYPES`，`archives` / `main` 新增 `POST /api/archives/{session_id}/events?token=...`，复用 archive token 校验并只写安全元数据；前端归档页新增本地英文/中文/时间戳搜索、无结果状态、片段复制、复制失败提示和搜索/复制事件上报；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 24 已实现 F12 Markdown / JSON 导出：后端新增 `meeting_mvp_backend.exports`，复用 archive token 授权生成 Markdown/JSON，上传腾讯 COS 私有对象，写入 `export_file`，返回短期下载地址，并记录 `export_created` / `export_failed` 安全事件；前端归档页新增 Markdown/JSON 导出按钮、空归档禁用、成功下载链接和导出失败提示；新增 `cos-python-sdk-v5` 后端依赖；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 25 已实现后台 Final 补译队列：后端新增 `meeting_mvp_backend.translation_retries`，使用 Redis scheduled set 与 per-segment lock 调度 failed/retrying 片段，worker 复用 Qwen final provider 自动补译并更新 `transcript_segment.translation_status`；WebSocket final 首次失败后自动入队，FastAPI lifespan 在非 local 且 DB/Redis/Qwen final 配置完整时启动 worker；归档 API 返回 `translation_retry_attempts` / `translation_retry_exhausted`，前端归档页显示补译状态并自动 polling；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 26。
+- Step 25 已实现后台 Final 补译队列：后端新增 `meeting_mvp_backend.translation_retries`，使用 Redis scheduled set 与 per-segment lock 调度 failed/retrying 片段，worker 复用 Qwen final provider 自动补译并更新 `transcript_segment.translation_status`；WebSocket final 首次失败后自动入队，FastAPI lifespan 在非 local 且 DB/Redis/Qwen final 配置完整时启动 worker；归档 API 返回 `translation_retry_attempts` / `translation_retry_exhausted`，前端归档页显示补译状态并自动 polling；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 26 已实现 F17 当前重点句增强：后端新增 `meeting_mvp_backend.key_sentences` 用确定性规则识别行动项、决策、截止时间、风险、预算、负责人、确认、上线等重点句；Qwen final 成功后写入 `transcript_segment.is_key_sentence` 并命中时推送 `key_sentence_update`；归档 API 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...` 支持人工标记/取消；`usage_event` 新增 `key_sentence_marked` 安全元数据事件；前端归档页新增“只看重点句”筛选和人工标记按钮；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 27。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -41,7 +42,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 25 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 26 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -248,7 +249,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -353,7 +354,7 @@ Step 18 Qwen 中文 final 已落地：
 Step 19 四区实时 UI 补强已落地：
 
 - 前端 `frontend/src/stores/session-store.ts` 明确四区实时状态边界：`asr_interim` / `translation_interim` 为可替换状态；`asr_final` 追加为临时英文 final；`segment_final` 按 `segment_id` 或 `sequence` 幂等追加为正式双语 final，并移除匹配 `asr_final`。
-- 前端不从 `segment_final` 派生当前重点句或会议时间线；当前重点句只消费 `key_sentence_update`，会议时间线只消费 `timeline_update.items` 服务端快照，Step 26/27 增强仍等待后续明确允许。
+- 前端不从 `segment_final` 派生当前重点句或会议时间线；当前重点句只消费 `key_sentence_update`，会议时间线只消费 `timeline_update.items` 服务端快照；Step 26 已补齐服务端重点句推送和归档人工标记，Step 27 时间线增强仍等待后续明确允许。
 - `frontend/src/lib/meeting-websocket.ts` 为四区实时 callbacks 增加隔离分发，某个区域更新抛错不会触发 WebSocket error，也不会阻塞后续实时消息。
 - `frontend/src/App.tsx` 的英文原文区、中文翻译区、当前重点句区、会议时间线区均增加 `aria-live="polite"`。
 - Step 19 不新增公开 REST API、不修改 WebSocket wire schema、不新增 database migration、不新增异常/降级提示、COS、搜索、复制、导出或完整 `usage_event` 链路。
@@ -415,7 +416,16 @@ Step 25 后台 Final 补译队列已落地：
 - `backend/src/meeting_mvp_backend/usage_events.py` 新增 `translation_final_retry_requested`、`translation_final_retry_failed` 和 `STEP_25_USAGE_EVENT_TYPES`；补译成功沿用 `translation_final_completed` 并标记 `retry=true`，所有 payload 只保存 attempt、长度、sequence、segment id、上下文数量、错误类型等安全元数据。
 - `backend/src/meeting_mvp_backend/archives.py` 的 segment 响应新增 `translation_retry_attempts` 和 `translation_retry_exhausted`，从 `usage_event` 派生，不新增表字段。
 - `frontend/src/api/archives.ts` 支持 retry metadata 默认值；`frontend/src/archive/ArchivePage.tsx` 显示“等待后台补译”“后台补译中”“补译失败”和“翻译完成”，并在存在未 exhausted failed/retrying 片段时 polling 重新拉取归档；polling 失败保留页面内容，不影响搜索、复制和导出。
-- Step 25 不实现公开手动 retry API、重点句增强、时间线增强、新导出能力或数据库 migration；Step 26 必须等待用户明确允许后再开始。
+- Step 25 不实现公开手动 retry API、重点句增强、时间线增强、新导出能力或数据库 migration；Step 26 已在后续补齐当前重点句增强，Step 27 必须等待用户明确允许后再开始。
+
+Step 26 当前重点句增强已落地：
+
+- 新增 `backend/src/meeting_mvp_backend/key_sentences.py`，使用确定性关键词规则识别行动项、决策、截止时间、风险、预算、负责人、确认、上线和客户升级等重点句；不调用新模型，不新增环境变量。
+- `backend/src/meeting_mvp_backend/ws_sessions.py` 在 Qwen final 成功后计算 `is_key_sentence`，写入 `transcript_segment.is_key_sentence`，命中时通过既有 `key_sentence_update` 推送当前重点句；final 失败路径不标记、不推送。
+- `backend/src/meeting_mvp_backend/archives.py` 与 `backend/src/meeting_mvp_backend/main.py` 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...`，复用 archive token 授权并支持归档人工标记/取消重点句。
+- `backend/src/meeting_mvp_backend/usage_events.py` 新增 `key_sentence_marked` 和 `STEP_26_USAGE_EVENT_TYPES`；payload 只保存 segment id、sequence、标记状态、来源、翻译状态和文本长度，不保存正文、译文、token、URL、密钥或音频。
+- `frontend/src/api/archives.ts` 新增重点句 PATCH client；`frontend/src/archive/ArchivePage.tsx` 新增“只看重点句”筛选和片段标记/取消重点句按钮，失败时显示可访问错误并保留归档内容。
+- Step 26 不新增数据库 migration、新 Provider、新导出能力或时间线增强；Step 27 必须等待用户明确允许后再开始。
 
 核心 WebSocket 请求消息：
 
@@ -471,5 +481,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 26 必须等待用户明确允许后再开始；Step 25 只实现后台 Final 补译队列、worker 生命周期、归档 retry metadata 和前端自动刷新，不新增重点句增强、时间线增强、新导出能力、公开手动 retry API 或数据库 migration。
+- Step 27 必须等待用户明确允许后再开始；Step 26 只实现当前重点句规则识别、`key_sentence_update` 推送、归档人工标记/筛选和 `key_sentence_marked` 安全事件，不新增时间线增强、新 Provider、新环境变量或数据库 migration。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

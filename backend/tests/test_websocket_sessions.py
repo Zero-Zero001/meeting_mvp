@@ -774,7 +774,12 @@ def test_stt_final_triggers_final_translation_and_archives_segment() -> None:
             asr_final = receive_until_message_type(websocket, "asr_final")
             segment_final = receive_until_message_type(websocket, "segment_final")
             websocket.send_json({"type": "session_stop", "session_id": session_id})
-            receive_until_message_type(websocket, "session_closed")
+            remaining_messages = []
+            while True:
+                message = websocket.receive_json()
+                remaining_messages.append(message)
+                if message["type"] == "session_closed":
+                    break
 
     assert audio_status == {"type": "audio_status", "has_audio": True, "level": None}
     assert asr_final == {
@@ -791,10 +796,21 @@ def test_stt_final_triggers_final_translation_and_archives_segment() -> None:
         "We need to align on the launch timeline before Friday."
     )
     assert segment_final["chinese_text_final"] == "我们需要在周五前对齐上线时间线。"
+    assert [
+        message
+        for message in remaining_messages
+        if message["type"] == "key_sentence_update"
+    ] == [
+        {
+            "type": "key_sentence_update",
+            "text": "我们需要在周五前对齐上线时间线。",
+        },
+    ]
     assert len(repository.transcript_segments) == 1
     stored_segment = repository.transcript_segments[0]
     assert stored_segment.segment_id == segment_final["segment_id"]
     assert stored_segment.translation_status is TranslationStatus.COMPLETED
+    assert stored_segment.is_key_sentence is True
     assert stored_segment.asr_confidence == 0.91
     assert final_translation_provider.requested_translations == [
         FinalTranslationRequest(

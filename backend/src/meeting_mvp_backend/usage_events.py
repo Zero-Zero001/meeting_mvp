@@ -68,6 +68,7 @@ class UsageEventType(StrEnum):
     EXPORT_FAILED = "export_failed"
     TRANSLATION_FINAL_RETRY_REQUESTED = "translation_final_retry_requested"
     TRANSLATION_FINAL_RETRY_FAILED = "translation_final_retry_failed"
+    KEY_SENTENCE_MARKED = "key_sentence_marked"
 
 
 STEP_21_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
@@ -102,6 +103,10 @@ STEP_25_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
     *STEP_24_USAGE_EVENT_TYPES,
     UsageEventType.TRANSLATION_FINAL_RETRY_REQUESTED,
     UsageEventType.TRANSLATION_FINAL_RETRY_FAILED,
+)
+STEP_26_USAGE_EVENT_TYPES: tuple[UsageEventType, ...] = (
+    *STEP_25_USAGE_EVENT_TYPES,
+    UsageEventType.KEY_SENTENCE_MARKED,
 )
 
 

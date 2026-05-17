@@ -10,6 +10,7 @@ import {
   Languages,
   Search,
   ShieldCheck,
+  Star,
 } from 'lucide-react'
 
 import {
@@ -17,6 +18,7 @@ import {
   createArchiveExport,
   fetchArchive,
   recordArchiveEvent,
+  updateArchiveSegmentKeySentence,
   type ArchiveExportFormat,
   type ArchiveExportResponse,
   type ArchiveResponse,
@@ -40,6 +42,12 @@ type CreateArchiveExportFn = (options: {
   token: string
   format: ArchiveExportFormat
 }) => Promise<ArchiveExportResponse>
+type UpdateArchiveSegmentKeySentenceFn = (options: {
+  sessionId: string
+  token: string
+  segmentId: string
+  isKeySentence: boolean
+}) => Promise<ArchiveSegment>
 type WriteClipboardTextFn = (text: string) => Promise<void>
 
 type ArchivePageProps = {
@@ -48,6 +56,7 @@ type ArchivePageProps = {
   location?: LocationLike
   recordArchiveEventFn?: RecordArchiveEventFn
   retryPollingIntervalMs?: number
+  updateArchiveSegmentKeySentenceFn?: UpdateArchiveSegmentKeySentenceFn
   writeClipboardTextFn?: WriteClipboardTextFn
 }
 
@@ -67,6 +76,7 @@ function ArchivePage({
   location = window.location,
   recordArchiveEventFn = recordArchiveEvent,
   retryPollingIntervalMs = 5000,
+  updateArchiveSegmentKeySentenceFn = updateArchiveSegmentKeySentence,
   writeClipboardTextFn = writeClipboardText,
 }: ArchivePageProps) {
   const access = useMemo(() => parseArchiveLocation(location), [location])
@@ -75,6 +85,11 @@ function ArchivePage({
   const [copiedSegmentId, setCopiedSegmentId] = useState<string | null>(null)
   const [clipboardError, setClipboardError] = useState<string | null>(null)
   const [exportState, setExportState] = useState<ExportState>({ status: 'idle' })
+  const [keySentenceError, setKeySentenceError] = useState<string | null>(null)
+  const [showKeyOnly, setShowKeyOnly] = useState(false)
+  const [updatingKeySegmentId, setUpdatingKeySegmentId] = useState<string | null>(
+    null,
+  )
 
   useEffect(() => {
     if (!access.ok) {
@@ -162,7 +177,7 @@ function ArchivePage({
         }),
       )
         .then((archive) => {
-          if (!ignore) {
+          if (!ignore && archive) {
             setState({ archive, status: 'ready' })
           }
         })
@@ -219,6 +234,45 @@ function ArchivePage({
     }
   }
 
+  async function handleUpdateKeySentence(
+    segment: ArchiveSegment,
+    isKeySentence: boolean,
+  ): Promise<void> {
+    if (!access.ok) {
+      return
+    }
+    setUpdatingKeySegmentId(segment.segment_id)
+    setKeySentenceError(null)
+    try {
+      const updatedSegment = await updateArchiveSegmentKeySentenceFn({
+        isKeySentence,
+        segmentId: segment.segment_id,
+        sessionId: access.sessionId,
+        token: access.token,
+      })
+      setState((currentState) => {
+        if (currentState.status !== 'ready') {
+          return currentState
+        }
+        return {
+          archive: {
+            ...currentState.archive,
+            segments: currentState.archive.segments.map((currentSegment) =>
+              currentSegment.segment_id === updatedSegment.segment_id
+                ? updatedSegment
+                : currentSegment,
+            ),
+          },
+          status: 'ready',
+        }
+      })
+    } catch {
+      setKeySentenceError('重点句更新失败，请稍后重试')
+    } finally {
+      setUpdatingKeySegmentId(null)
+    }
+  }
+
   return (
     <main className="min-h-svh bg-zinc-50 text-foreground">
       <section className="mx-auto flex min-h-svh w-full max-w-5xl flex-col gap-4 px-4 py-4 sm:px-5 lg:px-6">
@@ -255,10 +309,17 @@ function ArchivePage({
             clipboardError={clipboardError}
             copiedSegmentId={copiedSegmentId}
             exportState={exportState}
+            keySentenceError={keySentenceError}
             onCreateExport={(format) => void handleCreateExport(format)}
             onCopySegment={(segment) => void handleCopySegment(segment)}
             onSearchQueryChange={setSearchQuery}
+            onShowKeyOnlyChange={setShowKeyOnly}
+            onUpdateKeySentence={(segment, isKeySentence) =>
+              void handleUpdateKeySentence(segment, isKeySentence)
+            }
             searchQuery={searchQuery}
+            showKeyOnly={showKeyOnly}
+            updatingKeySegmentId={updatingKeySegmentId}
           />
         ) : null}
       </section>
@@ -271,22 +332,37 @@ function ArchiveContent({
   clipboardError,
   copiedSegmentId,
   exportState,
+  keySentenceError,
   onCreateExport,
   onCopySegment,
   onSearchQueryChange,
+  onShowKeyOnlyChange,
+  onUpdateKeySentence,
   searchQuery,
+  showKeyOnly,
+  updatingKeySegmentId,
 }: {
   archive: ArchiveResponse
   clipboardError: string | null
   copiedSegmentId: string | null
   exportState: ExportState
+  keySentenceError: string | null
   onCreateExport: (format: ArchiveExportFormat) => void
   onCopySegment: (segment: ArchiveSegment) => void
   onSearchQueryChange: (query: string) => void
+  onShowKeyOnlyChange: (showKeyOnly: boolean) => void
+  onUpdateKeySentence: (segment: ArchiveSegment, isKeySentence: boolean) => void
   searchQuery: string
+  showKeyOnly: boolean
+  updatingKeySegmentId: string | null
 }) {
-  const filteredSegments = filterArchiveSegments(archive.segments, searchQuery)
+  const filteredSegments = filterArchiveSegments(
+    archive.segments,
+    searchQuery,
+    showKeyOnly,
+  )
   const hasSearchQuery = searchQuery.trim() !== ''
+  const hasActiveFilter = hasSearchQuery || showKeyOnly
   return (
     <>
       <section
@@ -340,12 +416,33 @@ function ArchiveContent({
           placeholder="搜索英文、中文或时间"
           value={searchQuery}
         />
+        <label
+          className="flex w-fit items-center gap-2 text-sm text-zinc-950"
+          htmlFor="archive-key-only"
+        >
+          <input
+            checked={showKeyOnly}
+            className="size-4"
+            id="archive-key-only"
+            onChange={(event) => onShowKeyOnlyChange(event.target.checked)}
+            type="checkbox"
+          />
+          <span>只看重点句</span>
+        </label>
         {clipboardError ? (
           <div
             className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950"
             role="alert"
           >
             {clipboardError}
+          </div>
+        ) : null}
+        {keySentenceError ? (
+          <div
+            className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-950"
+            role="alert"
+          >
+            {keySentenceError}
           </div>
         ) : null}
       </section>
@@ -358,7 +455,7 @@ function ArchiveContent({
           <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
             暂无 final 片段
           </div>
-        ) : filteredSegments.length === 0 && hasSearchQuery ? (
+        ) : filteredSegments.length === 0 && hasActiveFilter ? (
           <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground">
             未找到匹配片段
           </div>
@@ -368,7 +465,11 @@ function ArchiveContent({
               copied={copiedSegmentId === segment.segment_id}
               key={segment.segment_id}
               onCopy={() => onCopySegment(segment)}
+              onToggleKeySentence={() =>
+                onUpdateKeySentence(segment, !segment.is_key_sentence)
+              }
               segment={segment}
+              updatingKeySentence={updatingKeySegmentId === segment.segment_id}
             />
           ))
         )}
@@ -447,11 +548,15 @@ function ArchiveExportPanel({
 function ArchiveSegmentArticle({
   copied,
   onCopy,
+  onToggleKeySentence,
   segment,
+  updatingKeySentence,
 }: {
   copied: boolean
   onCopy: () => void
+  onToggleKeySentence: () => void
   segment: ArchiveSegment
+  updatingKeySentence: boolean
 }) {
   return (
     <article
@@ -481,6 +586,21 @@ function ArchiveSegmentArticle({
             <Copy className="size-4" />
           )}
           {copied ? '已复制' : '复制'}
+        </Button>
+        <Button
+          aria-label={
+            segment.is_key_sentence
+              ? `取消片段 ${segment.sequence} 重点句`
+              : `标记片段 ${segment.sequence} 为重点句`
+          }
+          disabled={updatingKeySentence}
+          onClick={onToggleKeySentence}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          <Star className="size-4" />
+          {segment.is_key_sentence ? '取消重点句' : '标为重点句'}
         </Button>
       </div>
       <div className="mt-4 grid gap-3">
@@ -651,16 +771,20 @@ function formatTimestamp(timestampMs: number): string {
 function filterArchiveSegments(
   segments: ArchiveSegment[],
   query: string,
+  showKeyOnly = false,
 ): ArchiveSegment[] {
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  if (normalizedQuery === '') {
-    return segments
-  }
-  return segments.filter((segment) =>
-    searchableSegmentValues(segment).some((value) =>
+  return segments.filter((segment) => {
+    if (showKeyOnly && !segment.is_key_sentence) {
+      return false
+    }
+    if (normalizedQuery === '') {
+      return true
+    }
+    return searchableSegmentValues(segment).some((value) =>
       value.toLocaleLowerCase().includes(normalizedQuery),
-    ),
-  )
+    )
+  })
 }
 
 function searchableSegmentValues(segment: ArchiveSegment): string[] {

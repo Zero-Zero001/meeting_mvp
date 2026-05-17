@@ -24,7 +24,9 @@ from meeting_mvp_backend.anonymous_clients import (
 from meeting_mvp_backend.archives import (
     ArchiveAccessDenied,
     ArchiveEventRequest,
+    ArchiveKeySentenceUpdateRequest,
     ArchiveResponse,
+    ArchiveSegmentResponse,
     ArchiveService,
     SQLAlchemyArchiveRepository,
 )
@@ -361,6 +363,33 @@ async def record_archive_event(
             detail="Archive not found or expired",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.patch("/api/archives/{session_id}/segments/{segment_id}/key-sentence")
+async def update_archive_segment_key_sentence(
+    session_id: UUID,
+    segment_id: UUID,
+    payload: ArchiveKeySentenceUpdateRequest,
+    service: Annotated[ArchiveService, Depends(get_archive_service)],
+    token: str | None = Query(default=None),
+) -> ArchiveSegmentResponse:
+    if token is None or token.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Archive token is required",
+        )
+    try:
+        return await service.set_segment_key_sentence(
+            session_id=session_id,
+            segment_id=segment_id,
+            token=token,
+            request=payload,
+        )
+    except ArchiveAccessDenied as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Archive not found or expired",
+        ) from exc
 
 
 @app.post(

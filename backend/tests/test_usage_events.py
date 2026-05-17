@@ -13,6 +13,7 @@ from meeting_mvp_backend.usage_events import (
     STEP_23_USAGE_EVENT_TYPES,
     STEP_24_USAGE_EVENT_TYPES,
     STEP_25_USAGE_EVENT_TYPES,
+    STEP_26_USAGE_EVENT_TYPES,
     SQLAlchemyUsageEventRecorder,
     UnsafeUsageEventPayload,
     UsageEventRecord,
@@ -111,6 +112,13 @@ def test_step_25_event_types_extend_usage_event_allowlist() -> None:
         *{event_type.value for event_type in STEP_24_USAGE_EVENT_TYPES},
         "translation_final_retry_requested",
         "translation_final_retry_failed",
+    }
+
+
+def test_step_26_event_types_extend_usage_event_allowlist() -> None:
+    assert {event_type.value for event_type in STEP_26_USAGE_EVENT_TYPES} == {
+        *{event_type.value for event_type in STEP_25_USAGE_EVENT_TYPES},
+        "key_sentence_marked",
     }
 
 

@@ -13,6 +13,29 @@ test('renders archive page from session id and token', async ({ page }) => {
     let archiveFetchCount = 0
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url.includes('/key-sentence')) {
+        const body = String(init?.body ?? '')
+        if (body.includes('archive-token')) {
+          return new Response('unsafe key sentence body', { status: 400 })
+        }
+        return new Response(
+          JSON.stringify({
+            chinese_text_final: '预算审查会在明天完成。',
+            end_ms: 7200,
+            english_text_final: 'The budget review will finish tomorrow.',
+            is_key_sentence: body.includes('true'),
+            segment_id: '33333333-3333-4333-8333-333333333333',
+            sequence: 2,
+            speaker_label: null,
+            start_ms: 4100,
+            translation_status: 'completed',
+          }),
+          {
+            headers: { 'content-type': 'application/json' },
+            status: 200,
+          },
+        )
+      }
       if (url.includes('/exports')) {
         const body = String(init?.body ?? '')
         if (body.includes('archive-token')) {
@@ -120,6 +143,15 @@ test('renders archive page from session id and token', async ({ page }) => {
   await expect(
     page.getByText('We need to align on the launch timeline before Friday.'),
   ).toBeHidden()
+  await expect(page.getByText('The budget review will finish tomorrow.')).toBeVisible()
+
+  await page.getByRole('button', { name: '标记片段 2 为重点句' }).click()
+  await expect(
+    page.getByRole('article', { name: '片段 2' }).getByRole('button', {
+      name: '取消片段 2 重点句',
+    }),
+  ).toBeVisible()
+  await page.getByLabel('只看重点句').check()
   await expect(page.getByText('The budget review will finish tomorrow.')).toBeVisible()
 
   await page.getByRole('button', { name: '复制片段 2' }).click()

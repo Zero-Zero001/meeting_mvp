@@ -32,6 +32,10 @@ from meeting_mvp_backend.db.models import (
     TranscriptSegment,
     TranslationStatus,
 )
+from meeting_mvp_backend.key_sentences import (
+    is_key_sentence_candidate,
+    key_sentence_display_text,
+)
 from meeting_mvp_backend.mock_providers import (
     DEFAULT_MOCK_PROVIDER_SCRIPT,
     MockProviderScript,
@@ -983,6 +987,10 @@ class WebSocketSessionOrchestrator:
             return
 
         repository = _require_repository(self._repository)
+        is_key_sentence = is_key_sentence_candidate(
+            english_text_final=event.text,
+            chinese_text_final=translated_text,
+        )
         segment_id = await repository.create_transcript_segment(
             session_id=state.session_id,
             sequence=event.sequence,
@@ -990,7 +998,7 @@ class WebSocketSessionOrchestrator:
             end_ms=event.end_ms,
             english_text_final=event.text,
             chinese_text_final=translated_text,
-            is_key_sentence=False,
+            is_key_sentence=is_key_sentence,
             translation_status=TranslationStatus.COMPLETED,
             asr_confidence=event.confidence,
         )
@@ -1028,6 +1036,17 @@ class WebSocketSessionOrchestrator:
                 chinese_text_final=translated_text,
             ),
         )
+        if is_key_sentence:
+            await _send_server_message(
+                websocket,
+                KeySentenceUpdateMessage(
+                    type="key_sentence_update",
+                    text=key_sentence_display_text(
+                        english_text_final=event.text,
+                        chinese_text_final=translated_text,
+                    ),
+                ),
+            )
 
     async def _archive_failed_final_translation(
         self,

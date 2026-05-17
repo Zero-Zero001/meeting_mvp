@@ -1409,7 +1409,65 @@
 
 ### 后续注意
 
-- Step 26 必须等待用户明确允许后再开始；当前没有重点句增强、时间线增强或新的导出能力。
+- Step 26 已在后续小节补齐当前重点句增强；Step 27 必须等待用户明确允许后再开始。
 - Step 25 不新增公开手动 retry API；自动补译触发源是后端 final 失败入队、worker 启动扫描和 Redis 到期 job。
 - retry attempt 次数和 exhausted 状态从安全 `usage_event` 派生；`transcript_segment` 只复用既有 `translation_status=failed|retrying|completed`。
 - 本地 local 环境默认不启动真实 Qwen worker；真实后台补译仍需在 Lighthouse/生产后端容器中通过安全环境变量和非 local 环境验证。
+
+## 2026-05-17 Step 26：F17 当前重点句增强
+
+### 本次完成
+
+- 只推进用户明确指定的 Step 26，未开始 Step 27；本步不修改会议时间线、不新增数据库 migration、不新增 Provider、不新增环境变量，也不运行真实 Qwen/COS/Lighthouse smoke。
+- 新增后端 `backend/src/meeting_mvp_backend/key_sentences.py`：
+  - 使用确定性关键词规则识别当前重点句，覆盖行动项、决策、截止时间、风险、预算、负责人、确认、上线、客户升级等英文/中文关键词。
+  - `key_sentence_display_text()` 优先返回中文 final，中文为空时 fallback 到英文 final。
+- 扩展后端 WebSocket final 成功路径：
+  - Qwen final 成功后先判断重点句，再写入 `transcript_segment.is_key_sentence`。
+  - 命中重点句时推送既有 `key_sentence_update` 消息；未修改 WebSocket wire schema。
+  - Qwen final 失败路径仍写入 failed segment，不标记重点句，不发送重点句更新。
+- 扩展归档 API：
+  - 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...`。
+  - 请求体只包含 `{"is_key_sentence": true|false}`；响应返回更新后的 segment。
+  - 复用既有 `session_id + archive_token` 授权、retention 判断和 401/404 信息隐藏边界。
+- 扩展 usage event：
+  - 新增 `key_sentence_marked` 和 `STEP_26_USAGE_EVENT_TYPES`。
+  - 人工标记 payload 只保存 `segment_id`、`sequence`、`is_key_sentence`、`source`、翻译状态和文本长度元数据。
+  - 不保存英文正文、中文译文、archive token、URL、密钥、音频或隐私明文。
+- 扩展前端归档页：
+  - 新增“只看重点句”筛选，与既有英文/中文/时间搜索组合生效。
+  - 每个片段新增“标为重点句 / 取消重点句”操作；成功后本地更新 segment，失败时显示 `role="alert"` 提示并保留原内容。
+  - 归档 polling 遇到失败或空响应时继续保留当前归档内容，不影响搜索、复制、导出或重点句筛选。
+- 扩展测试文件：
+  - `backend/tests/test_key_sentences.py`
+  - `backend/tests/test_websocket_sessions.py`
+  - `backend/tests/test_archives.py`
+  - `backend/tests/test_usage_events.py`
+  - `backend/tests/test_exports.py`
+  - `frontend/src/api/archives.test.ts`
+  - `frontend/src/archive/ArchivePage.test.tsx`
+  - `frontend/e2e/archive.spec.ts`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 26 后端 RED | `uv run pytest tests/test_key_sentences.py tests/test_websocket_sessions.py::test_stt_final_triggers_final_translation_and_archives_segment tests/test_archives.py tests/test_usage_events.py -q` | 首次 3 errors：缺少 `meeting_mvp_backend.key_sentences`、`ArchiveKeySentenceUpdateRequest`、`STEP_26_USAGE_EVENT_TYPES` |
+| Step 26 前端 RED | `npm run test -- src/api/archives.test.ts src/archive/ArchivePage.test.tsx src/stores/session-store.test.ts` | 首次 6 failed：缺少重点句 PATCH API client、只看重点句筛选和人工标记按钮 |
+| Step 26 后端目标 GREEN | 同上 | 53 passed |
+| Step 26 前端目标 GREEN | 同上 | 3 个测试文件、43 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 42 source files` |
+| 后端 pytest | `uv run pytest` | 163 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 13 个测试文件、111 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过，无空白错误 |
+
+### 后续注意
+
+- Step 27 必须等待用户明确允许后再开始；当前没有时间线重点节点、导出节点、异常节点、筛选或跳转增强。
+- Step 26 的自动重点句识别是确定性规则，不调用模型；如果后续改为模型提取，仍需保持不保存正文到 `usage_event` 的安全边界。
+- 归档人工标记直接更新 PostgreSQL `transcript_segment.is_key_sentence`，因此后续 polling、导出和归档重载都会看到相同状态。
+- `key_sentence_update` 只由服务端显式推送；前端仍不从 `segment_final` 自行派生当前重点句。

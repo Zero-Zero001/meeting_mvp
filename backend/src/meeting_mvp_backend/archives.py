@@ -113,6 +113,12 @@ class ArchiveSegmentCopiedEventRequest(BaseModel):
     segment_id: uuid.UUID
 
 
+class ArchiveKeySentenceUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_key_sentence: bool
+
+
 type ArchiveEventRequest = Annotated[
     ArchiveSearchEventRequest | ArchiveSegmentCopiedEventRequest,
     Field(discriminator="event_type"),
@@ -129,6 +135,14 @@ class ArchiveRepository(Protocol):
         self,
         session_id: uuid.UUID,
     ) -> list[ArchiveTranscriptSegmentRecord]: ...
+
+    async def set_segment_key_sentence(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+        is_key_sentence: bool,
+    ) -> ArchiveTranscriptSegmentRecord | None: ...
 
     async def latest_session_closed_reason(
         self,
@@ -183,25 +197,40 @@ class SQLAlchemyArchiveRepository:
                 session_id=session_id,
             )
         return [
-            ArchiveTranscriptSegmentRecord(
-                chinese_text_final=model.chinese_text_final,
-                end_ms=model.end_ms,
-                english_text_final=model.english_text_final,
-                is_key_sentence=model.is_key_sentence,
-                segment_id=model.id,
-                sequence=model.sequence,
-                session_id=model.session_id,
-                speaker_label=model.speaker_label,
-                start_ms=model.start_ms,
-                translation_retry_attempts=retry_metadata.get(model.id, (0, False))[0],
-                translation_retry_exhausted=retry_metadata.get(
-                    model.id,
-                    (0, False),
-                )[1],
-                translation_status=model.translation_status,
+            _archive_segment_record_from_model(
+                model,
+                retry_metadata=retry_metadata.get(model.id, (0, False)),
             )
             for model in models
         ]
+
+    async def set_segment_key_sentence(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+        is_key_sentence: bool,
+    ) -> ArchiveTranscriptSegmentRecord | None:
+        async with self._session_factory() as session:
+            model = await session.scalar(
+                select(TranscriptSegment).where(
+                    TranscriptSegment.id == segment_id,
+                    TranscriptSegment.session_id == session_id,
+                ),
+            )
+            if model is None:
+                return None
+            model.is_key_sentence = is_key_sentence
+            retry_metadata = await _translation_retry_metadata_by_segment_id(
+                session=session,
+                session_id=session_id,
+            )
+            record = _archive_segment_record_from_model(
+                model,
+                retry_metadata=retry_metadata.get(model.id, (0, False)),
+            )
+            await session.commit()
+            return record
 
     async def latest_session_closed_reason(
         self,
@@ -340,6 +369,40 @@ class ArchiveService:
             },
         )
 
+    async def set_segment_key_sentence(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+        token: str,
+        request: ArchiveKeySentenceUpdateRequest,
+    ) -> ArchiveSegmentResponse:
+        session = await self._authorize_session(session_id=session_id, token=token)
+        segment = await self._repository.set_segment_key_sentence(
+            session_id=session.session_id,
+            segment_id=segment_id,
+            is_key_sentence=request.is_key_sentence,
+        )
+        if segment is None:
+            raise ArchiveAccessDenied("archive not found or expired")
+
+        await record_usage_event_best_effort(
+            recorder=self._usage_event_recorder,
+            client_id=session.client_id,
+            session_id=session.session_id,
+            event_type=UsageEventType.KEY_SENTENCE_MARKED,
+            payload={
+                "chinese_text_length": len(segment.chinese_text_final),
+                "english_text_length": len(segment.english_text_final),
+                "is_key_sentence": segment.is_key_sentence,
+                "segment_id": str(segment.segment_id),
+                "sequence": segment.sequence,
+                "source": "archive_manual",
+                "translation_status": segment.translation_status.value,
+            },
+        )
+        return _archive_segment_response_from_record(segment)
+
     async def _authorize_session(
         self,
         *,
@@ -380,6 +443,45 @@ class ArchiveService:
 
 def _now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def _archive_segment_response_from_record(
+    segment: ArchiveTranscriptSegmentRecord,
+) -> ArchiveSegmentResponse:
+    return ArchiveSegmentResponse(
+        chinese_text_final=segment.chinese_text_final,
+        end_ms=segment.end_ms,
+        english_text_final=segment.english_text_final,
+        is_key_sentence=segment.is_key_sentence,
+        segment_id=segment.segment_id,
+        sequence=segment.sequence,
+        speaker_label=segment.speaker_label,
+        start_ms=segment.start_ms,
+        translation_retry_attempts=segment.translation_retry_attempts,
+        translation_retry_exhausted=segment.translation_retry_exhausted,
+        translation_status=segment.translation_status,
+    )
+
+
+def _archive_segment_record_from_model(
+    model: TranscriptSegment,
+    *,
+    retry_metadata: tuple[int, bool],
+) -> ArchiveTranscriptSegmentRecord:
+    return ArchiveTranscriptSegmentRecord(
+        chinese_text_final=model.chinese_text_final,
+        end_ms=model.end_ms,
+        english_text_final=model.english_text_final,
+        is_key_sentence=model.is_key_sentence,
+        segment_id=model.id,
+        sequence=model.sequence,
+        session_id=model.session_id,
+        speaker_label=model.speaker_label,
+        start_ms=model.start_ms,
+        translation_retry_attempts=retry_metadata[0],
+        translation_retry_exhausted=retry_metadata[1],
+        translation_status=model.translation_status,
+    )
 
 
 async def _translation_retry_metadata_by_segment_id(

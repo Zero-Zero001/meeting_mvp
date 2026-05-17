@@ -62,6 +62,31 @@ class FakeArchiveRepository:
             segment for segment in self.segments if segment.session_id == session_id
         ]
 
+    async def set_segment_key_sentence(
+        self,
+        *,
+        session_id: uuid.UUID,
+        segment_id: uuid.UUID,
+        is_key_sentence: bool,
+    ) -> ArchiveTranscriptSegmentRecord | None:
+        for segment in self.segments:
+            if segment.session_id == session_id and segment.segment_id == segment_id:
+                return ArchiveTranscriptSegmentRecord(
+                    chinese_text_final=segment.chinese_text_final,
+                    end_ms=segment.end_ms,
+                    english_text_final=segment.english_text_final,
+                    is_key_sentence=is_key_sentence,
+                    segment_id=segment.segment_id,
+                    sequence=segment.sequence,
+                    session_id=segment.session_id,
+                    speaker_label=segment.speaker_label,
+                    start_ms=segment.start_ms,
+                    translation_retry_attempts=segment.translation_retry_attempts,
+                    translation_retry_exhausted=segment.translation_retry_exhausted,
+                    translation_status=segment.translation_status,
+                )
+        return None
+
     async def latest_session_closed_reason(
         self,
         session_id: uuid.UUID,
