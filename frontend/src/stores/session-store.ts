@@ -36,7 +36,7 @@ import {
   noticeFromWebSocketError,
   type SessionNotice,
 } from '@/lib/session-notices'
-import type { ServerMessage } from '@/protocol/websocket-messages'
+import type { ProviderStatus, ServerMessage } from '@/protocol/websocket-messages'
 
 export type { WebSocketStatus } from '@/lib/meeting-websocket'
 
@@ -144,6 +144,7 @@ type SessionState = {
   lastCaptureAttempt: CaptureAttempt | null
   mediaStream: MediaStream | null
   meetingWebSocket: MeetingWebSocketClient | null
+  providerStatus: ProviderStatus | null
   remainingSecondsToday: number
   serverSyncError: string | null
   serverSyncStatus: ServerSyncStatus
@@ -187,6 +188,7 @@ export const initialSessionState = {
   lastCaptureAttempt: null as CaptureAttempt | null,
   mediaStream: null as MediaStream | null,
   meetingWebSocket: null as MeetingWebSocketClient | null,
+  providerStatus: null as ProviderStatus | null,
   remainingSecondsToday: 40 * 60,
   serverSyncError: null,
   serverSyncStatus: 'idle' as ServerSyncStatus,
@@ -316,6 +318,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       lastClosedReason: null,
       mediaStream: null,
       meetingWebSocket: null,
+      providerStatus: null,
       sessionId: null,
       silenceWarning: false,
       status: 'idle',
@@ -460,6 +463,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           set({
             archiveToken: message.archive_token,
             archiveUrl: message.archive_url,
+            providerStatus: message.provider_status,
             remainingSecondsToday: message.remaining_seconds_today,
             sessionId: message.session_id,
           })
@@ -621,6 +625,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       lastClosedReason: null,
       mediaStream: null,
       meetingWebSocket: null,
+      providerStatus: null,
       sessionId: null,
       silenceWarning: false,
       status: 'idle',

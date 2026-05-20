@@ -57,6 +57,7 @@ ENV_FIELD_MAP = {
     "COS_SIGNED_URL_TTL_SECONDS": "cos_signed_url_ttl_seconds",
     "SESSION_RESUME_GRACE_SECONDS": "session_resume_grace_seconds",
     "ASR_PROVIDER": "asr_provider",
+    "QWEN_ASR_ENABLED": "qwen_asr_enabled",
     "QWEN_API_KEY": "qwen_api_key",
     "QWEN_BASE_URL": "qwen_base_url",
     "QWEN_ASR_MODEL": "qwen_asr_model",
@@ -66,6 +67,7 @@ ENV_FIELD_MAP = {
     "QWEN_ASR_LANGUAGE": "qwen_asr_language",
     "QWEN_INTERIM_MODEL": "qwen_interim_model",
     "QWEN_INTERIM_ENABLED": "qwen_interim_enabled",
+    "QWEN_FINAL_ENABLED": "qwen_final_enabled",
     "QWEN_FINAL_MODEL": "qwen_final_model",
     "OPENAI_API_KEY": "openai_api_key",
     "OPENAI_BASE_URL": "openai_base_url",
@@ -85,12 +87,6 @@ PRODUCTION_REQUIRED_ENV_NAMES = (
     "WS_BASE_URL",
     "DATABASE_URL",
     "REDIS_URL",
-    "QWEN_API_KEY",
-    "QWEN_BASE_URL",
-    "QWEN_ASR_MODEL",
-    "QWEN_ASR_BASE_URL",
-    "QWEN_INTERIM_MODEL",
-    "QWEN_FINAL_MODEL",
     "TENCENT_COS_SECRET_ID",
     "TENCENT_COS_SECRET_KEY",
     "TENCENT_COS_REGION",
@@ -98,6 +94,21 @@ PRODUCTION_REQUIRED_ENV_NAMES = (
     "TENCENT_COS_EXPORT_PREFIX",
 )
 
+QWEN_ASR_REQUIRED_ENV_NAMES = (
+    "QWEN_API_KEY",
+    "QWEN_ASR_MODEL",
+    "QWEN_ASR_BASE_URL",
+)
+QWEN_INTERIM_REQUIRED_ENV_NAMES = (
+    "QWEN_API_KEY",
+    "QWEN_BASE_URL",
+    "QWEN_INTERIM_MODEL",
+)
+QWEN_FINAL_REQUIRED_ENV_NAMES = (
+    "QWEN_API_KEY",
+    "QWEN_BASE_URL",
+    "QWEN_FINAL_MODEL",
+)
 OPENAI_STT_REQUIRED_ENV_NAMES = (
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -181,6 +192,10 @@ class Settings(BaseSettings):
         default="qwen_realtime",
         validation_alias="ASR_PROVIDER",
     )
+    qwen_asr_enabled: bool = Field(
+        default=True,
+        validation_alias="QWEN_ASR_ENABLED",
+    )
     qwen_api_key: str | None = Field(default=None, validation_alias="QWEN_API_KEY")
     qwen_base_url: str | None = Field(default=None, validation_alias="QWEN_BASE_URL")
     qwen_asr_model: str | None = Field(
@@ -210,6 +225,10 @@ class Settings(BaseSettings):
     qwen_interim_enabled: bool = Field(
         default=True,
         validation_alias="QWEN_INTERIM_ENABLED",
+    )
+    qwen_final_enabled: bool = Field(
+        default=True,
+        validation_alias="QWEN_FINAL_ENABLED",
     )
     qwen_final_model: str = Field(
         default="qwen3.6-max-preview",
@@ -295,13 +314,19 @@ def _missing_required_names(settings: Settings) -> list[str]:
 
     if settings.app_env in {AppEnv.STAGING, AppEnv.PRODUCTION}:
         required_names.extend(PRODUCTION_REQUIRED_ENV_NAMES)
+        if settings.qwen_asr_enabled:
+            required_names.extend(QWEN_ASR_REQUIRED_ENV_NAMES)
+        if settings.qwen_interim_enabled:
+            required_names.extend(QWEN_INTERIM_REQUIRED_ENV_NAMES)
+        if settings.qwen_final_enabled:
+            required_names.extend(QWEN_FINAL_REQUIRED_ENV_NAMES)
 
     if settings.openai_stt_enabled:
         required_names.extend(OPENAI_STT_REQUIRED_ENV_NAMES)
 
     return [
         name
-        for name in required_names
+        for name in dict.fromkeys(required_names)
         if not _is_set(getattr(settings, ENV_FIELD_MAP[name]))
     ]
 

@@ -12,7 +12,7 @@ from typing import Protocol
 import pytest
 from fastapi.testclient import TestClient
 
-from meeting_mvp_backend.config import Settings, get_settings
+from meeting_mvp_backend.config import AppEnv, Settings, get_settings
 from meeting_mvp_backend.db.models import (
     CaptureMode,
     MeetingSessionStatus,
@@ -351,10 +351,13 @@ def make_client(
     translation_retry_queue: InMemoryTranslationRetryQueue | None = None,
     final_translation_provider: FakeFinalTranslationProvider | None = None,
     usage_event_recorder: FakeUsageEventRecorder | None = None,
+    settings_overrides: dict[str, object] | None = None,
 ) -> TestClient:
     settings = Settings()
     settings.public_base_url = "https://meeting.example.test"
     settings.archive_retention_days = 30
+    for name, value in (settings_overrides or {}).items():
+        setattr(settings, name, value)
 
     def override_orchestrator() -> WebSocketSessionOrchestrator:
         return WebSocketSessionOrchestrator(
@@ -451,6 +454,11 @@ def test_session_start_returns_session_started_and_writes_pending_session() -> N
 
             assert message["type"] == "session_started"
             assert message["remaining_seconds_today"] == 2400
+            assert message["provider_status"] == {
+                "qwen_final_translation": "local_mock",
+                "qwen_interim_translation": "local_mock",
+                "qwen_realtime_asr": "local_mock",
+            }
             assert message["archive_url"] == (
                 f"https://meeting.example.test/archive/{session_id}"
                 f"?token={message['archive_token']}"
@@ -463,6 +471,34 @@ def test_session_start_returns_session_started_and_writes_pending_session() -> N
             )
             assert stored_session.archive_token_hash != message["archive_token"]
             assert quota_service.reserved_session_ids == [session_id]
+
+
+def test_qwen_asr_disabled_rejects_new_session_before_quota_or_archive() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        settings_overrides={
+            "app_env": AppEnv.PRODUCTION,
+            "qwen_asr_enabled": False,
+        },
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            error = websocket.receive_json()
+            closed = websocket.receive_json()
+
+    assert error == {
+        "type": "error",
+        "code": "qwen_asr_disabled",
+        "message": "Qwen realtime ASR is disabled",
+    }
+    assert closed == {"type": "session_closed", "reason": "qwen_asr_disabled"}
+    assert repository.sessions == {}
+    assert quota_service.reserved_session_ids == []
 
 
 def test_usage_events_record_session_lifecycle_without_audio_content() -> None:
@@ -891,6 +927,79 @@ def test_stt_final_triggers_final_translation_and_archives_segment() -> None:
     assert final_translation_provider.closed is True
 
 
+def test_qwen_final_disabled_archives_failed_segment_and_queues_retry() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=1800,
+                text="We need to align on the launch timeline.",
+                confidence=0.88,
+            ),
+        ],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(
+        outcomes=["这条不应被调用。"],
+    )
+    translation_retry_queue = InMemoryTranslationRetryQueue()
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        final_translation_provider=final_translation_provider,
+        translation_retry_queue=translation_retry_queue,
+        settings_overrides={"qwen_final_enabled": False},
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            asr_final = receive_until_message_type(websocket, "asr_final")
+            warning = receive_until_message_type(websocket, "warning")
+            warning_timeline = receive_until_message_type(websocket, "timeline_update")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            closed = receive_until_message_type(websocket, "session_closed")
+
+    assert asr_final["text"] == "We need to align on the launch timeline."
+    assert warning == {
+        "type": "warning",
+        "code": "qwen_final_translation_disabled",
+        "message": "中文正式翻译已关闭，英文 final 已归档待后续补译。",
+    }
+    assert timeline_items_of_type(warning_timeline, "exception") == [
+        {
+            "id": "exception-qwen_final_translation_disabled-0",
+            "item_type": "exception",
+            "timestamp_ms": 1800,
+            "text": "中文正式翻译已关闭，已进入后台补译",
+            "segment_id": repository.transcript_segments[0].segment_id,
+        },
+    ]
+    assert closed == {"type": "session_closed", "reason": "user_stopped"}
+    assert final_translation_provider.requested_translations == []
+    assert len(repository.transcript_segments) == 1
+    stored_segment = repository.transcript_segments[0]
+    assert stored_segment.sequence == 1
+    assert stored_segment.chinese_text_final == ""
+    assert stored_segment.translation_status is TranslationStatus.FAILED
+    assert stored_segment.is_key_sentence is False
+    assert stored_segment.asr_confidence == 0.88
+    queued_jobs = asyncio.run(
+        translation_retry_queue.pop_due(now=FIXED_NOW, limit=10),
+    )
+    assert len(queued_jobs) == 1
+    assert queued_jobs[0].session_id == uuid.UUID(str(session_id))
+    assert queued_jobs[0].segment_id == uuid.UUID(stored_segment.segment_id)
+
+
 def test_final_translation_uses_recent_five_successful_segments_as_context() -> None:
     client_id = str(uuid.uuid4())
     repository = FakeSessionRepository({client_id})
@@ -1115,6 +1224,65 @@ def test_stt_interim_triggers_translation_interim_without_archiving() -> None:
     ]
     assert repository.transcript_segments == []
     assert translation_provider.closed is True
+
+
+def test_qwen_interim_disabled_keeps_asr_and_final_translation_running() -> None:
+    client_id = str(uuid.uuid4())
+    repository = FakeSessionRepository({client_id})
+    quota_service = FakeQuotaService()
+    stt_provider = FakeSttProvider(
+        events=[
+            SttInterimEvent(text="We need to align."),
+            SttFinalEvent(
+                sequence=1,
+                start_ms=0,
+                end_ms=1200,
+                text="We need to align.",
+                confidence=None,
+            ),
+        ],
+    )
+    translation_provider = FakeInterimTranslationProvider(
+        translations=["这条临时翻译不应发送。"],
+    )
+    final_translation_provider = FakeFinalTranslationProvider(
+        outcomes=["我们需要对齐。"],
+    )
+
+    with make_client(
+        repository=repository,
+        quota_service=quota_service,
+        stt_provider=stt_provider,
+        translation_provider=translation_provider,
+        final_translation_provider=final_translation_provider,
+        settings_overrides={"qwen_interim_enabled": False},
+    ) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(session_start_payload(client_id))
+            started = websocket.receive_json()
+            session_id = started["session_id"]
+
+            websocket.send_bytes(b"\x00\x01")
+            receive_until_message_type(websocket, "audio_status")
+            asr_interim = receive_until_message_type(websocket, "asr_interim")
+            asr_final = receive_until_message_type(websocket, "asr_final")
+            segment_final = receive_until_message_type(websocket, "segment_final")
+            websocket.send_json({"type": "session_stop", "session_id": session_id})
+            closed = receive_until_message_type(websocket, "session_closed")
+
+    assert asr_interim["text"] == "We need to align."
+    assert asr_final["text"] == "We need to align."
+    assert segment_final["chinese_text_final"] == "我们需要对齐。"
+    assert closed == {"type": "session_closed", "reason": "user_stopped"}
+    assert translation_provider.requested_texts == []
+    assert final_translation_provider.requested_translations == [
+        FinalTranslationRequest(sequence=1, text="We need to align."),
+    ]
+    assert len(repository.transcript_segments) == 1
+    assert (
+        repository.transcript_segments[0].translation_status
+        is TranslationStatus.COMPLETED
+    )
 
 
 def test_interim_translation_keeps_latest_text_while_request_is_in_flight() -> None:

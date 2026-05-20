@@ -17,6 +17,7 @@ import {
 import { Button } from '@/components/ui/button'
 import ArchivePage from '@/archive/ArchivePage'
 import UsageDashboardPage from '@/admin/UsageDashboardPage'
+import type { ProviderStatus } from '@/protocol/websocket-messages'
 import {
   useSessionStore,
   type AudioProcessingStatus,
@@ -134,6 +135,84 @@ function audioProcessingStatusLabel(status: AudioProcessingStatus): string {
   }
 }
 
+function providerAwareAsrStatusLabel({
+  englishFinalCount,
+  englishInterimText,
+  finalCount,
+  providerStatus,
+  webSocketStatus,
+}: {
+  englishFinalCount: number
+  englishInterimText: string | null
+  finalCount: number
+  providerStatus: ProviderStatus | null
+  webSocketStatus: WebSocketStatus
+}): string {
+  switch (providerStatus?.qwen_realtime_asr) {
+    case 'disabled':
+      return 'ASR 已关闭'
+    case 'unconfigured':
+      return 'ASR 未配置'
+    case 'local_mock':
+      return webSocketStatus === 'started' ? '本地 mock' : '未连接'
+    case 'enabled':
+    case undefined:
+      break
+  }
+
+  if (englishFinalCount > 0 || finalCount > 0) {
+    return `${englishFinalCount + finalCount} 条 final`
+  }
+  if (englishInterimText) {
+    return '收到 interim'
+  }
+  return webSocketStatus === 'started' ? '等待后端 ASR' : '未连接'
+}
+
+function providerAwareTranslationStatusLabel({
+  finalCount,
+  providerStatus,
+  translationInterimText,
+  webSocketStatus,
+}: {
+  finalCount: number
+  providerStatus: ProviderStatus | null
+  translationInterimText: string | null
+  webSocketStatus: WebSocketStatus
+}): string {
+  const interimStatus = providerStatus?.qwen_interim_translation
+  const finalStatus = providerStatus?.qwen_final_translation
+  if (interimStatus === 'disabled' && finalStatus === 'disabled') {
+    return '翻译已关闭'
+  }
+  if (finalStatus === 'disabled') {
+    return '正式翻译已关闭'
+  }
+  if (finalStatus === 'unconfigured') {
+    return '正式翻译未配置'
+  }
+  if (interimStatus === 'disabled' && webSocketStatus === 'started') {
+    return '临时理解关闭'
+  }
+  if (interimStatus === 'unconfigured' && webSocketStatus === 'started') {
+    return '临时理解未配置'
+  }
+  if (
+    (interimStatus === 'local_mock' || finalStatus === 'local_mock') &&
+    webSocketStatus === 'started'
+  ) {
+    return '本地 mock'
+  }
+
+  if (finalCount > 0) {
+    return `${finalCount} 条 final`
+  }
+  if (translationInterimText) {
+    return '临时理解'
+  }
+  return webSocketStatus === 'started' ? '等待英文 final' : '未连接'
+}
+
 function startButtonLabel({
   captureStatus,
   identityReady,
@@ -198,6 +277,7 @@ function MeetingWorkspace() {
     hasEffectiveAudio,
     initializeAnonymousClient,
     keySentenceText,
+    providerStatus,
     remainingSecondsToday,
     serverSyncError,
     serverSyncStatus,
@@ -247,22 +327,19 @@ function MeetingWorkspace() {
     audioProcessingStatusLabel(audioProcessingStatus)
   const effectiveAudioLabel = hasEffectiveAudio ? '已检测到' : '等待有效音频'
   const audioLevelLabel = `${Math.round(Math.min(audioLevel, 1) * 100)}%`
-  const asrStatusLabel =
-    englishFinalSegments.length > 0 || finalSegments.length > 0
-      ? `${englishFinalSegments.length + finalSegments.length} 条 final`
-      : englishInterimText
-        ? '收到 interim'
-        : webSocketStatus === 'started'
-          ? '等待后端 ASR'
-          : '未连接'
-  const translationStatusLabel =
-    finalSegments.length > 0
-      ? `${finalSegments.length} 条 final`
-      : translationInterimText
-        ? '临时理解'
-        : webSocketStatus === 'started'
-          ? '等待英文 final'
-          : '未连接'
+  const asrStatusLabel = providerAwareAsrStatusLabel({
+    englishFinalCount: englishFinalSegments.length,
+    englishInterimText,
+    finalCount: finalSegments.length,
+    providerStatus,
+    webSocketStatus,
+  })
+  const translationStatusLabel = providerAwareTranslationStatusLabel({
+    finalCount: finalSegments.length,
+    providerStatus,
+    translationInterimText,
+    webSocketStatus,
+  })
   const captureGuide =
     captureMode === 'system_audio'
       ? '系统音频模式可能包含其他应用声音。'

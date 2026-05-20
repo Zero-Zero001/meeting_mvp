@@ -121,11 +121,17 @@ def test_parses_required_session_started_response_fields() -> None:
                 "/archive/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
                 "?token=archive-token"
             ),
+            "provider_status": {
+                "qwen_final_translation": "enabled",
+                "qwen_interim_translation": "disabled",
+                "qwen_realtime_asr": "enabled",
+            },
             "remaining_seconds_today": 1800,
         },
     )
 
     assert isinstance(message, SessionStartedMessage)
+    assert message.provider_status.qwen_interim_translation == "disabled"
     assert message.remaining_seconds_today == 1800
 
 

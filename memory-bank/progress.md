@@ -1578,3 +1578,68 @@
 - 管理看板是内部工具，应用层只提供 bearer 管理口令；生产是否额外限制路径访问应由部署/Caddy/运维策略决定。
 - 看板成本是基于安全元数据的估算，不是账单对账；如果后续加入真实 provider usage 表，需要继续禁止正文、token、URL、密钥和音频进入 usage event。
 - 前端口令仅保存在组件 state；后续不要把 `DASHBOARD_ADMIN_TOKEN` 变成 `VITE_*`、写入本地存储或拼进 URL。
+
+## 2026-05-20 Step 29：F15 Provider 开关
+
+### 本次完成
+
+- 只推进用户明确指定的 Step 29，未开始 Step 30；本步不实现真实 OpenAI STT 音频转写链路、不新增前端 OpenAI 入口、不新增数据库 migration、不运行真实 Qwen/OpenAI/COS/Lighthouse smoke。
+- 后端配置新增 Qwen Provider 开关：
+  - `QWEN_ASR_ENABLED=true`：控制 Qwen realtime ASR 是否接受新实时会议。
+  - `QWEN_FINAL_ENABLED=true`：控制 Qwen final 是否实时调用中文正式翻译。
+  - 继续复用 `QWEN_INTERIM_ENABLED=true` 控制中文 interim。
+- 调整生产配置校验：
+  - `staging` / `production` 仍要求基础公网 URL、数据库、Redis 和 COS 配置。
+  - 仅在 `QWEN_ASR_ENABLED=true` 时要求 Qwen ASR key/model/WebSocket endpoint。
+  - 仅在 `QWEN_INTERIM_ENABLED=true` 时要求 Qwen 文本 key/base URL/interim model。
+  - 仅在 `QWEN_FINAL_ENABLED=true` 时要求 Qwen 文本 key/base URL/final model。
+  - `OPENAI_STT_ENABLED=true` 仍只做 OpenAI 配置条件校验，不参与实时链路选择。
+- WebSocket 会话编排新增开关行为：
+  - 非 local 且 `QWEN_ASR_ENABLED=false` 时，`session_start` 返回 `error(code="qwen_asr_disabled")` 和 `session_closed(reason="qwen_asr_disabled")`，不创建 `meeting_session`，不预占额度。
+  - `QWEN_INTERIM_ENABLED=false` 时不创建 interim provider，不发送中文 interim warning；英文 ASR 和 Qwen final 继续工作。
+  - `QWEN_FINAL_ENABLED=false` 时收到英文 `asr_final` 后仍发送英文 final，并创建 `translation_status=failed`、空中文 final 的 `transcript_segment`，自动入后台补译队列，发送 `warning(code="qwen_final_translation_disabled")` 和异常时间线节点。
+  - FastAPI lifespan 只有在 `QWEN_FINAL_ENABLED=true` 且 DB/Redis/Qwen final 配置完整时启动后台补译 worker。
+- WebSocket 协议与前端状态新增安全 Provider 状态：
+  - `session_started` 增加 `provider_status`，只暴露 `enabled` / `disabled` / `local_mock` / `unconfigured`。
+  - 前端 Zod schema、WebSocket mock、Zustand store 和实时工作台状态栏均已消费该字段。
+  - ASR/翻译状态栏会按 disabled/unconfigured/local_mock 给出可执行提示，不暴露 endpoint、模型名、API key 或密钥状态。
+  - `session-notices` 新增 `qwen_asr_disabled`、`qwen_interim_translation_disabled`、`qwen_final_translation_disabled` 文案。
+- 更新环境变量文档与示例：
+  - `memory-bank/environment-variables.md`
+  - `backend/.env.example`
+  - `deploy/.env.example`
+- 扩展测试文件：
+  - `backend/tests/test_config.py`
+  - `backend/tests/test_ws_messages.py`
+  - `backend/tests/test_websocket_sessions.py`
+  - `frontend/src/protocol/websocket-messages.test.ts`
+  - `frontend/src/stores/session-store.test.ts`
+  - `frontend/src/lib/session-notices.test.ts`
+  - `frontend/src/App.test.tsx`
+  - `frontend/src/lib/meeting-websocket.test.ts`
+  - `frontend/e2e/app.spec.ts`
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| Step 29 后端 RED | `uv run pytest tests/test_config.py tests/test_ws_messages.py tests/test_websocket_sessions.py -q` | 首次 9 failed：缺少 Qwen ASR/final 开关、条件校验、`provider_status`、ASR disabled 拒绝、interim/final disabled 行为和 worker 启动条件 |
+| Step 29 后端目标 GREEN | 同上 | 53 passed |
+| Step 29 前端 RED | `npm run test -- src/protocol/websocket-messages.test.ts src/stores/session-store.test.ts src/lib/session-notices.test.ts src/App.test.tsx --run` | 首次 7 failed：缺少 `provider_status` schema、store 保存、notice 映射和状态栏展示 |
+| Step 29 前端目标 GREEN | 同上 | 4 个测试文件、50 个测试通过 |
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy src tests` | 通过，`Success: no issues found in 45 source files` |
+| 后端 pytest | `uv run pytest` | 173 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 15 个测试文件、126 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过；仅输出 Windows LF/CRLF 工作区提示，无空白错误 |
+
+### 后续注意
+
+- Step 30 必须等待用户明确允许后再开始；当前没有兼容性矩阵、真实会议平台人工测试记录或平台风险评分。
+- OpenAI STT 在 Step 29 仍为暂缓状态：保留 `OPENAI_STT_ENABLED`、`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_STT_MODEL` 条件校验，不实现真实 OpenAI 音频转写 provider，也不加入前端入口。
+- `provider_status` 只能暴露安全枚举，不得扩展为 endpoint、模型名、API key 状态、供应商账号信息或密钥校验细节。
+- `QWEN_FINAL_ENABLED=false` 产生的 failed 片段会进入现有后台补译队列；重新启用 final 并满足配置后，worker 才会启动并处理到期 job。
+- `QWEN_ASR_ENABLED=false` 只拒绝新实时会议，不影响归档、导出、管理看板或已存在归档查看。

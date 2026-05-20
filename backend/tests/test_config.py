@@ -4,10 +4,12 @@ import pytest
 
 from meeting_mvp_backend.config import (
     AppEnv,
+    Settings,
     SettingsError,
     load_settings,
     settings_status,
 )
+from meeting_mvp_backend.main import _should_start_translation_retry_worker
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
@@ -37,6 +39,7 @@ SETTINGS_ENV_NAMES = [
     "ARCHIVE_RETENTION_DAYS",
     "COS_SIGNED_URL_TTL_SECONDS",
     "ASR_PROVIDER",
+    "QWEN_ASR_ENABLED",
     "QWEN_ASR_MODEL",
     "QWEN_ASR_BASE_URL",
     "QWEN_ASR_SAMPLE_RATE_HZ",
@@ -47,6 +50,7 @@ SETTINGS_ENV_NAMES = [
     "QWEN_BASE_URL",
     "QWEN_INTERIM_MODEL",
     "QWEN_INTERIM_ENABLED",
+    "QWEN_FINAL_ENABLED",
     "QWEN_FINAL_MODEL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -83,11 +87,14 @@ def test_example_config_loads_local_mock_defaults(
     assert settings.dashboard_qwen_text_output_usd_per_1m_tokens == 3.441
     assert settings.dashboard_usd_to_rmb == 7.2
     assert settings.asr_provider == "qwen_realtime"
+    assert settings.qwen_asr_enabled is True
     assert settings.qwen_asr_model == "qwen3-asr-flash-realtime"
     assert settings.qwen_asr_sample_rate_hz == 16000
     assert settings.qwen_asr_audio_format == "pcm"
     assert settings.qwen_asr_language == "auto"
     assert settings.session_resume_grace_seconds == 30
+    assert settings.qwen_interim_enabled is True
+    assert settings.qwen_final_enabled is True
     assert settings.qwen_final_model == "qwen3.6-max-preview"
     assert settings.openai_stt_enabled is False
 
@@ -153,3 +160,81 @@ def test_openai_stt_settings_required_only_when_enabled(
     message = str(exc_info.value)
     assert "OPENAI_API_KEY" in message
     assert "OPENAI_STT_MODEL" in message
+
+
+def test_qwen_required_settings_follow_provider_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_settings_env(monkeypatch)
+    for name, value in {
+        "APP_ENV": "production",
+        "PUBLIC_BASE_URL": "https://meeting.example.test",
+        "API_BASE_URL": "https://meeting.example.test/api",
+        "WS_BASE_URL": "wss://meeting.example.test/ws",
+        "DATABASE_URL": "postgresql+psycopg://user:pass@localhost/db",
+        "REDIS_URL": "redis://localhost:6379/0",
+        "TENCENT_COS_SECRET_ID": "placeholder-cos-secret-id",
+        "TENCENT_COS_SECRET_KEY": "placeholder-cos-secret-key",
+        "TENCENT_COS_REGION": "ap-guangzhou",
+        "TENCENT_COS_BUCKET": "meeting-mvp-test",
+        "TENCENT_COS_EXPORT_PREFIX": "exports/",
+        "QWEN_ASR_ENABLED": "false",
+        "QWEN_INTERIM_ENABLED": "false",
+        "QWEN_FINAL_ENABLED": "false",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    settings = load_settings()
+
+    assert settings.app_env is AppEnv.PRODUCTION
+    assert settings.qwen_asr_enabled is False
+    assert settings.qwen_interim_enabled is False
+    assert settings.qwen_final_enabled is False
+
+
+def test_interim_and_final_switches_require_only_their_own_qwen_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_settings_env(monkeypatch)
+    for name, value in {
+        "APP_ENV": "production",
+        "PUBLIC_BASE_URL": "https://meeting.example.test",
+        "API_BASE_URL": "https://meeting.example.test/api",
+        "WS_BASE_URL": "wss://meeting.example.test/ws",
+        "DATABASE_URL": "postgresql+psycopg://user:pass@localhost/db",
+        "REDIS_URL": "redis://localhost:6379/0",
+        "TENCENT_COS_SECRET_ID": "placeholder-cos-secret-id",
+        "TENCENT_COS_SECRET_KEY": "placeholder-cos-secret-key",
+        "TENCENT_COS_REGION": "ap-guangzhou",
+        "TENCENT_COS_BUCKET": "meeting-mvp-test",
+        "TENCENT_COS_EXPORT_PREFIX": "exports/",
+        "QWEN_ASR_ENABLED": "false",
+        "QWEN_INTERIM_ENABLED": "true",
+        "QWEN_FINAL_ENABLED": "false",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(SettingsError) as exc_info:
+        load_settings()
+
+    message = str(exc_info.value)
+    assert "QWEN_API_KEY" in message
+    assert "QWEN_BASE_URL" in message
+    assert "QWEN_INTERIM_MODEL" in message
+    assert "QWEN_ASR_BASE_URL" not in message
+    assert "QWEN_ASR_MODEL" not in message
+    assert "QWEN_FINAL_MODEL" not in message
+
+
+def test_translation_retry_worker_does_not_start_when_final_disabled() -> None:
+    settings = Settings(
+        app_env=AppEnv.PRODUCTION,
+        database_url="postgresql+psycopg://user:pass@localhost/db",
+        qwen_api_key="placeholder-qwen-api-key",
+        qwen_base_url="https://dashscope.example.test/compatible-mode/v1",
+        qwen_final_enabled=False,
+        qwen_final_model="qwen3.6-max-preview",
+        redis_url="redis://localhost:6379/0",
+    )
+
+    assert _should_start_translation_retry_worker(settings) is False

@@ -68,6 +68,41 @@ describe('session notices', () => {
     expect(finalNotice.action).toContain('后续重试')
   })
 
+  it('maps provider switch notices to actionable messages', () => {
+    const asrDisabled = noticeFromWebSocketError(
+      Object.assign(new Error('asr disabled'), {
+        code: 'qwen_asr_disabled',
+      }),
+    )
+    const interimDisabled = noticeFromWarningMessage({
+      code: 'qwen_interim_translation_disabled',
+      message: null,
+      type: 'warning',
+    })
+    const finalDisabled = noticeFromWarningMessage({
+      code: 'qwen_final_translation_disabled',
+      message: '中文正式翻译已关闭，英文 final 已归档待后续补译。',
+      type: 'warning',
+    })
+
+    expect(asrDisabled).toMatchObject({
+      code: 'qwen_asr_disabled',
+      severity: 'error',
+      title: '英文转写服务已关闭',
+    })
+    expect(interimDisabled).toMatchObject({
+      code: 'qwen_interim_translation_disabled',
+      severity: 'warning',
+      title: '中文临时理解已关闭',
+    })
+    expect(finalDisabled).toMatchObject({
+      code: 'qwen_final_translation_disabled',
+      severity: 'warning',
+      title: '正式中文翻译已关闭',
+    })
+    expect(finalDisabled.action).toContain('补译')
+  })
+
   it('maps quota and budget denials to blocking notices', () => {
     const quotaNotice = noticeFromWebSocketError(
       Object.assign(new Error('quota exhausted'), {

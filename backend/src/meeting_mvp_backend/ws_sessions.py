@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Protocol
+from typing import Literal, Protocol
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
@@ -22,7 +22,7 @@ from meeting_mvp_backend.archive_tokens import (
 from meeting_mvp_backend.archive_tokens import (
     hash_archive_token as hash_archive_token,
 )
-from meeting_mvp_backend.config import Settings
+from meeting_mvp_backend.config import AppEnv, Settings
 from meeting_mvp_backend.db.models import (
     AnonymousClient,
     CaptureMode,
@@ -74,6 +74,7 @@ from meeting_mvp_backend.ws_messages import (
     ErrorMessage,
     HeartbeatMessage,
     KeySentenceUpdateMessage,
+    ProviderStatus,
     QuotaUpdateMessage,
     SegmentFinalMessage,
     ServerMessage,
@@ -93,6 +94,7 @@ from meeting_mvp_backend.ws_messages import (
 logger = structlog.get_logger(__name__)
 
 Clock = Callable[[], datetime]
+ProviderStatusState = Literal["enabled", "disabled", "local_mock", "unconfigured"]
 SttProviderFactory = Callable[[], StreamingSttProvider]
 TranslationProviderFactory = Callable[[], InterimTranslationProvider]
 FinalTranslationProviderFactory = Callable[[], FinalTranslationProvider]
@@ -104,9 +106,11 @@ CLIENT_NOT_INITIALIZED_REASON = "client_not_initialized"
 CONFIGURATION_ERROR_REASON = "configuration_error"
 INTERNAL_ERROR_REASON = "internal_error"
 QWEN_ASR_ERROR_REASON = "qwen_asr_error"
+QWEN_ASR_DISABLED_REASON = "qwen_asr_disabled"
 SESSION_RESUME_FAILED_REASON = "session_resume_failed"
 QWEN_INTERIM_TRANSLATION_FAILED_CODE = "qwen_interim_translation_failed"
 QWEN_FINAL_TRANSLATION_FAILED_CODE = "qwen_final_translation_failed"
+QWEN_FINAL_TRANSLATION_DISABLED_CODE = "qwen_final_translation_disabled"
 MOCK_PROVIDER_STEP_DELAY_SECONDS = 0.001
 INTERIM_TRANSLATION_MIN_INTERVAL_SECONDS = 1.5
 FINAL_TRANSLATION_CONTEXT_SEGMENT_LIMIT = 5
@@ -253,6 +257,52 @@ class InMemorySessionResumeRegistry:
 
 
 DEFAULT_SESSION_RESUME_REGISTRY = InMemorySessionResumeRegistry()
+
+
+def _provider_status(settings: Settings) -> ProviderStatus:
+    if settings.app_env is AppEnv.LOCAL:
+        return ProviderStatus(
+            qwen_realtime_asr="local_mock",
+            qwen_interim_translation="local_mock",
+            qwen_final_translation="local_mock",
+        )
+
+    return ProviderStatus(
+        qwen_realtime_asr=_configured_status(
+            settings.qwen_asr_enabled,
+            settings.qwen_api_key,
+            settings.qwen_asr_base_url,
+            settings.qwen_asr_model,
+        ),
+        qwen_interim_translation=_configured_status(
+            settings.qwen_interim_enabled,
+            settings.qwen_api_key,
+            settings.qwen_base_url,
+            settings.qwen_interim_model,
+        ),
+        qwen_final_translation=_configured_status(
+            settings.qwen_final_enabled,
+            settings.qwen_api_key,
+            settings.qwen_base_url,
+            settings.qwen_final_model,
+        ),
+    )
+
+
+def _configured_status(enabled: bool, *values: object) -> ProviderStatusState:
+    if not enabled:
+        return "disabled"
+    if all(_is_configured(value) for value in values):
+        return "enabled"
+    return "unconfigured"
+
+
+def _is_configured(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    return True
 
 
 class SQLAlchemyMeetingSessionRepository:
@@ -588,6 +638,18 @@ class WebSocketSessionOrchestrator:
         websocket: WebSocket,
         message: SessionStartMessage,
     ) -> WebSocketSessionState | None:
+        if (
+            self._settings.app_env is not AppEnv.LOCAL
+            and not self._settings.qwen_asr_enabled
+        ):
+            await self._close_with_error(
+                websocket=websocket,
+                state=None,
+                reason=QWEN_ASR_DISABLED_REASON,
+                message="Qwen realtime ASR is disabled",
+            )
+            return None
+
         repository = _require_repository(self._repository)
         quota_service = _require_quota_service(self._quota_service)
 
@@ -683,6 +745,7 @@ class WebSocketSessionOrchestrator:
                     session_id,
                     archive_token,
                 ),
+                provider_status=_provider_status(self._settings),
                 remaining_seconds_today=quota_decision.remaining_seconds_today,
             ),
         )
@@ -912,9 +975,12 @@ class WebSocketSessionOrchestrator:
         state: WebSocketSessionState,
         event: SttFinalEvent,
     ) -> None:
-        if self._final_translation_provider_factory is None:
-            return
         if " ".join(event.text.split()) == "":
+            return
+        if (
+            self._settings.qwen_final_enabled
+            and self._final_translation_provider_factory is None
+        ):
             return
 
         state.pending_final_translations.append(event)
@@ -935,6 +1001,31 @@ class WebSocketSessionOrchestrator:
                 continue
 
             state.current_final_translation = event
+            if not self._settings.qwen_final_enabled:
+                await self._record_usage_event(
+                    UsageEventType.PROVIDER_ERROR,
+                    client_id=state.client_id,
+                    session_id=state.session_id,
+                    payload={
+                        "code": QWEN_FINAL_TRANSLATION_DISABLED_CODE,
+                        "error_type": "ProviderDisabled",
+                        "provider": "qwen_final_translation",
+                        "sequence": event.sequence,
+                    },
+                )
+                await self._archive_failed_final_translation(
+                    websocket=websocket,
+                    state=state,
+                    event=event,
+                    send_warning=True,
+                    warning_code=QWEN_FINAL_TRANSLATION_DISABLED_CODE,
+                    warning_message=(
+                        "中文正式翻译已关闭，英文 final 已归档待后续补译。"
+                    ),
+                )
+                state.current_final_translation = None
+                continue
+
             try:
                 provider = state.final_translation_provider
                 if provider is None:
@@ -1122,6 +1213,8 @@ class WebSocketSessionOrchestrator:
         state: WebSocketSessionState,
         event: SttFinalEvent,
         send_warning: bool,
+        warning_code: str = QWEN_FINAL_TRANSLATION_FAILED_CODE,
+        warning_message: str = "中文正式翻译失败，英文 final 已归档待重试。",
     ) -> None:
         if event.sequence in state.archived_final_sequences:
             return
@@ -1162,12 +1255,12 @@ class WebSocketSessionOrchestrator:
                 websocket,
                 WarningMessage(
                     type="warning",
-                    code=QWEN_FINAL_TRANSLATION_FAILED_CODE,
-                    message="中文正式翻译失败，英文 final 已归档待重试。",
+                    code=warning_code,
+                    message=warning_message,
                 ),
             )
             await self._append_exception_timeline_item(
-                code=QWEN_FINAL_TRANSLATION_FAILED_CODE,
+                code=warning_code,
                 segment_id=segment_id,
                 state=state,
                 timestamp_ms=event.end_ms,
@@ -1204,6 +1297,8 @@ class WebSocketSessionOrchestrator:
         state: WebSocketSessionState,
         text: str,
     ) -> None:
+        if not self._settings.qwen_interim_enabled:
+            return
         if self._translation_provider_factory is None:
             return
 

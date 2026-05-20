@@ -4,6 +4,12 @@ import { MeetingWebSocketError, type ConnectMeetingWebSocketOptions } from '@/li
 
 import { initialSessionState, useSessionStore } from './session-store'
 
+const providerStatus = {
+  qwen_final_translation: 'enabled',
+  qwen_interim_translation: 'disabled',
+  qwen_realtime_asr: 'enabled',
+} as const
+
 function createTrack() {
   return {
     stop: vi.fn(),
@@ -68,6 +74,14 @@ describe('useSessionStore', () => {
           clientId: '11111111-1111-4111-8111-111111111111',
           sourcePlatform: 'unknown',
         })
+        options.onSessionStarted?.({
+          archive_token: 'archive-token',
+          archive_url: '/archive/session-1?token=archive-token',
+          provider_status: providerStatus,
+          remaining_seconds_today: 2100,
+          session_id: 'session-1',
+          type: 'session_started',
+        })
         return meetingSocket
       },
       now: () => new Date('2026-05-07T09:00:00.000Z'),
@@ -96,6 +110,8 @@ describe('useSessionStore', () => {
       captureStatus: 'ready',
       hasEffectiveAudio: true,
       mediaStream: stream,
+      providerStatus,
+      remainingSecondsToday: 2100,
       sessionId: 'session-1',
       status: 'capturing',
       webSocketStatus: 'started',
@@ -300,6 +316,60 @@ describe('useSessionStore', () => {
       code: 'qwen_final_translation_failed',
       severity: 'warning',
       title: '正式中文翻译失败',
+    })
+  })
+
+  it('records provider switch warnings and ASR-disabled websocket errors', async () => {
+    setReadyIdentity()
+    const { stream, track } = createStream()
+    const meetingSocket = createStartedWebSocket()
+    const audioProcessor = createAudioProcessor()
+    let websocketOptions: ConnectMeetingWebSocketOptions | null = null
+
+    await useSessionStore.getState().beginCapture('tab_audio', {
+      captureService: async () => ({
+        ok: true,
+        stream,
+      }),
+      connectMeetingWebSocket: async (options) => {
+        websocketOptions = options
+        return meetingSocket
+      },
+      startAudioProcessing: async () => audioProcessor,
+    })
+
+    websocketOptions?.onWarning?.({
+      code: 'qwen_final_translation_disabled',
+      message: '中文正式翻译已关闭，英文 final 已归档待后续补译。',
+      type: 'warning',
+    })
+
+    expect(useSessionStore.getState().activeNotice).toMatchObject({
+      code: 'qwen_final_translation_disabled',
+      severity: 'warning',
+      title: '正式中文翻译已关闭',
+    })
+
+    websocketOptions?.onError?.(
+      new MeetingWebSocketError({
+        code: 'qwen_asr_disabled',
+        message: 'Qwen realtime ASR is disabled',
+      }),
+    )
+    await Promise.resolve()
+
+    expect(audioProcessor.stop).toHaveBeenCalledOnce()
+    expect(track.stop).toHaveBeenCalledOnce()
+    expect(useSessionStore.getState()).toMatchObject({
+      audioProcessingStatus: 'idle',
+      hasEffectiveAudio: false,
+      status: 'idle',
+      webSocketStatus: 'error',
+    })
+    expect(useSessionStore.getState().activeNotice).toMatchObject({
+      code: 'qwen_asr_disabled',
+      severity: 'error',
+      title: '英文转写服务已关闭',
     })
   })
 

@@ -12,6 +12,21 @@ export const audioFormatSchema = z
   })
   .strict()
 
+export const providerStatusValueSchema = z.union([
+  z.literal('enabled'),
+  z.literal('disabled'),
+  z.literal('local_mock'),
+  z.literal('unconfigured'),
+])
+
+export const providerStatusSchema = z
+  .object({
+    qwen_realtime_asr: providerStatusValueSchema,
+    qwen_interim_translation: providerStatusValueSchema,
+    qwen_final_translation: providerStatusValueSchema,
+  })
+  .strict()
+
 export const sessionStartMessageSchema = z
   .object({
     type: z.literal('session_start'),
@@ -65,6 +80,7 @@ export const sessionStartedMessageSchema = z
     session_id: z.string().min(1),
     archive_token: z.string().min(1),
     archive_url: z.string().min(1),
+    provider_status: providerStatusSchema,
     remaining_seconds_today: nonNegativeInteger,
   })
   .strict()
@@ -194,6 +210,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
 ])
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>
+export type ProviderStatus = z.infer<typeof providerStatusSchema>
 export type ServerMessage = z.infer<typeof serverMessageSchema>
 
 export function parseClientMessage(payload: unknown): ClientMessage {

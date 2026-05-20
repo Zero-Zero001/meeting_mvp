@@ -26,6 +26,7 @@ _EXCEPTION_TEXT_BY_CODE = {
     "daily_quota_exhausted": "今日额度已用尽",
     "mock_qwen_interim_retry": "临时理解出现可恢复异常",
     "qwen_asr_error": "英文转写服务异常",
+    "qwen_final_translation_disabled": "中文正式翻译已关闭，已进入后台补译",
     "qwen_final_translation_failed": "中文正式翻译失败，已进入后台补译",
     "qwen_interim_translation_failed": "中文临时理解暂时不可用",
 }

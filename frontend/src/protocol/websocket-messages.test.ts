@@ -12,6 +12,12 @@ const validAudioFormat = {
   encoding: 'pcm16',
 }
 
+const providerStatus = {
+  qwen_final_translation: 'enabled',
+  qwen_interim_translation: 'disabled',
+  qwen_realtime_asr: 'enabled',
+}
+
 describe('websocket message schema', () => {
   it('parses a valid session_start client message', () => {
     const message = parseClientMessage({
@@ -102,11 +108,13 @@ describe('websocket message schema', () => {
       archive_token: 'archive-token',
       archive_url:
         '/archive/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?token=archive-token',
+      provider_status: providerStatus,
       remaining_seconds_today: 1800,
     })
 
     expect(message).toMatchObject({
       type: 'session_started',
+      provider_status: providerStatus,
       remaining_seconds_today: 1800,
     })
   })

@@ -338,12 +338,12 @@ def get_websocket_session_orchestrator(
         settings=settings,
         stt_provider_factory=(
             None
-            if settings.app_env is AppEnv.LOCAL
+            if settings.app_env is AppEnv.LOCAL or not settings.qwen_asr_enabled
             else lambda: create_qwen_realtime_asr_provider_from_settings(settings)
         ),
         final_translation_provider_factory=(
             None
-            if settings.app_env is AppEnv.LOCAL
+            if settings.app_env is AppEnv.LOCAL or not settings.qwen_final_enabled
             else lambda: create_qwen_final_translation_provider_from_settings(settings)
         ),
         translation_retry_queue=getattr(
@@ -520,6 +520,7 @@ async def websocket_session_endpoint(
 def _should_start_translation_retry_worker(settings: Settings) -> bool:
     return (
         settings.app_env is not AppEnv.LOCAL
+        and settings.qwen_final_enabled
         and settings.database_url is not None
         and settings.redis_url is not None
         and settings.qwen_api_key is not None

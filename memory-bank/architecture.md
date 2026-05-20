@@ -1217,3 +1217,65 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、123 个测试通过，E2E 为 11 个 Chromium 测试通过。
 - `git diff --check` 已通过，无空白错误。
 - Step 29 未开始；当前没有 Provider 开关。
+
+## 2026-05-20 Step 29 Provider 开关
+
+### 架构状态
+
+- Step 29 实现 F15 的后端 Provider 开关：Qwen realtime ASR、Qwen interim、Qwen final 分别由后端私有环境变量控制；本步不新增数据库 schema、公开 Provider 配置页面、真实 OpenAI STT 音频链路或 Step 30 兼容性矩阵。
+- 配置边界新增 `QWEN_ASR_ENABLED` 和 `QWEN_FINAL_ENABLED`，继续复用 `QWEN_INTERIM_ENABLED`；三者默认均为 `true`，并只在对应开关开启时触发生产必填项校验。
+- OpenAI STT 仍是暂缓状态：`OPENAI_STT_ENABLED=true` 只要求 OpenAI key/base/model 配置完整，但 WebSocket 实时链路不会选择 OpenAI STT，也没有前端入口。
+- 非 local 环境下 `QWEN_ASR_ENABLED=false` 会在 `session_start` 阶段拒绝新实时会议，返回 `qwen_asr_disabled`；拒绝发生在 session 创建和额度预占之前，因此不会写入 `meeting_session` 或 Redis active session。
+- `QWEN_INTERIM_ENABLED=false` 只关闭中文 interim 调度；英文 ASR、英文 `asr_final`、Qwen final、归档写入和后台补译队列不受影响，也不会发送“interim 失败”warning。
+- `QWEN_FINAL_ENABLED=false` 时，后端收到英文 `asr_final` 后不调用 final provider，而是保存英文 final、空中文 final、`translation_status=failed`，自动入现有后台补译队列，并发送 `qwen_final_translation_disabled` warning 和异常时间线节点。
+- 后台 final 补译 worker 的启动条件新增 `QWEN_FINAL_ENABLED=true`，因此 final 关闭期间只积累 failed retry job；重新开启并满足 DB/Redis/Qwen final 配置后 worker 才会启动处理。
+- `session_started` wire schema 新增 `provider_status`，值只允许 `enabled`、`disabled`、`local_mock`、`unconfigured`；该字段是安全运行状态摘要，不暴露 endpoint、模型名、账号、密钥、API key 是否存在等细节。
+- 前端 Zustand store 持久于当前会话状态中的 `providerStatus` 只来自 `session_started.provider_status`；实时工作台用它展示 ASR/翻译服务状态，如“ASR 已关闭”“翻译已关闭”“正式翻译未配置”“本地 mock”。
+- `session-notices` 新增 provider switch 文案：ASR disabled 是阻断错误；interim/final disabled 是可恢复/可继续提示。错误时前端仍停止本地音频资源，但保留已收到 final、归档入口和 session id。
+- Step 30 未开始：当前没有平台兼容性矩阵、真实 Google Meet/Teams/Zoom/腾讯会议人工测试、平台风险评分或浏览器能力表。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `backend/src/meeting_mvp_backend/config.py` | 后端配置边界。Step 29 新增 `qwen_asr_enabled`、`qwen_final_enabled`，并将生产必填项拆分为基础配置、Qwen ASR、Qwen interim、Qwen final、OpenAI STT 五组条件校验；`settings_status()` 继续只输出 set/unset。 |
+| `backend/src/meeting_mvp_backend/ws_messages.py` | 后端 WebSocket wire schema。Step 29 新增 `ProviderStatus` 与 `ProviderStatusValue`，并让 `SessionStartedMessage` 必须携带安全的 `provider_status`。 |
+| `backend/src/meeting_mvp_backend/ws_sessions.py` | WebSocket 会话编排层。Step 29 新增 provider status 计算、ASR disabled 建会拒绝、interim disabled 跳过调度、final disabled 归档 failed segment/入队/发 warning/时间线节点的主逻辑。 |
+| `backend/src/meeting_mvp_backend/main.py` | FastAPI 入口与依赖装配。Step 29 按 Qwen 开关注入或跳过真实 ASR/final provider factory，并要求 `QWEN_FINAL_ENABLED=true` 才启动后台补译 worker。 |
+| `backend/src/meeting_mvp_backend/timeline.py` | 时间线安全摘要模块。Step 29 增加 `qwen_final_translation_disabled` 的异常节点文案，保证 final 关闭也能进入统一时间线。 |
+| `backend/.env.example` | 后端 local 示例环境文件。Step 29 增加 `QWEN_ASR_ENABLED=true` 和 `QWEN_FINAL_ENABLED=true`，仍只包含空值或 placeholder，不含真实密钥。 |
+| `deploy/.env.example` | Docker Compose 示例环境文件。Step 29 增加 Qwen ASR/final 开关 placeholder 默认值，用于生产安全 env 按需覆盖。 |
+| `memory-bank/environment-variables.md` | 环境变量唯一清单。Step 29 记录 Qwen 三类开关、条件必填规则和 final 关闭后的 failed+retry 行为。 |
+| `frontend/src/protocol/websocket-messages.ts` | 前端 WebSocket schema。Step 29 镜像后端 `provider_status` Zod schema，严格限制安全枚举并导出 `ProviderStatus` 类型。 |
+| `frontend/src/stores/session-store.ts` | 前端会话状态 store。Step 29 新增 `providerStatus`，在 `onSessionStarted` 保存 provider 状态，并在开始/结束会话时清空。 |
+| `frontend/src/App.tsx` | 实时会议工作台。Step 29 根据 `providerStatus` 生成 ASR/翻译状态栏和时间线摘要状态，展示 disabled/unconfigured/local_mock 提示，不显示任何敏感配置。 |
+| `frontend/src/lib/session-notices.ts` | 前端异常与降级提示映射。Step 29 新增 `qwen_asr_disabled`、`qwen_interim_translation_disabled`、`qwen_final_translation_disabled` 的中文文案和 severity。 |
+| `frontend/src/lib/meeting-websocket.test.ts` | 前端 WebSocket client 测试。Step 29 更新 session_started mock，确保测试 fixture 符合新增 `provider_status` schema。 |
+| `frontend/e2e/app.spec.ts` | Playwright 实时工作台 e2e。Step 29 更新浏览器 WebSocket mock 的 `session_started` 响应，覆盖新增 provider status 字段。 |
+| `backend/tests/test_config.py` | 后端配置测试。Step 29 覆盖 Qwen ASR/final 默认开启、示例 env 加载、生产必填项按开关条件变化、OpenAI STT 条件校验和 final 关闭时 worker 不启动。 |
+| `backend/tests/test_ws_messages.py` | 后端 wire schema 测试。Step 29 覆盖 `session_started.provider_status` 解析。 |
+| `backend/tests/test_websocket_sessions.py` | 后端 WebSocket 编排测试。Step 29 覆盖 ASR disabled 拒绝且不占额度、interim disabled 不阻塞 ASR/final、final disabled 保存 failed segment 并入补译队列。 |
+| `frontend/src/protocol/websocket-messages.test.ts` | 前端协议测试。Step 29 覆盖 `session_started.provider_status` 的 Zod 解析。 |
+| `frontend/src/stores/session-store.test.ts` | 前端 store 测试。Step 29 覆盖 provider 状态保存、provider switch warning 和 ASR disabled error notice。 |
+| `frontend/src/lib/session-notices.test.ts` | 前端 notice 测试。Step 29 覆盖三个 provider switch code 的文案、severity 和行动提示。 |
+| `frontend/src/App.test.tsx` | 实时工作台组件测试。Step 29 覆盖状态栏 provider switch 提示，以及 WebSocket mock 响应新增字段后的捕获流程。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 29 记录完成内容、RED/GREEN 过程、完整验证结果和 Step 30 未开始边界。 |
+| `memory-bank/architecture.md` | 架构记录。Step 29 记录 Provider 开关架构、wire schema、前端状态流、安全约束和文件职责。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 29 同步项目状态、Provider 策略、后续限制和 Step 30 等待用户明确允许。 |
+
+### 数据与安全边界
+
+- Provider 开关只存在于后端私有配置，不新增前端 `VITE_QWEN_*` 或可由用户任意修改的前端配置。
+- `provider_status` 是安全枚举，不携带 endpoint、模型名、provider key 是否存在、账号信息、错误详情或任何密钥相关状态。
+- ASR disabled 拒绝新会议时不创建 `meeting_session`、不写 archive token、不占 Redis active session、不结算额度；归档、导出和管理看板仍可继续使用。
+- Final disabled 仍会写入 PostgreSQL failed segment，以便归档可追溯并让后台补译队列后续恢复；Redis retry job 只保存 session/segment id 和 due_at，不保存正文或译文。
+- Interim disabled 不写 warning 事件，不保存正文，不影响 final 链路；它只是跳过实时中文 interim provider 调度。
+- usage event 继续只保存安全元数据；本步没有新增正文、音频、token、URL、object key、密钥或隐私明文字段。
+
+### 验证结论
+
+- Step 29 已按 TDD 先跑 RED：后端缺少 Qwen 开关、条件配置校验、`provider_status` 和 disabled 路径；前端缺少 provider status schema/store/notice/UI；再实现到 GREEN。
+- 本地后端完整验证已通过：Ruff、mypy、pytest；pytest 结果为 173 passed，13 integration deselected。
+- 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、126 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- `git diff --check` 已通过，仅有 Windows LF/CRLF 工作区提示，无空白错误。
+- Step 30 未开始；当前没有兼容性矩阵或真实会议平台人工测试。

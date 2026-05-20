@@ -8,6 +8,12 @@ type NonNegativeInt = Annotated[int, Field(ge=0)]
 type AudioLevel = Annotated[float, Field(ge=0.0, le=1.0)]
 type Confidence = Annotated[float, Field(ge=0.0, le=1.0)]
 type AudioChunkFrame = bytes | bytearray | memoryview
+type ProviderStatusValue = Literal[
+    "enabled",
+    "disabled",
+    "local_mock",
+    "unconfigured",
+]
 
 
 class WireMessage(BaseModel):
@@ -18,6 +24,12 @@ class AudioFormat(WireMessage):
     sample_rate_hz: Literal[16000]
     channels: Literal[1]
     encoding: Literal["pcm16"]
+
+
+class ProviderStatus(WireMessage):
+    qwen_realtime_asr: ProviderStatusValue
+    qwen_interim_translation: ProviderStatusValue
+    qwen_final_translation: ProviderStatusValue
 
 
 class SessionStartMessage(WireMessage):
@@ -57,6 +69,7 @@ class SessionStartedMessage(WireMessage):
     session_id: str
     archive_token: str
     archive_url: str
+    provider_status: ProviderStatus
     remaining_seconds_today: NonNegativeInt
 
 

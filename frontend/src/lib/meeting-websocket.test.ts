@@ -8,6 +8,12 @@ import {
   type MeetingWebSocketConstructor,
 } from './meeting-websocket'
 
+const providerStatus = {
+  qwen_final_translation: 'enabled',
+  qwen_interim_translation: 'enabled',
+  qwen_realtime_asr: 'enabled',
+} as const
+
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
 
@@ -97,6 +103,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',
@@ -125,6 +132,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',
@@ -155,6 +163,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',
@@ -219,6 +228,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',
@@ -360,6 +370,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',
@@ -453,6 +464,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',
@@ -486,6 +498,7 @@ describe('meeting websocket client', () => {
       JSON.stringify({
         archive_token: 'archive-token',
         archive_url: '/archive/session-1?token=archive-token',
+        provider_status: providerStatus,
         remaining_seconds_today: 2400,
         session_id: 'session-1',
         type: 'session_started',

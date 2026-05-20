@@ -182,6 +182,22 @@ export function noticeFromCode(
         severity: 'error',
         title: '英文转写服务暂时不可用',
       }
+    case 'qwen_asr_disabled':
+      return {
+        action: '稍后重试；维护者重新启用英文转写后再开始会议。',
+        code,
+        message: '当前英文实时转写开关已关闭，系统不会创建新会议或消耗额度。',
+        severity: 'error',
+        title: '英文转写服务已关闭',
+      }
+    case 'qwen_interim_translation_disabled':
+      return {
+        action: '可以继续会议；以英文 interim 和中文 final 为准。',
+        code,
+        message: '当前不会生成中文 interim，英文转写和正式中文 final 会继续。',
+        severity: 'warning',
+        title: '中文临时理解已关闭',
+      }
     case 'qwen_interim_translation_failed':
       return {
         action: '继续会议即可；英文转写和正式中文翻译不会因此停止。',
@@ -189,6 +205,14 @@ export function noticeFromCode(
         message: '中文临时理解暂时不可用，英文转写会继续。',
         severity: 'warning',
         title: '中文临时理解暂时不可用',
+      }
+    case 'qwen_final_translation_disabled':
+      return {
+        action: '可以继续会议；服务恢复后后台补译会补齐正式中文。',
+        code,
+        message: '中文正式翻译已关闭，英文 final 已归档待后续补译。',
+        severity: 'warning',
+        title: '正式中文翻译已关闭',
       }
     case 'qwen_final_translation_failed':
       return {
@@ -285,7 +309,9 @@ function noAudioTrackAction(context: NoticeContext): string {
 function severityForCode(code: string): NoticeSeverity {
   if (
     code === 'qwen_interim_translation_failed' ||
+    code === 'qwen_interim_translation_disabled' ||
     code === 'qwen_final_translation_failed' ||
+    code === 'qwen_final_translation_disabled' ||
     code === 'export_failed' ||
     code === 'websocket_reconnecting'
   ) {

@@ -8,6 +8,7 @@
 - 前端只能读取 `VITE_*` 公开变量；任何 Provider、数据库、Redis、COS 密钥都不得添加 `VITE_` 前缀。
 - `APP_ENV=local` 是 Windows 本地 mock 模式，不要求真实 Provider、数据库、Redis、COS 密钥。
 - `APP_ENV=staging` 或 `APP_ENV=production` 必须提供生产必填配置；缺失时后端拒绝启动并报告缺失变量名。
+- `QWEN_ASR_ENABLED=true` 和 `QWEN_FINAL_ENABLED=true` 是默认值；生产必填项会按 Qwen ASR / interim / final 开关分别校验。
 - `OPENAI_STT_ENABLED=false` 是默认值；只有显式设置为 `true` 时才要求 OpenAI STT 相关配置。
 - 示例文件只放 placeholder 或空值：`backend/.env.example`、`frontend/.env.example`。
 
@@ -60,6 +61,7 @@
 | 变量名 | 默认值 | 可进入前端 | 用途 |
 |---|---:|---|---|
 | `ASR_PROVIDER` | `qwen_realtime` | 否 | 英文实时 ASR provider；当前生产主路径固定为 Qwen realtime。 |
+| `QWEN_ASR_ENABLED` | `true` | 否 | 是否允许 Qwen realtime ASR 接受新实时会议；关闭时后端拒绝新 WebSocket 会话，不创建 session、不占用额度。 |
 | `QWEN_API_KEY` | 空 | 否 | 阿里云百炼 API Key。 |
 | `QWEN_BASE_URL` | 空 | 否 | Qwen OpenAI-compatible endpoint。 |
 | `QWEN_ASR_MODEL` | `qwen3-asr-flash-realtime` | 否 | 英文实时 ASR 模型。 |
@@ -69,6 +71,7 @@
 | `QWEN_ASR_LANGUAGE` | `auto` | 否 | Qwen realtime ASR 识别语言；`auto` 表示不强制语言。 |
 | `QWEN_INTERIM_MODEL` | 空 | 否 | 中文 interim 模型。 |
 | `QWEN_INTERIM_ENABLED` | `true` | 否 | 是否启用中文 interim。 |
+| `QWEN_FINAL_ENABLED` | `true` | 否 | 是否启用中文 final；关闭时英文 final 仍入库为待补译失败片段，并等待后续重新启用后由后台队列补译。 |
 | `QWEN_FINAL_MODEL` | `qwen3.6-max-preview` | 否 | 中文 final 模型。 |
 | `OPENAI_API_KEY` | 空 | 否 | OpenAI API Key，仅备用或对比。 |
 | `OPENAI_BASE_URL` | 空 | 否 | OpenAI API base URL。 |
@@ -84,7 +87,10 @@
 ## 校验边界
 
 - `local` 模式允许以上私有配置为空，便于 Windows 本地跑 mock 和轻量测试。
-- `staging`、`production` 模式要求后端启动前具备数据库、Redis、Qwen realtime ASR、Qwen final/interim 和 COS 关键配置。
+- `staging`、`production` 模式要求后端启动前具备数据库、Redis 和 COS 关键配置；Qwen realtime ASR、Qwen interim、Qwen final 的 endpoint/model/key 只在对应开关为 `true` 时必填。
+- `QWEN_ASR_ENABLED=false` 只关闭新实时会议入口，不影响归档、导出或管理看板 API。
+- `QWEN_INTERIM_ENABLED=false` 只关闭中文 interim，不应阻塞英文 ASR 或中文 final。
+- `QWEN_FINAL_ENABLED=false` 会让实时链路保存英文 final、空中文 final 和 `translation_status=failed`，并进入后台补译队列；后台补译 worker 只在 `QWEN_FINAL_ENABLED=true` 且配置完整时启动。
 - 后端启动日志只允许输出配置名和 `set` / `unset` 状态，不允许输出任何变量值。
 - 前端构建产物中不应包含 `QWEN_*`、`OPENAI_*`、`GOOGLE_*`、`DATABASE_URL`、`REDIS_URL`、`TENCENT_COS_*`。
 - `DASHBOARD_ADMIN_TOKEN` 是后端私有管理口令，不得写入前端 `.env`、localStorage、sessionStorage、URL query、日志、usage event 或项目记忆文档；示例文件只能使用空值或 placeholder。

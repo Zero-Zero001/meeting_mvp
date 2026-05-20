@@ -72,6 +72,11 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
     })
 
     window.__sentBinaryFrames = []
+    const providerStatus = {
+      qwen_final_translation: 'enabled',
+      qwen_interim_translation: 'enabled',
+      qwen_realtime_asr: 'enabled',
+    }
     let websocketCount = 0
 
     class FakeWebSocket {
@@ -236,6 +241,7 @@ async function mockBrowserPipeline(page: Page, mode: CaptureMockMode) {
                 data: JSON.stringify({
                   archive_token: 'archive-token',
                   archive_url: '/archive/session-1?token=archive-token',
+                  provider_status: providerStatus,
                   remaining_seconds_today: 2400,
                   session_id: 'session-1',
                   type: 'session_started',

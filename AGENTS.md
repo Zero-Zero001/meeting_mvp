@@ -35,7 +35,8 @@
 - Step 25 已实现后台 Final 补译队列：后端新增 `meeting_mvp_backend.translation_retries`，使用 Redis scheduled set 与 per-segment lock 调度 failed/retrying 片段，worker 复用 Qwen final provider 自动补译并更新 `transcript_segment.translation_status`；WebSocket final 首次失败后自动入队，FastAPI lifespan 在非 local 且 DB/Redis/Qwen final 配置完整时启动 worker；归档 API 返回 `translation_retry_attempts` / `translation_retry_exhausted`，前端归档页显示补译状态并自动 polling；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 26 已实现 F17 当前重点句增强：后端新增 `meeting_mvp_backend.key_sentences` 用确定性规则识别行动项、决策、截止时间、风险、预算、负责人、确认、上线等重点句；Qwen final 成功后写入 `transcript_segment.is_key_sentence` 并命中时推送 `key_sentence_update`；归档 API 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...` 支持人工标记/取消；`usage_event` 新增 `key_sentence_marked` 安全元数据事件；前端归档页新增“只看重点句”筛选和人工标记按钮；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 27 已实现 F18 会议时间线增强：后端新增 `meeting_mvp_backend.timeline` 统一生成 `segment_final`、`key_sentence`、`export_created`、`exception` 节点；WebSocket final/重点句/warning/error 路径推送 `timeline_update`；归档 API 新增 `timeline_items` 派生字段；前端实时页和归档页新增时间线筛选、类型展示和关联片段跳转；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 28 已实现 F14 使用量与成本看板：后端新增 `meeting_mvp_backend.usage_dashboard`，提供 `GET /api/admin/usage-dashboard?days=...`，使用 `DASHBOARD_ADMIN_TOKEN` bearer 鉴权，从 `meeting_session` 与 `usage_event` 安全元数据聚合会议数、有效会议、活跃匿名用户、ASR 分钟、Qwen 请求数、估算 token、导出、错误、漏斗、腾讯会议成功率和估算成本；前端新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，不写入本地存储或 URL；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 29。
+- Step 28 已实现 F14 使用量与成本看板：后端新增 `meeting_mvp_backend.usage_dashboard`，提供 `GET /api/admin/usage-dashboard?days=...`，使用 `DASHBOARD_ADMIN_TOKEN` bearer 鉴权，从 `meeting_session` 与 `usage_event` 安全元数据聚合会议数、有效会议、活跃匿名用户、ASR 分钟、Qwen 请求数、估算 token、导出、错误、漏斗、腾讯会议成功率和估算成本；前端新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，不写入本地存储或 URL；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 29 已实现 F15 Provider 开关：后端新增 `QWEN_ASR_ENABLED` 与 `QWEN_FINAL_ENABLED`，并复用 `QWEN_INTERIM_ENABLED` 做条件配置校验；Qwen ASR 关闭时拒绝新实时会议且不创建 session/不占额度，interim 关闭时只跳过中文 interim，final 关闭时保存英文 final 为 failed 片段并入后台补译队列；`session_started` 新增安全 `provider_status`，前端 store 和状态栏展示 enabled/disabled/local_mock/unconfigured；OpenAI STT 仍仅保留配置校验不接入实时链路；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 30。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -44,7 +45,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 28 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 29 的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板、Provider 开关和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -144,10 +145,14 @@
 - 中文 interim 主路径：阿里云百炼 Qwen Flash/Turbo，使用 OpenAI-compatible API。
 - 中文 final 主路径：阿里云百炼 Qwen `qwen3.6-max-preview`，默认携带最近 5 个 final 片段作为上下文。
 - 环境变量必须包含并区分：
+  - `QWEN_ASR_ENABLED`
   - `QWEN_INTERIM_MODEL`
+  - `QWEN_INTERIM_ENABLED`
+  - `QWEN_FINAL_ENABLED`
   - `QWEN_FINAL_MODEL=qwen3.6-max-preview`
+- Step 29 后，Qwen ASR/interim/final 生产必填项按各自开关条件校验；Qwen ASR 关闭拒绝新实时会议，Qwen final 关闭会保存 failed 英文 final 并等待后续补译。
 - Google STT 曾作为 Step 16 原候选，但北京地区腾讯云 Lighthouse 到 Google Speech API 的真实 gRPC/HTTP2 streaming 不可用，因此仅作为后续备用/对比候选，不再是第一版生产主路径。
-- OpenAI 不作为第一版 M1-A 主路径；由于腾讯云 Lighthouse 当前无法访问官方 `api.openai.com:443`，OpenAI 仅保留为后续备用、质量对比或网络恢复后的扩展项。
+- OpenAI 不作为第一版 M1-A 主路径；由于腾讯云 Lighthouse 当前无法访问官方 `api.openai.com:443`，OpenAI 仅保留为后续备用、质量对比或网络恢复后的扩展项。Step 29 仍未实现真实 OpenAI STT 音频转写链路或前端入口，只保留 `OPENAI_STT_ENABLED=true` 时的配置校验。
 - Qwen interim 失败不应阻塞英文转写和 Qwen final；Qwen final 失败时片段进入可重试状态。
 
 ## 8. 部署与环境边界
@@ -251,7 +256,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 Provider 开关已完成；Step 30 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -445,7 +450,16 @@ Step 28 使用量与成本看板已落地：
 - `backend/src/meeting_mvp_backend/config.py`、`backend/.env.example`、`deploy/.env.example` 与 `memory-bank/environment-variables.md` 新增后端私有看板口令和成本估算配置；`DASHBOARD_ADMIN_TOKEN` 不得进入前端、URL、本地存储、日志、usage event 或项目记忆文档。
 - `frontend/src/api/usage-dashboard.ts` 新增看板 API client，只在 Authorization header 发送口令；`frontend/src/admin/UsageDashboardPage.tsx` 新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，展示 7/30/90 天指标、趋势、漏斗、错误质量和成本预算。
 - 看板响应只返回安全聚合数据，不返回英文/中文正文、archive token、archive URL、COS object key、下载 URL、密钥、IP/User-Agent 明文或音频。
-- Step 28 不新增 Provider 开关、Provider 配置页面、真实 Provider 对比入口或外部模型调用；Step 29 必须等待用户明确允许后再开始。
+- Step 28 不新增 Provider 开关、Provider 配置页面、真实 Provider 对比入口或外部模型调用；Step 29 已在后续补齐 Provider 开关。
+
+Step 29 Provider 开关已落地：
+
+- `backend/src/meeting_mvp_backend/config.py` 新增 `QWEN_ASR_ENABLED`、`QWEN_FINAL_ENABLED`，并复用 `QWEN_INTERIM_ENABLED`；生产必填项按 Qwen ASR/interim/final 开关分别校验，OpenAI STT 仍只在 `OPENAI_STT_ENABLED=true` 时做配置校验。
+- `backend/src/meeting_mvp_backend/ws_messages.py` 和 `frontend/src/protocol/websocket-messages.ts` 的 `session_started` 新增安全 `provider_status`，只允许 `enabled`、`disabled`、`local_mock`、`unconfigured`，不得暴露 endpoint、模型名、密钥或账号细节。
+- `backend/src/meeting_mvp_backend/ws_sessions.py` 在非 local 且 `QWEN_ASR_ENABLED=false` 时拒绝新会议，不创建 session、不占额度；`QWEN_INTERIM_ENABLED=false` 时跳过中文 interim；`QWEN_FINAL_ENABLED=false` 时保存 failed 英文 final 并入后台补译队列。
+- `backend/src/meeting_mvp_backend/main.py` 仅在对应 Qwen 开启时注入真实 ASR/final provider；后台补译 worker 仅在 `QWEN_FINAL_ENABLED=true` 且配置完整时启动。
+- `frontend/src/stores/session-store.ts` 保存 provider 状态；`frontend/src/App.tsx` 在实时状态栏展示 ASR/翻译的 disabled/unconfigured/local_mock 提示；`frontend/src/lib/session-notices.ts` 映射 `qwen_asr_disabled`、`qwen_interim_translation_disabled`、`qwen_final_translation_disabled`。
+- Step 29 不实现真实 OpenAI STT 音频链路、不新增前端 OpenAI 入口、不新增数据库 migration、不运行真实 Provider smoke；Step 30 必须等待用户明确允许后再开始。
 
 核心 WebSocket 请求消息：
 
@@ -501,5 +515,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 29 必须等待用户明确允许后再开始；Step 28 只实现使用量与成本看板、管理口令鉴权、安全聚合和估算成本，不新增 Provider 开关、新数据库 migration 或真实 Provider 对比入口。
+- Step 30 必须等待用户明确允许后再开始；Step 29 只实现 Qwen Provider 开关、安全 provider 状态和条件配置校验，不新增兼容性矩阵、真实会议平台人工测试、新数据库 migration 或真实 OpenAI STT 音频链路。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

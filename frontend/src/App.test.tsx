@@ -9,6 +9,11 @@ const originalMediaDevices = navigator.mediaDevices
 const originalWebSocket = window.WebSocket
 const OriginalAudioContext = window.AudioContext
 const OriginalAudioWorkletNode = window.AudioWorkletNode
+const providerStatus = {
+  qwen_final_translation: 'enabled',
+  qwen_interim_translation: 'disabled',
+  qwen_realtime_asr: 'enabled',
+} as const
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = []
@@ -41,6 +46,7 @@ class FakeWebSocket {
             data: JSON.stringify({
               archive_token: 'archive-token',
               archive_url: '/archive/session-1?token=archive-token',
+              provider_status: providerStatus,
               remaining_seconds_today: 2400,
               session_id: 'session-1',
               type: 'session_started',
@@ -282,6 +288,24 @@ describe('App', () => {
     expect(statusBar.getByText('运行中')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '已捕获' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '结束会议' })).toBeEnabled()
+  })
+
+  it('renders provider switch status hints in the realtime status bar', () => {
+    useSessionStore.setState({
+      ...useSessionStore.getState(),
+      providerStatus: {
+        qwen_final_translation: 'disabled',
+        qwen_interim_translation: 'disabled',
+        qwen_realtime_asr: 'disabled',
+      },
+      webSocketStatus: 'started',
+    })
+
+    render(<App />)
+
+    const statusBar = within(screen.getByRole('banner', { name: '会议状态栏' }))
+    expect(statusBar.getAllByText('ASR 已关闭').length).toBeGreaterThan(0)
+    expect(statusBar.getAllByText('翻译已关闭').length).toBeGreaterThan(0)
   })
 
   it('updates audio level and effective audio state from worklet samples', async () => {
