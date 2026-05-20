@@ -1671,3 +1671,38 @@
 - Google Meet、Teams Web、Zoom Web 至少要有一个浏览器的 `tab_audio` 成功；腾讯会议结论只能是 `tab_audio_supported`、`system_audio_only` 或 `unsupported`，其中 `unsupported` 阻塞完成。
 - `results.json` 不得写入会议正文、密钥、endpoint、账号、下载 URL、archive token、原始音频或用户隐私数据；只记录 PRD 要求的安全测试元数据。
 - Step 31 仍必须等待用户明确允许后再开始；当前没有 CI workflow 或 GitHub Actions 相关变更。
+
+## 2026-05-20 Step 31：建立 CI 检查
+
+### 本次完成
+
+- 用户已明确覆盖 Step 30 顺序门禁，允许继续 Step 31；Step 30 仍保持 `blocked`，没有伪造兼容性矩阵通过记录。
+- 只推进 `memory-bank/implementation-plan.md` 的 Step 31，未开始 Step 32；本步不执行 SSH 部署、不运行 `docker compose up -d`、不运行生产 migration、不运行真实 Qwen/COS/Provider smoke。
+- 新增 `.github/workflows/ci.yml`：
+  - 触发方式为 `pull_request`、推送到 `main` / `codex/**`、`workflow_dispatch`。
+  - 顶层权限固定为 `contents: read`，workflow 不读取 repository secrets，不包含 SSH/scp/rsync，不包含自动部署步骤。
+  - `frontend` job 使用 Node.js 24、`npm ci`、Playwright Chromium，依次运行前端 lint、Vitest、生产构建和 Playwright E2E。
+  - `backend` job 使用 `backend/.python-version` 中的 Python 3.12、uv locked dependencies，依次运行 Ruff、mypy 和 pytest。
+  - `compose-config` job 只运行 `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`，只校验 Compose 配置，不启动容器。
+- 没有修改运行时 API、WebSocket schema、数据库 schema、业务代码、环境变量清单或前端 `VITE_*` 边界。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 47 source files` |
+| 后端 pytest | `uv run pytest` | 173 passed，13 integration deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test` | 15 个测试文件、126 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| Markdown/代码空白检查 | `git diff --check` | 通过，无空白错误 |
+| CI 安全边界扫描 | `Select-String .github/workflows/ci.yml -Pattern 'ssh|scp|rsync|compose up|docker compose up|secrets\.|SSH|deploy|alembic upgrade|RUN_QWEN|COS'` | 仅命中 Compose config 命令；未发现 SSH、secrets、部署、容器启动、production migration 或真实 Provider/COS smoke |
+
+### 后续注意
+
+- Step 31 分支计划为 `codex/step31-ci-checks`；推送后需要等待 GitHub Actions 的 `frontend`、`backend`、`compose-config` jobs 全部通过。
+- GitHub Actions 检查是否硬性阻止合并，还取决于 GitHub 仓库 branch protection 是否将这些 checks 配置为 required；本步只新增 workflow，不修改仓库保护设置。
+- Step 30 仍未完成；兼容性矩阵不能纳入 CI 必跑项，否则当前 blocked 状态会让 Step 31 CI 永久失败。
+- Step 32 必须等待用户明确允许后再开始；不得因为 CI 通过就自动部署 Lighthouse。

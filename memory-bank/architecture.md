@@ -1316,3 +1316,48 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `pwsh` 在当前 Windows 本机不可用；使用 Windows PowerShell 执行脚本可运行。
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate-step30-compatibility.ps1` 按预期失败，列出空结果、blocked 状态、缺少必测行和腾讯会议结论等问题。
 - 因真实平台人工结果尚未录入，Step 30 未完成；不能进入 Step 31。
+
+## 2026-05-20 Step 31 CI 检查
+
+### 架构状态
+
+- Step 31 新增 GitHub Actions 作为提交质量门：覆盖前端 lint/test/build/e2e、后端 Ruff/mypy/pytest 和 Docker Compose 配置检查。
+- 用户已明确覆盖 Step 30 顺序门禁并允许推进 Step 31；Step 30 仍保持 `blocked`，兼容性矩阵未被标记为通过，也未加入 CI 必跑项。
+- CI 只做检查，不做部署：workflow 不配置 secrets，不使用 SSH/scp/rsync，不运行 `docker compose up`，不执行 production migration，不运行真实 Qwen、COS 或 Lighthouse smoke。
+- CI 使用仓库内既有锁文件与脚本：前端用 `frontend/package-lock.json` + `npm ci`，后端用 `backend/uv.lock` + `uv sync --locked`，Compose 用 `deploy/.env.example` placeholder 做 config 展开。
+- `compose-config` job 只验证 `deploy/docker-compose.yml` 在示例环境变量下可解析；它不构建镜像、不拉起 PostgreSQL/Redis/后端/Caddy，也不验证生产密钥。
+- 本步不修改运行时 API、WebSocket wire schema、数据库 schema、后端配置模型、环境变量清单、前端 `VITE_*` 公开配置或业务代码。
+- GitHub Actions 是否在 GitHub 上阻止合并取决于仓库 branch protection 是否把这些 jobs 设为 required；Step 31 只新增 workflow，不修改仓库保护设置。
+- Step 32 未开始：没有生产部署演练、HTTPS/WSS 线上验证、PostgreSQL 备份恢复演练或云端容器启动。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `.github/workflows/ci.yml` | Step 31 新增 CI 入口。定义 `frontend`、`backend`、`compose-config` 三个 jobs，分别运行前端质量检查、后端质量检查和 Docker Compose 配置检查；顶层权限为 `contents: read`，不使用 secrets 或部署步骤。 |
+| `frontend/package-lock.json` | 前端 CI 依赖锁来源。`frontend` job 使用 `npm ci` 按 lockfile 安装依赖，并通过 setup-node npm cache 复用依赖缓存。 |
+| `frontend/package.json` | 前端 CI 命令来源。`frontend` job 复用既有 `lint`、`test`、`build`、`test:e2e` scripts，不新增前端工具链。 |
+| `frontend/playwright.config.ts` | 前端 E2E 配置。CI 中先运行生产构建，再由 Playwright 启动 Vite preview 进行 Chromium smoke tests。 |
+| `backend/.python-version` | 后端 CI Python 版本来源。`backend` job 使用 `actions/setup-python` 读取该文件，保持 GitHub runner 与项目 Python 3.12 边界一致。 |
+| `backend/uv.lock` | 后端 CI 依赖锁来源。`backend` job 使用 `uv sync --locked`，避免 CI 自动改写依赖锁。 |
+| `backend/pyproject.toml` | 后端 CI 命令与测试配置来源。`backend` job 复用 Ruff、mypy、pytest 配置；默认 pytest 仍排除 `integration` 标记。 |
+| `deploy/docker-compose.yml` | Compose config CI 检查对象。`compose-config` job 验证单机部署拓扑可被 Docker Compose 解析，但不启动容器。 |
+| `deploy/.env.example` | Compose config CI 示例环境。只包含 placeholder，用于展开必填变量；不得放入真实密钥。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 31 记录 CI workflow 内容、本地验证结果、Step 30 覆盖说明和 Step 32 未开始边界。 |
+| `memory-bank/architecture.md` | 架构记录。Step 31 记录 CI 数据流、文件职责、安全边界和非部署约束。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 31 同步当前 CI 状态、后续限制和 Step 32 必须等待用户明确允许。 |
+
+### 安全与部署边界
+
+- CI 不接收或读取 Qwen、OpenAI、Tencent COS、数据库、Redis、Dashboard 或 SSH 真实密钥。
+- `deploy/.env.example` 中的 placeholder 只用于 Compose config 解析，不代表生产配置，也不能用于正式数据目录初始化。
+- 前端 CI 不新增任何 `VITE_QWEN_*`、`VITE_OPENAI_*`、`VITE_DATABASE_*`、`VITE_REDIS_*` 或 `VITE_TENCENT_COS_*`。
+- 后端 CI 的 `uv run pytest` 是本地轻量测试路径，默认排除真实 PostgreSQL/Redis/Qwen integration tests；真实集成测试仍需 Lighthouse/CI 安全环境显式开启。
+- CI 通过不等价于 Step 30 兼容性矩阵通过，也不等价于 Step 32 生产部署演练通过。
+
+### 验证结论
+
+- 本地后端验证已通过：Ruff、mypy、pytest；pytest 结果为 173 passed，13 integration deselected。
+- 本地前端验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、126 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- `git diff --check` 已通过，无空白错误。
+- workflow 安全扫描未发现 SSH、secrets、部署、容器启动、production migration 或真实 Provider/COS smoke；只命中预期的 Compose config 命令。

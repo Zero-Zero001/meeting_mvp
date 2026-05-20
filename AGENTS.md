@@ -6,7 +6,7 @@
 
 - 本地仓库根目录：`D:\meeting_mvp`。
 - GitHub 远端：`https://github.com/Zero-Zero001/meeting_mvp.git`。
-- 当前已建立工程目录边界：存在 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`。
+- 当前已建立工程目录边界：存在 `frontend/`、`backend/`、`deploy/`、`scripts/`、`tests/`、`.github/workflows/`。
 - 前端工程已在 `frontend/` 初始化：Vite + React + TypeScript，使用 Tailwind CSS v4、shadcn/ui、lucide-react、Zustand、Vitest、Playwright 和 npm。
 - 后端工程已在 `backend/` 初始化：Python 3.12 + FastAPI + uv，包名为 `meeting_mvp_backend`，当前 ASGI 入口为 `meeting_mvp_backend.main:app`，健康检查为 `GET /health`。
 - 后端当前已有 `backend/pyproject.toml`、`backend/uv.lock`、`backend/.python-version`；根目录仍没有 `package.json` 或 `pyproject.toml`。
@@ -36,8 +36,9 @@
 - Step 26 已实现 F17 当前重点句增强：后端新增 `meeting_mvp_backend.key_sentences` 用确定性规则识别行动项、决策、截止时间、风险、预算、负责人、确认、上线等重点句；Qwen final 成功后写入 `transcript_segment.is_key_sentence` 并命中时推送 `key_sentence_update`；归档 API 新增 `PATCH /api/archives/{session_id}/segments/{segment_id}/key-sentence?token=...` 支持人工标记/取消；`usage_event` 新增 `key_sentence_marked` 安全元数据事件；前端归档页新增“只看重点句”筛选和人工标记按钮；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 27 已实现 F18 会议时间线增强：后端新增 `meeting_mvp_backend.timeline` 统一生成 `segment_final`、`key_sentence`、`export_created`、`exception` 节点；WebSocket final/重点句/warning/error 路径推送 `timeline_update`；归档 API 新增 `timeline_items` 派生字段；前端实时页和归档页新增时间线筛选、类型展示和关联片段跳转；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 28 已实现 F14 使用量与成本看板：后端新增 `meeting_mvp_backend.usage_dashboard`，提供 `GET /api/admin/usage-dashboard?days=...`，使用 `DASHBOARD_ADMIN_TOKEN` bearer 鉴权，从 `meeting_session` 与 `usage_event` 安全元数据聚合会议数、有效会议、活跃匿名用户、ASR 分钟、Qwen 请求数、估算 token、导出、错误、漏斗、腾讯会议成功率和估算成本；前端新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，不写入本地存储或 URL；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 29 已实现 F15 Provider 开关：后端新增 `QWEN_ASR_ENABLED` 与 `QWEN_FINAL_ENABLED`，并复用 `QWEN_INTERIM_ENABLED` 做条件配置校验；Qwen ASR 关闭时拒绝新实时会议且不创建 session/不占额度，interim 关闭时只跳过中文 interim，final 关闭时保存英文 final 为 failed 片段并入后台补译队列；`session_started` 新增安全 `provider_status`，前端 store 和状态栏展示 enabled/disabled/local_mock/unconfigured；OpenAI STT 仍仅保留配置校验不接入实时链路；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 30。
-- Step 30 已开始但阻塞，尚未完成：已新增 `tests/compatibility/step-30-compatibility-results.json`、`tests/compatibility/step-30-compatibility-matrix.md` 和 `scripts/validate-step30-compatibility.ps1`，用于记录和校验真实会议平台兼容性矩阵；当前 `https://meeting.youroristore.com` 本地探测超时，无法确认真实 Qwen HTTPS/WSS 后端可用，因此没有录入任何真实平台结果，校验脚本按预期失败，不能标记 Step 30 通过，也不能进入 Step 31。
+- Step 29 已实现 F15 Provider 开关：后端新增 `QWEN_ASR_ENABLED` 与 `QWEN_FINAL_ENABLED`，并复用 `QWEN_INTERIM_ENABLED` 做条件配置校验；Qwen ASR 关闭时拒绝新实时会议且不创建 session/不占额度，interim 关闭时只跳过中文 interim，final 关闭时保存英文 final 为 failed 片段并入后台补译队列；`session_started` 新增安全 `provider_status`，前端 store 和状态栏展示 enabled/disabled/local_mock/unconfigured；OpenAI STT 仍仅保留配置校验不接入实时链路；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
+- Step 30 已开始但阻塞，尚未完成：已新增 `tests/compatibility/step-30-compatibility-results.json`、`tests/compatibility/step-30-compatibility-matrix.md` 和 `scripts/validate-step30-compatibility.ps1`，用于记录和校验真实会议平台兼容性矩阵；当前 `https://meeting.youroristore.com` 本地探测超时，无法确认真实 Qwen HTTPS/WSS 后端可用，因此没有录入任何真实平台结果，校验脚本按预期失败，不能标记 Step 30 通过；用户已在 2026-05-20 明确覆盖顺序门禁允许执行 Step 31。
+- Step 31 已按用户明确覆盖 Step 30 顺序门禁后开始：新增 `.github/workflows/ci.yml`，配置 GitHub Actions 执行前端 lint/test/build/e2e、后端 Ruff/mypy/pytest 和 Docker Compose config 检查；CI 只做检查，不使用 secrets、SSH、自动部署、`docker compose up`、生产 migration 或真实 Provider/COS smoke；Step 30 仍保持 blocked，未标记通过。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -46,7 +47,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 30 当前阻塞状态的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板、Provider 开关、兼容性矩阵资产和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 31 CI 检查的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板、Provider 开关、兼容性矩阵资产、CI workflow 和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -257,7 +258,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 Provider 开关已完成；Step 30 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 Provider 开关已完成；Step 30 兼容性矩阵仍 blocked；Step 31 CI 检查已建立；Step 32 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -460,7 +461,16 @@ Step 29 Provider 开关已落地：
 - `backend/src/meeting_mvp_backend/ws_sessions.py` 在非 local 且 `QWEN_ASR_ENABLED=false` 时拒绝新会议，不创建 session、不占额度；`QWEN_INTERIM_ENABLED=false` 时跳过中文 interim；`QWEN_FINAL_ENABLED=false` 时保存 failed 英文 final 并入后台补译队列。
 - `backend/src/meeting_mvp_backend/main.py` 仅在对应 Qwen 开启时注入真实 ASR/final provider；后台补译 worker 仅在 `QWEN_FINAL_ENABLED=true` 且配置完整时启动。
 - `frontend/src/stores/session-store.ts` 保存 provider 状态；`frontend/src/App.tsx` 在实时状态栏展示 ASR/翻译的 disabled/unconfigured/local_mock 提示；`frontend/src/lib/session-notices.ts` 映射 `qwen_asr_disabled`、`qwen_interim_translation_disabled`、`qwen_final_translation_disabled`。
-- Step 29 不实现真实 OpenAI STT 音频链路、不新增前端 OpenAI 入口、不新增数据库 migration、不运行真实 Provider smoke；Step 30 必须等待用户明确允许后再开始。
+- Step 29 不实现真实 OpenAI STT 音频链路、不新增前端 OpenAI 入口、不新增数据库 migration、不运行真实 Provider smoke；Step 30 已开始但 blocked，Step 31 已建立 CI 检查。
+
+Step 31 CI 检查已落地：
+
+- `.github/workflows/ci.yml` 定义 `frontend`、`backend`、`compose-config` 三个 GitHub Actions jobs。
+- `frontend` job 使用 Node.js 24、`npm ci`、Playwright Chromium，运行 `npm run lint`、`npm run test`、`npm run build`、`npm run test:e2e`。
+- `backend` job 使用 `backend/.python-version`、uv 和 `backend/uv.lock`，运行 `uv sync --locked`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`。
+- `compose-config` job 使用 `deploy/.env.example` 运行 `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`，只校验配置，不启动容器。
+- CI workflow 顶层权限为 `contents: read`，不配置 secrets，不使用 SSH/scp/rsync，不自动部署，不运行 production migration 或真实 Qwen/COS/Provider smoke。
+- Step 31 不修改运行时 API、WebSocket schema、数据库 schema、环境变量清单、前端公开配置或业务代码；Step 32 必须等待用户明确允许后再开始。
 
 核心 WebSocket 请求消息：
 
@@ -516,5 +526,6 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 30 已获用户允许并开始建立兼容性矩阵资产，但因真实 HTTPS/WSS + Qwen ASR 测试目标不可用而阻塞；在真实 Windows Chrome/Edge + Google Meet/Teams Web/Zoom Web/腾讯会议网页版结果录入并通过 `scripts/validate-step30-compatibility.ps1` 前，不得记录 Step 30 通过，不得开始 Step 31。
+- Step 30 已获用户允许并开始建立兼容性矩阵资产，但因真实 HTTPS/WSS + Qwen ASR 测试目标不可用而阻塞；用户已在 2026-05-20 明确覆盖 Step 30 顺序门禁允许执行 Step 31，但不得记录 Step 30 通过。
+- Step 31 已建立 CI 检查；CI 通过不代表 Step 30 兼容性矩阵通过，也不代表 Step 32 生产部署演练通过。在用户明确允许前，不得开始 Step 32。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。
