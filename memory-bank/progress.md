@@ -1643,3 +1643,31 @@
 - `provider_status` 只能暴露安全枚举，不得扩展为 endpoint、模型名、API key 状态、供应商账号信息或密钥校验细节。
 - `QWEN_FINAL_ENABLED=false` 产生的 failed 片段会进入现有后台补译队列；重新启用 final 并满足配置后，worker 才会启动并处理到期 job。
 - `QWEN_ASR_ENABLED=false` 只拒绝新实时会议，不影响归档、导出、管理看板或已存在归档查看。
+
+## 2026-05-20 Step 30：兼容性测试矩阵（阻塞，未完成）
+
+### 本次完成
+
+- 已按用户明确指定开始 Step 30，未进入 Step 31；本步不创建 GitHub Actions、不修改 CI、不提交、不新增数据库 migration、不新增 Provider、不改 WebSocket 协议。
+- 已检查真实测试前置目标：本地访问 `https://meeting.youroristore.com` 超时，当前无法确认同源 HTTPS/WSS 页面和真实 Qwen backend 可用，因此不能执行真实会议平台人工矩阵，也不能把 Step 30 标记为通过。
+- 新增 Step 30 兼容性验收资产：
+  - `tests/compatibility/step-30-compatibility-results.json`：结构化结果来源，目前状态为 `blocked`，只记录阻塞信息，不写任何伪造平台测试结果。
+  - `tests/compatibility/step-30-compatibility-matrix.md`：人工可读矩阵，列出 Google Meet、Teams Web、Zoom Web、腾讯会议网页版在 Windows Chrome/Edge 的必测组合和腾讯会议专项结论规则。
+  - `scripts/validate-step30-compatibility.ps1`：校验结构化结果是否覆盖必测平台、浏览器、捕获模式、真实 Qwen HTTPS/WSS 环境、Qwen ASR enabled 状态和腾讯会议专项结论。
+- 已更新 `tests/README.md`，说明兼容性资产位置和真实 Provider 验收边界。
+- 已更新 `memory-bank/architecture.md` 和 `AGENTS.md`，记录 Step 30 当前为阻塞未完成状态和新增文件职责。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 真实 HTTPS 目标探测 | `Invoke-WebRequest https://meeting.youroristore.com -UseBasicParsing -TimeoutSec 15` | 超时；无法确认真实 Qwen HTTPS/WSS 目标可用 |
+| 计划要求的 pwsh 命令 | `pwsh -File scripts\validate-step30-compatibility.ps1` | 本机未安装 `pwsh`，命令不可用 |
+| PowerShell 兼容性校验 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate-step30-compatibility.ps1` | 按预期失败：当前没有任何真实兼容性结果，状态为 `blocked`，缺少必测行和腾讯会议结论 |
+
+### 后续注意
+
+- Step 30 尚未完成；必须在真实 Windows Chrome/Edge、真实会议平台和真实 Qwen HTTPS/WSS 后端环境下录入矩阵结果后，重新运行 `scripts/validate-step30-compatibility.ps1` 并通过，才能记录 Step 30 通过。
+- Google Meet、Teams Web、Zoom Web 至少要有一个浏览器的 `tab_audio` 成功；腾讯会议结论只能是 `tab_audio_supported`、`system_audio_only` 或 `unsupported`，其中 `unsupported` 阻塞完成。
+- `results.json` 不得写入会议正文、密钥、endpoint、账号、下载 URL、archive token、原始音频或用户隐私数据；只记录 PRD 要求的安全测试元数据。
+- Step 31 仍必须等待用户明确允许后再开始；当前没有 CI workflow 或 GitHub Actions 相关变更。

@@ -1279,3 +1279,40 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地前端完整验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、126 个测试通过，E2E 为 11 个 Chromium 测试通过。
 - `git diff --check` 已通过，仅有 Windows LF/CRLF 工作区提示，无空白错误。
 - Step 30 未开始；当前没有兼容性矩阵或真实会议平台人工测试。
+
+## 2026-05-20 Step 30 兼容性测试矩阵资产（阻塞，未完成）
+
+### 架构状态
+
+- Step 30 已建立兼容性矩阵资产和自动校验脚本，但真实平台验收尚未执行完成；当前状态为 `blocked`，不能视为 Step 30 通过。
+- 阻塞原因是本地访问 `https://meeting.youroristore.com` 超时，无法确认同源 HTTPS/WSS 工具页和真实 Qwen ASR backend 可用；按 Step 30 规则，不允许用 local mock 或未实测数据替代真实结果。
+- 兼容性结果不进入后端业务数据库，也不影响 WebSocket、Provider、归档、导出或看板运行时路径；它们是 `tests/` 下的验收资产。
+- `scripts/validate-step30-compatibility.ps1` 是本步的防误判边界：在缺少必测行、使用 mock 环境、Qwen ASR 未 enabled、缺少浏览器版本、失败码为空或腾讯会议结论阻塞时返回非 0。
+- 当前 JSON 保持空结果和 `blocked` 状态，因此校验脚本失败是预期结果；后续录入真实人工结果并满足规则后，脚本才应通过。
+- Step 31 未开始：当前没有 CI workflow、GitHub Actions、自动部署或主干提交。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `tests/compatibility/step-30-compatibility-results.json` | Step 30 结构化结果来源。保存 schema 版本、状态、阻塞信息、腾讯会议结论和人工测试结果数组；每条结果只允许保存平台、浏览器、版本、系统、捕获模式、授权结果、音频检测、首条 ASR interim 延迟、final 数量、失败码、测试时间、后端环境、provider 安全状态和备注。 |
+| `tests/compatibility/step-30-compatibility-matrix.md` | Step 30 人工可读矩阵。列出 Google Meet、Teams Web、Zoom Web、腾讯会议网页版在 Windows Chrome/Edge 下的必测组合，说明真实 Qwen HTTPS/WSS 前置条件、腾讯会议三类结论和安全记录边界。 |
+| `scripts/validate-step30-compatibility.ps1` | Step 30 本地校验脚本。读取结构化 JSON，校验必测组合覆盖、字段完整性、真实 Qwen 后端环境、Qwen ASR enabled、成功定义、失败码要求和腾讯会议专项结论；失败时列出全部错误并退出 1。 |
+| `tests/README.md` | 测试资产目录说明。Step 30 增加兼容性矩阵文件位置、校验命令和不得用 local mock 代替真实平台结果的边界。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 30 记录当前只建立资产、真实目标不可用、校验脚本按预期失败和 Step 31 未开始。 |
+| `memory-bank/architecture.md` | 架构记录。Step 30 记录兼容性资产的数据边界、文件职责和阻塞原因。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 30 同步当前阻塞状态、验收资产和后续不得跳入 Step 31 的约束。 |
+
+### 数据与安全边界
+
+- 兼容性矩阵只记录安全元数据，不记录会议正文、用户姓名、会议链接、archive token、下载 URL、Provider endpoint、模型账号、密钥、原始音频或截图中的隐私内容。
+- `provider_status` 只能保留 Step 29 定义的安全状态摘要，例如 `qwen_realtime_asr=enabled`；不得扩展为密钥存在性、endpoint、模型名或供应商账号。
+- `first_asr_interim_ms` 和 `final_segment_count` 只证明真实 Qwen ASR 链路在该平台组合下可产生结果，不记录转写文本。
+- 失败行必须有明确 `failure_code`，用于区分授权失败、无音频、ASR 超时、final 缺失或平台不支持；空失败码不能通过校验。
+
+### 验证结论
+
+- 真实 HTTPS/WSS 目标探测失败：`https://meeting.youroristore.com` 在 15 秒内超时。
+- `pwsh` 在当前 Windows 本机不可用；使用 Windows PowerShell 执行脚本可运行。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate-step30-compatibility.ps1` 按预期失败，列出空结果、blocked 状态、缺少必测行和腾讯会议结论等问题。
+- 因真实平台人工结果尚未录入，Step 30 未完成；不能进入 Step 31。

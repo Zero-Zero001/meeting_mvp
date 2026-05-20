@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "step": 30,
+  "status": "blocked",
+  "required_backend_environment": "real_qwen_https_wss",
+  "blockers": [
+    {
+      "checked_at": "2026-05-20T00:00:00+08:00",
+      "code": "https_wss_target_unavailable",
+      "detail": "https://meeting.youroristore.com timed out during the local availability check, so no real Qwen HTTPS/WSS compatibility run has been verified."
+    }
+  ],
+  "tencent_meeting_conclusion": null,
+  "results": []
+}
