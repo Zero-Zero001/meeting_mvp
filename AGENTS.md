@@ -470,6 +470,7 @@ Step 31 CI 检查已落地：
 - `backend` job 使用 `backend/.python-version`、uv 和 `backend/uv.lock`，运行 `uv sync --locked`、`uv run ruff check .`、`uv run mypy .`、`uv run pytest`。
 - `compose-config` job 使用 `deploy/.env.example` 运行 `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`，只校验配置，不启动容器。
 - CI workflow 顶层权限为 `contents: read`，不配置 secrets，不使用 SSH/scp/rsync，不自动部署，不运行 production migration 或真实 Qwen/COS/Provider smoke。
+- GitHub Actions 首轮 push CI 已通过：`codex/step31-ci-checks` 分支 run `26148035200` 中 `Docker Compose config`、`Backend`、`Frontend` jobs 均为 success。
 - Step 31 不修改运行时 API、WebSocket schema、数据库 schema、环境变量清单、前端公开配置或业务代码；Step 32 必须等待用户明确允许后再开始。
 
 核心 WebSocket 请求消息：

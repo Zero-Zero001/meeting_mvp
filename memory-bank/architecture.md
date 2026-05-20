@@ -1361,3 +1361,4 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - 本地前端验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、126 个测试通过，E2E 为 11 个 Chromium 测试通过。
 - `git diff --check` 已通过，无空白错误。
 - workflow 安全扫描未发现 SSH、secrets、部署、容器启动、production migration 或真实 Provider/COS smoke；只命中预期的 Compose config 命令。
+- GitHub Actions 首轮 push CI 已通过：`codex/step31-ci-checks` 分支 run `26148035200` 中 `Docker Compose config`、`Backend`、`Frontend` jobs 均为 success。

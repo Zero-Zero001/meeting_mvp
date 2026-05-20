@@ -1699,10 +1699,11 @@
 | 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
 | Markdown/代码空白检查 | `git diff --check` | 通过，无空白错误 |
 | CI 安全边界扫描 | `Select-String .github/workflows/ci.yml -Pattern 'ssh|scp|rsync|compose up|docker compose up|secrets\.|SSH|deploy|alembic upgrade|RUN_QWEN|COS'` | 仅命中 Compose config 命令；未发现 SSH、secrets、部署、容器启动、production migration 或真实 Provider/COS smoke |
+| GitHub Actions 首轮 push CI | `codex/step31-ci-checks` 分支 run `26148035200` | 通过；`Docker Compose config`、`Backend`、`Frontend` jobs 均为 success |
 
 ### 后续注意
 
-- Step 31 分支计划为 `codex/step31-ci-checks`；推送后需要等待 GitHub Actions 的 `frontend`、`backend`、`compose-config` jobs 全部通过。
+- Step 31 分支为 `codex/step31-ci-checks`；GitHub Actions 首轮 push CI 已通过。
 - GitHub Actions 检查是否硬性阻止合并，还取决于 GitHub 仓库 branch protection 是否将这些 checks 配置为 required；本步只新增 workflow，不修改仓库保护设置。
 - Step 30 仍未完成；兼容性矩阵不能纳入 CI 必跑项，否则当前 blocked 状态会让 Step 31 CI 永久失败。
 - Step 32 必须等待用户明确允许后再开始；不得因为 CI 通过就自动部署 Lighthouse。
