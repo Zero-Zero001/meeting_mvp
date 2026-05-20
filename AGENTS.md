@@ -37,8 +37,9 @@
 - Step 27 已实现 F18 会议时间线增强：后端新增 `meeting_mvp_backend.timeline` 统一生成 `segment_final`、`key_sentence`、`export_created`、`exception` 节点；WebSocket final/重点句/warning/error 路径推送 `timeline_update`；归档 API 新增 `timeline_items` 派生字段；前端实时页和归档页新增时间线筛选、类型展示和关联片段跳转；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 28 已实现 F14 使用量与成本看板：后端新增 `meeting_mvp_backend.usage_dashboard`，提供 `GET /api/admin/usage-dashboard?days=...`，使用 `DASHBOARD_ADMIN_TOKEN` bearer 鉴权，从 `meeting_session` 与 `usage_event` 安全元数据聚合会议数、有效会议、活跃匿名用户、ASR 分钟、Qwen 请求数、估算 token、导出、错误、漏斗、腾讯会议成功率和估算成本；前端新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，不写入本地存储或 URL；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 29 已实现 F15 Provider 开关：后端新增 `QWEN_ASR_ENABLED` 与 `QWEN_FINAL_ENABLED`，并复用 `QWEN_INTERIM_ENABLED` 做条件配置校验；Qwen ASR 关闭时拒绝新实时会议且不创建 session/不占额度，interim 关闭时只跳过中文 interim，final 关闭时保存英文 final 为 failed 片段并入后台补译队列；`session_started` 新增安全 `provider_status`，前端 store 和状态栏展示 enabled/disabled/local_mock/unconfigured；OpenAI STT 仍仅保留配置校验不接入实时链路；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
-- Step 30 已开始但阻塞，尚未完成：已新增 `tests/compatibility/step-30-compatibility-results.json`、`tests/compatibility/step-30-compatibility-matrix.md` 和 `scripts/validate-step30-compatibility.ps1`，用于记录和校验真实会议平台兼容性矩阵；当前 `https://meeting.youroristore.com` 本地探测超时，无法确认真实 Qwen HTTPS/WSS 后端可用，因此没有录入任何真实平台结果，校验脚本按预期失败，不能标记 Step 30 通过；用户已在 2026-05-20 明确覆盖顺序门禁允许执行 Step 31。
+- Step 30 已开始但阻塞，尚未完成：已新增 `tests/compatibility/step-30-compatibility-results.json`、`tests/compatibility/step-30-compatibility-matrix.md` 和 `scripts/validate-step30-compatibility.ps1`，用于记录和校验真实会议平台兼容性矩阵；Step 32 已使生产 HTTPS/WSS 入口在 Lighthouse 远端验证可用，但尚未录入任何真实会议平台人工测试结果，校验脚本仍应失败，不能标记 Step 30 通过。
 - Step 31 已按用户明确覆盖 Step 30 顺序门禁后开始：新增 `.github/workflows/ci.yml`，配置 GitHub Actions 执行前端 lint/test/build/e2e、后端 Ruff/mypy/pytest 和 Docker Compose config 检查；CI 只做检查，不使用 secrets、SSH、自动部署、`docker compose up`、生产 migration 或真实 Provider/COS smoke；Step 30 仍保持 blocked，未标记通过。
+- Step 32 已完成生产部署演练：在 Lighthouse `/opt/meeting_mvp/app` 使用远端 `.env.production` 执行 Docker Compose 部署，PostgreSQL/Redis/backend/Caddy 容器运行正常；Alembic、PostgreSQL/Redis/WebSocket 集成、Qwen ASR/interim/final smoke、COS Markdown/JSON 导出 smoke、PostgreSQL 备份恢复、远端 HTTPS `/health`、远端 WSS `/ws` 和公网端口边界均已验证；Step 33 未开始。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -47,7 +48,7 @@
   - `memory-bank/implementation-plan.md`
   - `memory-bank/set-up-env.md`
   - `memory-bank/environment-variables.md`
-- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 31 CI 检查的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板、Provider 开关、兼容性矩阵资产、CI workflow 和执行进度，不再为空文件。
+- `memory-bank/architecture.md` 与 `memory-bank/progress.md` 已记录 Step 01 到 Step 32 生产部署演练的基线架构、工程目录边界、前端工程骨架、后端工程骨架、配置边界、部署骨架、数据库模型、匿名用户初始化、额度服务、WebSocket 消息 schema、WebSocket 会话编排、前端实时会议工作台骨架、前端会议音频捕获、前端音频前处理与 binary 上传、本地 mock Provider 链路、Qwen realtime ASR 英文实时转写、Qwen 中文 interim、Qwen 中文 final、四区实时 UI 补强、异常与降级提示、usage_event 埋点基础、基础双语归档页/API、搜索与复制、Markdown/JSON 导出、后台 Final 补译队列、当前重点句增强、会议时间线增强、使用量与成本看板、Provider 开关、兼容性矩阵资产、CI workflow、生产部署演练和执行进度，不再为空文件。
 - PRD 已从 `memory-bank/meeting-prd.md` 重新定位到根目录 `meeting-prd.md`；后续引用 PRD 时使用根目录路径。
 - 工作区曾出现根目录设计文档被删除、`memory-bank/` 新增的状态；不要擅自恢复或覆盖用户改动。
 
@@ -188,20 +189,20 @@
 - Lighthouse SSH 私钥本地路径：`D:\lighthouse secretKey\lz_secretKey.pem`；只记录路径，不读取、不复制、不输出私钥内容。
 - 已创建目录：`/opt/meeting_mvp/app`、`/opt/meeting_mvp/secrets`、`/opt/meeting_mvp/data/postgres`、`/opt/meeting_mvp/data/redis`、`/opt/meeting_mvp/backups`、`/opt/meeting_mvp/logs`。
 - Docker 和 Docker Compose 已在 Lighthouse 上安装并验证过。
-- 生产部署目标：Caddy 服务 Vite 静态前端，并通过 HTTPS/WSS 反向代理 `/api/*` 和 `/ws/*` 到 FastAPI。
+- 生产部署目标：Caddy 服务 Vite 静态前端，并通过 HTTPS/WSS 反向代理 `/api/*`、`/health` 和 `/ws*` 到 FastAPI。
 - PostgreSQL 和 Redis 通过 Docker Compose 容器运行；5432 和 6379 不对公网开放。
-- Step 06 Compose 骨架中 Caddy 是唯一公网入口，只映射 80/443；PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`，Redis 挂载 `/opt/meeting_mvp/data/redis`。
+- Step 06/32 Compose 中 Caddy 是唯一公网入口，只映射 80/443；PostgreSQL 挂载 `/opt/meeting_mvp/data/postgres`，Redis 挂载 `/opt/meeting_mvp/data/redis`。
 - Step 16 替换后，Compose 后端容器不再只读挂载 Google STT 服务账号 JSON；Qwen API key 只通过后端安全环境变量提供，不进入镜像或 Git。
 - Step 17 远端真实 Qwen interim smoke 已在 Lighthouse 后端容器镜像内通过：使用 `deploy/.env.example` 完成 backend 镜像构建，容器运行时通过 `.env.production` 注入 Qwen 配置，脱敏 smoke 输出 `qwen-interim-smoke-passed`；临时 `/tmp/qwen_interim_smoke.py` 已删除。
 - Step 18 远端真实 Qwen final smoke 已在 Lighthouse 后端容器镜像内通过：已同步 Step 18 文件到 `/opt/meeting_mvp/app`，使用 `.env.production` 完成 backend 镜像构建，并通过 `RUN_QWEN_FINAL_SMOKE=1` 在容器内运行 `tests/integration/test_qwen_final_translation_smoke.py`，最终结果为 `1 passed`；未输出 Qwen API key、完整生产 env 或任何密钥值。
-- 远端配置检查命令为：`cd /opt/meeting_mvp/app && docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`；Step 06 已执行通过，但未执行 `docker compose up -d`、`docker compose ps` 或 Alembic migration。
+- 远端配置检查命令为：`cd /opt/meeting_mvp/app && docker compose --env-file .env.production -f deploy/docker-compose.yml config --quiet`；Step 32 已使用 `.env.production` 执行生产部署演练、`docker compose up -d --build`、`docker compose ps` 和 Alembic migration。
 - Step 07 远端 migration 和 PostgreSQL 集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step07` 完成，验收后已清理临时容器、临时数据目录、远端临时脚本和测试缓存。
 - Step 07 backend build 曾卡在 Lighthouse Docker build 的 `uv sync` 依赖下载阶段；`backend/Dockerfile` 已增加 `UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 与 `UV_HTTP_TIMEOUT=120`，后续 Compose backend build 已通过。
-- Step 07/17 曾发现远端 `.env.production` 缺少 Compose 所需数据库/Redis/站点变量，尤其 `POSTGRES_USER` 会拦截 `docker compose --env-file .env.production ... build`；Step 18 前后已补齐到可用于 backend build 的状态，本次 `docker compose --env-file .env.production -f deploy/docker-compose.yml build backend` 通过。正式部署前仍需确认这些变量使用真实生产值，不能用 `deploy/.env.example` 占位值初始化正式数据目录。
+- Step 07/17 曾发现远端 `.env.production` 缺少 Compose 所需数据库/Redis/站点变量，尤其 `POSTGRES_USER` 会拦截 `docker compose --env-file .env.production ... build`；Step 32 前已补齐到可部署状态，本次只补非密钥安全默认项和 dashboard token，未输出任何值。正式数据目录已使用远端 `.env.production`，不能用 `deploy/.env.example` 占位值初始化。
 - Step 08 远端匿名接口集成测试使用临时数据目录 `/opt/meeting_mvp/data/postgres_step08` 和临时 env 文件 `.env.step08` 完成；验收后已删除临时 PostgreSQL 容器、临时 env、临时数据目录和测试缓存。
 - Step 09 远端 Redis 集成测试使用独立 Compose project `meeting_mvp_step09`、临时数据目录 `/opt/meeting_mvp/data/redis_step09`、临时 env 文件 `.env.step09` 和非真实 Google 凭据占位文件完成；验收后已删除临时 Redis 容器、临时网络、临时 backend 镜像、临时 env、占位凭据、临时 Redis 数据目录和测试缓存。
 - 2026-05-09 真实 Google STT smoke 曾在 Lighthouse 使用 Google 官方公开 `brooklyn_bridge.raw` 英文样本尝试执行：样本下载成功，Google 凭证文件和必需环境变量存在性检查通过，未输出任何密钥或生产 env 内容。第一次网络检查时 `speech.googleapis.com:443` 在 host/container 中均不可达；用户第二次调整网络后，容器内简单 TCP/TLS 探针可达，但真实 Google STT gRPC streaming 仍报 `ServiceUnavailable: 503 failed to connect to all addresses; ... tcp handshaker shutdown`，未返回 interim/final。该结果已作为历史背景记录，Google STT 不再是 M1-A 生产主路径。
-- 80/443 需要等 Caddy 和应用 Compose 部署后再验证。
+- Step 32 已验证 80/443 由 Caddy 提供，5432/6379 不对公网开放；远端 `https://meeting.youroristore.com/health` 返回 FastAPI `{"status":"ok"}`，远端 `wss://meeting.youroristore.com/ws` 握手成功。当前 Windows 本机到该域名 HTTPS TLS 握手仍被 reset，但 TCP 80/443 可达，记录为本机/网络出口差异。
 
 ## 9. 密钥与安全
 
@@ -258,7 +259,7 @@ Step 09 额度与预算校验已落地：
 - 拒绝优先级固定为：预算保险丝 > 活跃会话上限 > 每日额度耗尽 > 单场时长上限。
 - Redis 不保存正式会议档案；PostgreSQL 仍是 final 文本、会议归档和导出记录来源。
 - `backend/tests/test_quota.py` 覆盖本地纯逻辑与 fake store；`backend/tests/integration/test_quota_redis_integration.py` 覆盖 Lighthouse/CI 真实 Redis。
-- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 Provider 开关已完成；Step 30 兼容性矩阵仍 blocked；Step 31 CI 检查已建立；Step 32 必须等用户明确允许后再开始。
+- Step 21 usage_event 埋点基础已完成；Step 22 基础双语归档页/API 已完成；Step 23 搜索与复制已完成；Step 24 Markdown/JSON 导出已完成；Step 25 后台 Final 补译队列已完成；Step 26 当前重点句增强已完成；Step 27 会议时间线增强已完成；Step 28 使用量与成本看板已完成；Step 29 Provider 开关已完成；Step 30 兼容性矩阵仍 blocked；Step 31 CI 检查已建立；Step 32 生产部署演练已完成；Step 33 必须等用户明确允许后再开始。
 
 Step 10 WebSocket 消息 schema 已落地：
 
@@ -461,7 +462,7 @@ Step 29 Provider 开关已落地：
 - `backend/src/meeting_mvp_backend/ws_sessions.py` 在非 local 且 `QWEN_ASR_ENABLED=false` 时拒绝新会议，不创建 session、不占额度；`QWEN_INTERIM_ENABLED=false` 时跳过中文 interim；`QWEN_FINAL_ENABLED=false` 时保存 failed 英文 final 并入后台补译队列。
 - `backend/src/meeting_mvp_backend/main.py` 仅在对应 Qwen 开启时注入真实 ASR/final provider；后台补译 worker 仅在 `QWEN_FINAL_ENABLED=true` 且配置完整时启动。
 - `frontend/src/stores/session-store.ts` 保存 provider 状态；`frontend/src/App.tsx` 在实时状态栏展示 ASR/翻译的 disabled/unconfigured/local_mock 提示；`frontend/src/lib/session-notices.ts` 映射 `qwen_asr_disabled`、`qwen_interim_translation_disabled`、`qwen_final_translation_disabled`。
-- Step 29 不实现真实 OpenAI STT 音频链路、不新增前端 OpenAI 入口、不新增数据库 migration、不运行真实 Provider smoke；Step 30 已开始但 blocked，Step 31 已建立 CI 检查。
+- Step 29 不实现真实 OpenAI STT 音频链路、不新增前端 OpenAI 入口、不新增数据库 migration；Step 30 已开始但 blocked，Step 31 已建立 CI 检查，Step 32 已完成生产部署演练。
 
 Step 31 CI 检查已落地：
 
@@ -471,7 +472,17 @@ Step 31 CI 检查已落地：
 - `compose-config` job 使用 `deploy/.env.example` 运行 `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet`，只校验配置，不启动容器。
 - CI workflow 顶层权限为 `contents: read`，不配置 secrets，不使用 SSH/scp/rsync，不自动部署，不运行 production migration 或真实 Qwen/COS/Provider smoke。
 - GitHub Actions 首轮 push CI 已通过：`codex/step31-ci-checks` 分支 run `26148035200` 中 `Docker Compose config`、`Backend`、`Frontend` jobs 均为 success。
-- Step 31 不修改运行时 API、WebSocket schema、数据库 schema、环境变量清单、前端公开配置或业务代码；Step 32 必须等待用户明确允许后再开始。
+- Step 31 不修改运行时 API、WebSocket schema、数据库 schema、环境变量清单、前端公开配置或业务代码；Step 32 已完成，Step 33 必须等待用户明确允许后再开始。
+
+Step 32 生产部署演练已完成：
+
+- `deploy/docker-compose.yml` 已透传 `QWEN_ASR_ENABLED`、`QWEN_FINAL_ENABLED`、`DASHBOARD_ADMIN_TOKEN` 和 dashboard 成本参数；Qwen 相关变量允许 Compose 层为空，由后端 `Settings` 按 Provider 开关条件校验。
+- `deploy/Caddyfile` 使用 `handle` 分支固定 `/api/*`、`/health`、`/ws*` 优先代理到 backend，剩余路径才进入 Vite 静态前端 fallback。
+- Lighthouse `/opt/meeting_mvp/app` 已部署 Step 32 分支代码；backend/caddy 镜像最终重建成功，PostgreSQL、Redis、backend、Caddy 容器运行正常。
+- 远端 Alembic、PostgreSQL/Redis/WebSocket 集成组、Qwen ASR/interim/final smoke、COS Markdown/JSON 导出 smoke、PostgreSQL 备份恢复、远端 HTTPS `/health` 和远端 WSS `/ws` 均已通过。
+- Qwen interim smoke 出现过瞬时 `ReadTimeout`，重试后通过；后续真实流量仍需观察 interim 网络稳定性，但 interim 失败不会阻塞英文 ASR 或 final 主链路。
+- PostgreSQL 备份目录为 `/opt/meeting_mvp/backups`；Step 32 已用 `pg_dump -Fc` 生成备份并恢复到临时库验证，随后删除临时库。
+- Step 30 仍未完成真实会议平台兼容性矩阵；Step 33 未开始。
 
 核心 WebSocket 请求消息：
 

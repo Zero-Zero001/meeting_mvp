@@ -5,13 +5,21 @@
 {$CADDY_SITE_ADDRESS} {
 	encode zstd gzip
 
-	@api path /api/*
-	reverse_proxy @api backend:8000
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
 
-	@ws path /ws /ws/*
-	reverse_proxy @ws backend:8000
+	handle /health {
+		reverse_proxy backend:8000
+	}
 
-	root * /srv
-	try_files {path} /index.html
-	file_server
+	handle /ws* {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
 }

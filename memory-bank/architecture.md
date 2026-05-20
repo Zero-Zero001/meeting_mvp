@@ -1362,3 +1362,67 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `git diff --check` 已通过，无空白错误。
 - workflow 安全扫描未发现 SSH、secrets、部署、容器启动、production migration 或真实 Provider/COS smoke；只命中预期的 Compose config 命令。
 - GitHub Actions 首轮 push CI 已通过：`codex/step31-ci-checks` 分支 run `26148035200` 中 `Docker Compose config`、`Backend`、`Frontend` jobs 均为 success。
+
+## 2026-05-20 Step 32 生产部署演练
+
+### 架构状态
+
+- Step 32 已在腾讯云 Lighthouse `/opt/meeting_mvp/app` 完成单机生产部署演练：PostgreSQL、Redis、backend、Caddy 均由 Docker Compose 管理，backend/postgres/redis healthcheck 通过，Caddy 映射公网 80/443。
+- Step 32 分支为 `codex/step32-production-drill`，基于 `codex/step31-ci-checks`；保留 Step 31 CI workflow，不从当前 `main` 丢失 CI 基线。
+- `deploy/docker-compose.yml` 已补齐 Step 28/29 引入但未透传到容器的运行时变量：Provider 开关和 dashboard 成本/口令配置现在进入 backend 容器，后端 `Settings` 才能在生产运行时按开关做条件校验。
+- Qwen ASR/interim/final 的必填校验边界从 Compose 展开层下沉到后端配置层：Compose 允许变量为空，后端只在对应开关为 `true` 时要求 key、base URL 和模型配置完整。数据库、Redis、COS 等基础生产依赖仍保持生产必填。
+- Caddy 路由已从散列 matcher 改为 `handle` 分支：`/api/*`、`/health`、`/ws*` 优先反向代理到 FastAPI，剩余路径才进入 Vite 静态前端和 SPA fallback。这避免 `try_files` 把健康检查或 API 路径改写成 `/index.html`。
+- 生产健康检查存在两个层次：
+  - Docker healthcheck 使用容器内 `GET /health` 判断 backend 容器是否健康。
+  - 公网 `https://meeting.youroristore.com/health` 通过 Caddy 代理到 FastAPI，用于验证 TLS/Caddy/backend 组合链路。
+- WebSocket 公网入口为 `wss://meeting.youroristore.com/ws`，由 Caddy 反向代理到 backend `/ws`；Step 32 已验证远端经公网域名可完成 WSS 握手。
+- PostgreSQL 是正式归档来源，Redis 只保存额度、active session、重试调度等短期状态。Step 32 已用测试归档确认删除 Redis 临时状态后，归档 API 仍能从 PostgreSQL 返回 final 片段。
+- 备份恢复流程已被纳入生产部署演练：`pg_dump -Fc` 生成 `/opt/meeting_mvp/backups/step32_*.dump`，再恢复到临时数据库并检查 public schema 表数量，最后删除临时库。
+- 真实 Provider/COS smoke 均在 Lighthouse 后端容器执行；Windows 本地继续只跑不依赖真实密钥的检查。Step 32 没有把任何 Qwen、COS、dashboard、数据库或 Redis 密钥写入 Git、前端构建产物或文档。
+- Step 30 仍保持 `blocked`：虽然 Step 32 已让 HTTPS/WSS 生产入口可用，但尚未执行真实会议平台人工兼容性矩阵；Step 33 也未开始。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `deploy/docker-compose.yml` | 生产单机拓扑定义。管理 PostgreSQL 16、Redis 7、backend 和 Caddy；Step 32 新增 Provider 开关、dashboard 管理口令和 dashboard 成本参数透传，并让 Qwen 相关变量由后端按开关条件校验。继续只映射 Caddy 的 80/443，不把 PostgreSQL 5432 或 Redis 6379 暴露到公网。 |
+| `deploy/Caddyfile` | 公网入口路由。Step 32 改为 `handle` 分支：`/api/*`、`/health`、`/ws*` 代理到 backend，默认分支服务 `/srv` 下的 Vite 静态产物并对 SPA 路由 fallback 到 `/index.html`。Caddy 负责自动 HTTPS 和 WSS 终止。 |
+| `backend/Dockerfile` | 后端镜像构建。基于 Python 3.12/uv，使用 `uv.lock` 固定依赖；复制 Alembic、`src/` 和 `tests/`。Step 32 最终重建 backend 镜像，确保集成测试修正进入镜像文件系统。 |
+| `frontend/Dockerfile` | 前端/Caddy 镜像构建。Node 24 阶段执行 `npm ci` 和 `npm run build` 生成 Vite 静态产物；最终 Caddy 镜像复制 `deploy/Caddyfile` 和 `/app/dist`。Step 32 最终重建 Caddy 镜像，确保路由修复不依赖容器内热加载。 |
+| `.dockerignore` | Docker build context 安全边界。排除 `.env`、本地缓存、虚拟环境、`node_modules`、构建产物和常见密钥文件，避免生产密钥进入镜像上下文。 |
+| `deploy/.env.example` | Compose 示例环境。继续只放 placeholder/default，用于 CI/远端 `docker compose config` 展开；不代表生产真实配置，不能用于正式数据目录初始化。 |
+| Lighthouse `/opt/meeting_mvp/app/.env.production` | 生产私有环境文件，只存在远端服务器；Step 32 继续使用该文件注入数据库、Redis、Qwen、COS、dashboard 等配置。文档只记录变量名和是否补安全默认项，不记录任何值。 |
+| Lighthouse `/opt/meeting_mvp/data/postgres` | PostgreSQL 持久化目录。Compose 将其挂载到 postgres 容器；正式会议、归档、片段、事件和导出元数据以 PostgreSQL 为权威来源。 |
+| Lighthouse `/opt/meeting_mvp/data/redis` | Redis 持久化目录。Compose 将其挂载到 redis 容器；保存短期额度、active session、预算保险丝和补译队列状态，但不作为正式归档来源。 |
+| Lighthouse `/opt/meeting_mvp/backups` | PostgreSQL 备份目录。Step 32 生成并验证 `step32_*.dump` 备份文件，恢复演练使用临时数据库完成，不覆盖生产数据库。 |
+| `backend/tests/integration/test_websocket_session_redis_integration.py` | PostgreSQL+Redis WebSocket 生命周期集成测试。Step 32 将断线测试调整为“恢复 grace 到期后释放 active session”，与 Step 16 的 session resume 语义一致。 |
+| `backend/tests/integration/test_qwen_realtime_asr_smoke.py` | Qwen realtime ASR gated smoke。Step 32 在 Lighthouse 后端容器中使用公开英文样本 manifest 分段验证 latency/resume、30s、3m、10m 连续流和术语识别。 |
+| `backend/tests/integration/test_qwen_interim_translation_smoke.py` | Qwen interim gated smoke。验证 Qwen OpenAI-compatible 文本接口能返回中文 interim；Step 32 记录到偶发 ReadTimeout，重试通过，生产主链路仍不依赖 interim 成功。 |
+| `backend/tests/integration/test_qwen_final_translation_smoke.py` | Qwen final gated smoke。验证 `QWEN_FINAL_MODEL` 可生成正式中文 final；Step 32 重建后通过。 |
+| `backend/src/meeting_mvp_backend/exports.py` | Markdown/JSON 导出服务与 COS storage 封装。Step 32 使用 `ArchiveExportService` 做真实 COS smoke，验证私有对象上传和短期签名 URL 生成，并清理测试对象。 |
+| `backend/src/meeting_mvp_backend/archives.py` | 归档读取 API 的数据访问边界。Step 32 用测试归档确认归档读取不依赖 Redis，仍从 PostgreSQL 的 `meeting_session` 与 `transcript_segment` 返回 final 片段。 |
+| `.github/workflows/ci.yml` | Step 31 的检查门。Step 32 不修改其部署边界；CI 仍只做检查，不运行真实 Lighthouse 部署、Provider smoke 或 COS smoke。 |
+| `memory-bank/progress.md` | 开发进度记录。Step 32 记录实际部署命令、失败/修复过程、远端 smoke、备份恢复和未进入 Step 33 的边界。 |
+| `memory-bank/architecture.md` | 架构记录。Step 32 记录生产部署拓扑、Caddy 路由修复、环境变量边界、备份恢复流程和文件职责。 |
+| `AGENTS.md` | Codex/AI 项目记忆。Step 32 同步完成状态、远端部署事实、剩余风险和 Step 33 等待用户明确允许。 |
+
+### 安全与运维边界
+
+- 生产 `.env.production` 不进入 Git；Codex 只通过变量名和脱敏状态判断配置是否存在，不输出任何密钥值、dashboard token、COS object key、签名 URL 或 archive token。
+- `DASHBOARD_ADMIN_TOKEN` 是后端私有管理口令，只能通过 Authorization header 使用，不得变成 `VITE_*`、URL query、本地存储、usage event 或文档内容。
+- Provider smoke 可输出通过/失败、错误类型和耗时，但不得输出 Qwen key、COS Secret、完整 endpoint、生产 env 或会议正文。
+- COS smoke 使用测试归档数据，验证签名 URL 形态后清理测试对象；文档不记录 object key 或下载 URL。
+- PostgreSQL 备份恢复只恢复到临时库；不得对生产库执行破坏性恢复。临时库验证完成后必须删除。
+- Redis 可以重启或丢失短期状态，但已归档 final 片段必须继续由 PostgreSQL 提供查看能力。
+- Windows 本地当前到生产 HTTPS 出现 TLS handshake reset，但远端经公网域名访问 HTTPS/WSS 成功；该差异应作为当前本机/网络出口现象记录，后续 Step 30/33 仍需在真实用户浏览器网络环境继续确认。
+
+### 验证结论
+
+- 本地后端验证已通过：Ruff、mypy、pytest；pytest 为 173 passed，13 deselected。
+- 本地前端验证已通过：lint、Vitest、build、Playwright E2E；Vitest 为 15 个测试文件、126 个测试通过，E2E 为 11 个 Chromium 测试通过。
+- 远端 Compose config、`docker compose up -d --build backend caddy`、容器 health、Alembic migration 和 PostgreSQL/Redis 集成组均通过。
+- 远端 `https://meeting.youroristore.com/health` 返回 FastAPI JSON 200；远端 `wss://meeting.youroristore.com/ws` 握手成功。
+- 公网端口边界符合预期：80/443 可连接，5432/6379 不可连接。
+- Qwen ASR/interim/final 和 COS 导出 smoke 均已通过；Qwen interim 出现过瞬时 ReadTimeout，重试通过。
+- PostgreSQL 备份和临时恢复演练通过；最终恢复演练备份文件大小为 15060 bytes，恢复后 public schema 表数量为 6。
+- Step 33 未开始；Step 30 兼容性矩阵仍未完成。

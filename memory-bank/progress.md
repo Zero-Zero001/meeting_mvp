@@ -1707,3 +1707,88 @@
 - GitHub Actions 检查是否硬性阻止合并，还取决于 GitHub 仓库 branch protection 是否将这些 checks 配置为 required；本步只新增 workflow，不修改仓库保护设置。
 - Step 30 仍未完成；兼容性矩阵不能纳入 CI 必跑项，否则当前 blocked 状态会让 Step 31 CI 永久失败。
 - Step 32 必须等待用户明确允许后再开始；不得因为 CI 通过就自动部署 Lighthouse。
+
+## 2026-05-20 Step 32：生产部署演练
+
+### 本次完成
+
+- 已按用户明确指定只执行 Step 32，未开始 Step 33；Step 30 仍保持 `blocked`，没有伪造兼容性矩阵通过记录。
+- 已从 `codex/step31-ci-checks` 创建工作树分支 `codex/step32-production-drill`，保留 Step 31 CI workflow 基线。
+- 已补齐 `deploy/docker-compose.yml` 的后端运行时环境透传：
+  - 新增 `QWEN_ASR_ENABLED`、`QWEN_FINAL_ENABLED`、`DASHBOARD_ADMIN_TOKEN` 和 dashboard 成本估算参数透传。
+  - 将 Qwen key/base/model 相关 Compose 展开改为允许空值，由后端 `Settings` 按 Provider 开关做条件校验，避免 Compose 在开关关闭时提前拦截。
+- 已修复 `deploy/Caddyfile` 路由优先级：
+  - 使用 `handle /api/*`、`handle /health`、`handle /ws*` 和默认静态 `handle` 分支。
+  - 原因是 Caddy 会按指令顺序排序，单独追加 `@health` 时仍会被 `try_files` 改写到前端 fallback；`handle` 分支可显式固定 API/health/WSS 优先级。
+- 已修正 `backend/tests/integration/test_websocket_session_redis_integration.py` 的断线集成测试语义：
+  - Step 16 后浏览器断线默认进入 `SESSION_RESUME_GRACE_SECONDS` 恢复窗口，不应立即释放 Redis active session。
+  - 集成测试改为将本用例的 `session_resume_grace_seconds` 设为 0，并等待 grace 到期释放，覆盖“恢复窗口结束后释放 Redis active session”的真实语义。
+- 已将 Step 31+Step 32 代码同步到 Lighthouse `/opt/meeting_mvp/app`，继续使用远端已有 `.env.production`；未读取、复制或输出任何密钥值。
+- 已在远端 `.env.production` 缺少非密钥默认项时补安全默认值，并生成 `DASHBOARD_ADMIN_TOKEN`；只记录变量名和动作，不记录 token 值。
+- 已执行生产部署演练：
+  - `docker compose --env-file .env.production -f deploy/docker-compose.yml config --quiet` 通过。
+  - `docker compose --env-file .env.production -f deploy/docker-compose.yml up -d --build` 首次外层命令超时，但随后 `docker compose ps` 确认 PostgreSQL、Redis、backend、Caddy 均已运行。
+  - 后续在修复 Caddy 和集成测试后，重新执行 `docker compose ... up -d --build backend caddy`，backend 与 caddy 镜像均成功重建并重启。
+- 已完成远端数据库与 Redis 验证：
+  - `uv run alembic upgrade head` 通过。
+  - PostgreSQL/Redis/WebSocket 集成组通过：`5 passed`。
+  - Redis 临时状态删除后，测试归档 API 仍能从 PostgreSQL 返回 1 条 final 片段，验证 Redis 丢失不影响已归档 final 查看。
+- 已完成真实 Provider/COS smoke：
+  - Qwen ASR latency + session_resume：`1 passed`。
+  - Qwen ASR 连续流：30 秒 `1 passed`、3 分钟 `1 passed`、10 分钟 `1 passed in 606.31s`。
+  - Qwen ASR terms：`1 passed`；mixed case 因当前 manifest 未配置 mixed 音频而按测试设计 skipped。
+  - Qwen interim smoke 曾两次遇到瞬时 `ReadTimeout`，重试后通过：`1 passed in 6.51s`；该现象与 Step 17 设计一致，interim 失败不阻塞主链路，但生产网络仍需观察。
+  - Qwen final smoke 通过：`1 passed in 4.96s`。
+  - COS Markdown/JSON 导出 smoke 通过：生成 2 个短期签名 URL，并清理 2 个测试 COS 对象；未输出 object key、token 或签名 URL。
+- 已完成 PostgreSQL 备份和临时恢复演练：
+  - 备份文件位于 `/opt/meeting_mvp/backups`，最终恢复演练文件名为 `step32_20260520T133754Z.dump`，大小 `15060` bytes。
+  - 使用临时数据库恢复后确认 public schema 表数量为 6，随后删除临时恢复库。
+- 已完成公网与端口边界验证：
+  - 远端经公网域名访问 `https://meeting.youroristore.com/health` 返回 HTTP 200 和 `{"status":"ok"}`。
+  - 远端经公网域名 `wss://meeting.youroristore.com/ws` WebSocket 握手成功。
+  - 本地 `Test-NetConnection` 确认 80/443 可 TCP 连接，5432/6379 不可连接。
+  - 本地 Windows `curl.exe` 到 HTTPS 仍出现 TLS handshake reset，但远端公网自测、Caddy ACME 证书日志、80 跳转和 WSS 远端握手均正常；该现象记录为当前本机/网络出口差异，不作为服务端部署失败。
+
+### 验证命令与结果
+
+| 验证项 | 命令 | 实际结果 |
+|---|---|---|
+| 后端 Ruff | `uv run ruff check .` | 通过，`All checks passed!` |
+| 后端 mypy | `uv run mypy .` | 通过，`Success: no issues found in 47 source files` |
+| 后端 pytest | `uv run pytest` | 173 passed，13 deselected |
+| 前端 lint | `npm run lint` | 通过 |
+| 前端单元测试 | `npm run test -- --run` | 15 个测试文件、126 个测试通过 |
+| 前端生产构建 | `npm run build` | 通过 |
+| 前端 E2E | `npm run test:e2e` | 11 个 Chromium 测试通过 |
+| 本地 Compose | `docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml config --quiet` | Windows 本机未安装 Docker，符合项目边界；实际 Compose config 在 Lighthouse 通过 |
+| 远端 Compose config | `docker compose --env-file .env.production -f deploy/docker-compose.yml config --quiet` | 通过，输出 `compose_config_ok` |
+| 远端部署 | `docker compose --env-file .env.production -f deploy/docker-compose.yml up -d --build` | 首次外层超时但容器实际启动；最终重建 backend/caddy 成功 |
+| 远端容器状态 | `docker compose --env-file .env.production -f deploy/docker-compose.yml ps` | backend/postgres/redis healthy，Caddy running；Caddy 仅映射 80/443 |
+| Alembic | `docker compose ... exec -T backend uv run alembic upgrade head` | 通过 |
+| PostgreSQL/Redis 集成 | `uv run pytest -m integration tests/integration/test_database_schema.py tests/integration/test_anonymous_clients_integration.py tests/integration/test_quota_redis_integration.py tests/integration/test_websocket_session_redis_integration.py -q` | 首次 1 failed；修正断线 grace 语义后 5 passed |
+| Qwen interim | `RUN_QWEN_INTERIM_SMOKE=1 uv run pytest -m integration tests/integration/test_qwen_interim_translation_smoke.py -q` | 首次 ReadTimeout；重试后 1 passed |
+| Qwen final | `RUN_QWEN_FINAL_SMOKE=1 uv run pytest -m integration tests/integration/test_qwen_final_translation_smoke.py -q` | 1 passed |
+| Qwen ASR | `RUN_QWEN_ASR_SMOKE=1 ... test_qwen_realtime_asr_smoke.py` 分段执行 | latency/resume、30s、3m、10m、terms 均通过 |
+| COS 导出 smoke | 后端容器临时脚本调用 `ArchiveExportService` | Markdown/JSON 均通过，2 个测试 COS 对象已清理 |
+| PostgreSQL 备份恢复 | `pg_dump -Fc` + `createdb` + `pg_restore` + `dropdb` | 通过，恢复 public schema 表数量 6 |
+| HTTPS health | `curl https://meeting.youroristore.com/health`（远端） | HTTP 200，`{"status":"ok"}` |
+| WSS | Python `websockets.connect("wss://meeting.youroristore.com/ws")`（远端） | 握手成功 |
+| 公网端口边界 | `Test-NetConnection meeting.youroristore.com -Port 80,443,5432,6379` | 80/443 为 True，5432/6379 为 False |
+
+### 失败与修复记录
+
+- 本地 `npm ci` 首次因全局 npm cache 权限失败；改用工作树内 `.cache/npm` 后成功。
+- Windows 本机没有 Docker，不能执行本地 Compose config；这符合既定边界，Compose 验证在 Lighthouse 完成。
+- 首次远端 `docker compose up -d --build` 外层命令超时；复查容器状态确认服务实际已启动，随后对 backend/caddy 做了最终重建并通过。
+- WebSocket Redis 断线集成测试首次失败，是测试仍按 Step 11 即时释放语义断言；Step 16 已引入断线恢复窗口，测试已修正为 grace 到期后释放。
+- Caddy `/health` 初次修复未生效，是 `try_files` 在 Caddy 指令排序中先改写路径；改为 `handle` 分支后公网 `/health` 正确代理到 backend。
+- Qwen interim smoke 偶发 ReadTimeout；重试通过，记录为生产网络观察项。
+- 本地 Windows 到 `https://meeting.youroristore.com` 的 TLS handshake 被 reset；远端公网域名 HTTPS/WSS 自测通过，服务端证书获取与路由正常。
+
+### 后续注意
+
+- Step 32 已完成生产部署演练，但 Step 30 仍是 `blocked`：尚未录入真实 Google Meet、Teams Web、Zoom Web、腾讯会议网页版在 Windows Chrome/Edge 下的兼容性矩阵结果。
+- Step 33 必须等待用户明确允许后再开始；当前没有执行 TC-001 到 TC-026 的上线验收。
+- 生产 `.env.production` 仍只在 Lighthouse 维护；后续不得把其中密钥、dashboard token、COS 签名 URL、archive token 或 object key 写入 Git、前端构建产物或项目记忆文档。
+- PostgreSQL 备份文件已验证可恢复；后续生产发布或 migration 前继续先备份，再执行迁移。
+- Redis 只承载短期状态；已归档 final 片段仍以 PostgreSQL 为权威来源。

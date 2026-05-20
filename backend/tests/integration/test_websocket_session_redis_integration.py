@@ -141,6 +141,7 @@ class ScriptedDisconnectWebSocket:
 async def run_scripted_disconnect_session(client_id: str) -> str:
     settings = load_settings()
     assert settings.database_url is not None
+    settings.session_resume_grace_seconds = 0
     engine = create_engine(settings.database_url)
     try:
         orchestrator = WebSocketSessionOrchestrator(
@@ -152,6 +153,10 @@ async def run_scripted_disconnect_session(client_id: str) -> str:
         )
         websocket = ScriptedDisconnectWebSocket(client_id)
         await orchestrator.handle(cast(WebSocket, websocket))
+        for _ in range(20):
+            if await active_session_count(client_id) == 0:
+                break
+            await asyncio.sleep(0.05)
         assert websocket.accepted is True
         assert websocket.sent_json[0]["type"] == "session_started"
         return str(websocket.sent_json[0]["session_id"])
@@ -213,7 +218,7 @@ def test_websocket_session_lifecycle_uses_real_postgres_and_redis() -> None:
         asyncio.run(cleanup(client_id))
 
 
-def test_websocket_disconnect_releases_real_redis_active_session() -> None:
+def test_websocket_disconnect_grace_expiry_releases_real_redis_active_session() -> None:
     settings = load_settings()
     assert settings.database_url is not None
     assert settings.redis_url is not None
