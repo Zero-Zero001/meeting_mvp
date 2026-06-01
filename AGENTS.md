@@ -37,7 +37,8 @@
 - Step 27 已实现 F18 会议时间线增强：后端新增 `meeting_mvp_backend.timeline` 统一生成 `segment_final`、`key_sentence`、`export_created`、`exception` 节点；WebSocket final/重点句/warning/error 路径推送 `timeline_update`；归档 API 新增 `timeline_items` 派生字段；前端实时页和归档页新增时间线筛选、类型展示和关联片段跳转；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 28 已实现 F14 使用量与成本看板：后端新增 `meeting_mvp_backend.usage_dashboard`，提供 `GET /api/admin/usage-dashboard?days=...`，使用 `DASHBOARD_ADMIN_TOKEN` bearer 鉴权，从 `meeting_session` 与 `usage_event` 安全元数据聚合会议数、有效会议、活跃匿名用户、ASR 分钟、Qwen 请求数、估算 token、导出、错误、漏斗、腾讯会议成功率和估算成本；前端新增 `/admin/usage-dashboard` 管理页，口令只保存在 React state，不写入本地存储或 URL；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过。
 - Step 29 已实现 F15 Provider 开关：后端新增 `QWEN_ASR_ENABLED` 与 `QWEN_FINAL_ENABLED`，并复用 `QWEN_INTERIM_ENABLED` 做条件配置校验；Qwen ASR 关闭时拒绝新实时会议且不创建 session/不占额度，interim 关闭时只跳过中文 interim，final 关闭时保存英文 final 为 failed 片段并入后台补译队列；`session_started` 新增安全 `provider_status`，前端 store 和状态栏展示 enabled/disabled/local_mock/unconfigured；OpenAI STT 仍仅保留配置校验不接入实时链路；本地后端 Ruff/mypy/pytest 与前端 lint/test/build/e2e 均已通过；未进入 Step 30。
-- Step 30 已开始但阻塞，尚未完成：已新增 `tests/compatibility/step-30-compatibility-results.json`、`tests/compatibility/step-30-compatibility-matrix.md` 和 `scripts/validate-step30-compatibility.ps1`，用于记录和校验真实会议平台兼容性矩阵；当前 `https://meeting.youroristore.com` 本地探测超时，无法确认真实 Qwen HTTPS/WSS 后端可用，因此没有录入任何真实平台结果，校验脚本按预期失败，不能标记 Step 30 通过，也不能进入 Step 31。
+- Step 30 已开始但阻塞，尚未完成：已新增 `tests/compatibility/step-30-compatibility-results.json`、`tests/compatibility/step-30-compatibility-matrix.md` 和 `scripts/validate-step30-compatibility.ps1`，用于记录和校验真实会议平台兼容性矩阵；2026-06-01 已将当前兼容性目标域名迁移为 `https://meeting.orileyi.cn`，但尚未录入真实 Windows Chrome/Edge 会议平台矩阵结果，校验脚本按预期失败，不能标记 Step 30 通过，也不能进入 Step 31。
+- 2026-06-01 已完成生产域名迁移：当前生产入口为 `https://meeting.orileyi.cn`，Lighthouse `.env.production` 中 `PUBLIC_BASE_URL`、`API_BASE_URL`、`WS_BASE_URL`、`CADDY_SITE_ADDRESS` 已更新，backend/caddy 已重建重启，公网验证结果为首页 200、管理 API 未带口令 401、`wss://meeting.orileyi.cn/ws` 握手 Open；旧域名 `meeting.youroristore.com` 仅作为历史记录保留，不再作为有效入口。
 - 前端只能使用 `VITE_*` 公开配置；不得把 Provider、数据库、Redis、COS 密钥加到前端代码或前端构建产物。
 - 当前有效产品/技术文档集中在根目录和 `memory-bank/`：
   - `memory-bank/2026-04-24-meeting-mvp-design.md`
@@ -182,7 +183,7 @@
 云服务器当前已知信息：
 
 - 服务器：腾讯云 Lighthouse Ubuntu 22.04 LTS 64 位 x86。
-- 域名：`meeting.youroristore.com`。
+- 当前生产域名：`meeting.orileyi.cn`；历史旧域名 `meeting.youroristore.com` 因备案许可问题不再作为有效入口。
 - 服务器项目目录：`/opt/meeting_mvp`。
 - Lighthouse SSH 私钥本地路径：`D:\lighthouse secretKey\lz_secretKey.pem`；只记录路径，不读取、不复制、不输出私钥内容。
 - 已创建目录：`/opt/meeting_mvp/app`、`/opt/meeting_mvp/secrets`、`/opt/meeting_mvp/data/postgres`、`/opt/meeting_mvp/data/redis`、`/opt/meeting_mvp/backups`、`/opt/meeting_mvp/logs`。
@@ -516,5 +517,5 @@ MVP 需要同时判断“有人用了”和“是否值得继续做”。指标�
 - 每次改动前先确认当前工作区状态，避免覆盖用户未提交更改。
 - 不要擅自提交、推送或创建 PR，除非用户明确要求。
 - 如果新增项目事实、环境事实、Provider 策略或部署边界，必须更新本文件。
-- Step 30 已获用户允许并开始建立兼容性矩阵资产，但因真实 HTTPS/WSS + Qwen ASR 测试目标不可用而阻塞；在真实 Windows Chrome/Edge + Google Meet/Teams Web/Zoom Web/腾讯会议网页版结果录入并通过 `scripts/validate-step30-compatibility.ps1` 前，不得记录 Step 30 通过，不得开始 Step 31。
+- Step 30 已获用户允许并开始建立兼容性矩阵资产；2026-06-01 当前目标域名已迁移到 `meeting.orileyi.cn`，但在真实 Windows Chrome/Edge + Google Meet/Teams Web/Zoom Web/腾讯会议网页版结果录入并通过 `scripts/validate-step30-compatibility.ps1` 前，不得记录 Step 30 通过，不得开始 Step 31。
 - 若文档之间存在冲突，以最近的用户明确决策和 `memory-bank/` 当前文档为准，并在本文件记录冲突处理结论。

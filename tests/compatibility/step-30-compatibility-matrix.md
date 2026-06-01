@@ -2,7 +2,7 @@
 
 This document records the Step 30 manual compatibility matrix. Step 30 is not complete until every required row has a real result from Windows Chrome or Edge against a real HTTPS/WSS backend whose `provider_status.qwen_realtime_asr` is `enabled`.
 
-Current status: blocked. The public target `https://meeting.youroristore.com` timed out during the local availability check on 2026-05-20, so no real Qwen-backed meeting-platform test result is recorded yet.
+Current status: blocked. The public compatibility target is now `https://meeting.orileyi.cn`. No real Windows Chrome/Edge Qwen-backed meeting-platform test result is recorded yet.
 
 ## Required Evidence
 

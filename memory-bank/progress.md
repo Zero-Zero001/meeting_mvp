@@ -1671,3 +1671,37 @@
 - Google Meet、Teams Web、Zoom Web 至少要有一个浏览器的 `tab_audio` 成功；腾讯会议结论只能是 `tab_audio_supported`、`system_audio_only` 或 `unsupported`，其中 `unsupported` 阻塞完成。
 - `results.json` 不得写入会议正文、密钥、endpoint、账号、下载 URL、archive token、原始音频或用户隐私数据；只记录 PRD 要求的安全测试元数据。
 - Step 31 仍必须等待用户明确允许后再开始；当前没有 CI workflow 或 GitHub Actions 相关变更。
+
+## 2026-06-01 生产域名迁移：`meeting.orileyi.cn`
+
+### 本次完成
+
+- 按用户明确决策，将当前生产入口从历史旧域名 `meeting.youroristore.com` 迁移为 `meeting.orileyi.cn`；旧域名因备案许可问题不再作为有效入口。
+- 更新部署示例中的当前生产公开 URL：
+  - `PUBLIC_BASE_URL=https://meeting.orileyi.cn`
+  - `API_BASE_URL=https://meeting.orileyi.cn/api`
+  - `WS_BASE_URL=wss://meeting.orileyi.cn/ws`
+  - `CADDY_SITE_ADDRESS=meeting.orileyi.cn`
+- 更新 Step 30 兼容性资产的当前公开测试目标为 `https://meeting.orileyi.cn`；本次不录入任何伪造会议平台结果，不把 Step 30 标记为完成。
+- 更新 `memory-bank/architecture.md` 和 `AGENTS.md`，记录当前域名、旧域名历史状态、部署边界和 Step 30 仍 blocked 的原因。
+
+### 验证命令与结果
+
+| 验证项 | 命令或方式 | 实际结果 |
+|---|---|---|
+| 本地引用检查 | `git grep -n -I "meeting.youroristore.com" -- deploy tests AGENTS.md memory-bank` | 旧域名只出现在历史记录或旧事实说明中，`deploy/.env.example` 与 Step 30 当前测试目标均已改为新域名。 |
+| JSON 解析 | 读取 `tests/compatibility/step-30-compatibility-results.json` 的 `public_test_target` | 输出 `https://meeting.orileyi.cn`。 |
+| 空白检查 | `git diff --check` | 通过；仅有 Windows LF/CRLF 工作区提示，无空白错误。 |
+| Step 30 防误判 | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate-step30-compatibility.ps1` | 按预期失败：状态仍为 `blocked`，缺少真实平台结果、腾讯会议结论和必测行。 |
+| 远端公开变量检查 | 只 grep `.env.production` 中 `PUBLIC_BASE_URL`、`API_BASE_URL`、`WS_BASE_URL`、`CADDY_SITE_ADDRESS` | 四项均为 `meeting.orileyi.cn`；未输出其他生产 env 或密钥。 |
+| 远端 Compose 配置 | `docker compose --env-file .env.production -f deploy/docker-compose.yml config --quiet` | 通过且不输出密钥。 |
+| 远端服务重启 | `docker compose --env-file .env.production -f deploy/docker-compose.yml up -d --force-recreate backend caddy` | backend/caddy 已重建重启；复查时 backend 为 healthy，caddy 正常运行。 |
+| 新域名 HTTPS 首页 | `Invoke-WebRequest https://meeting.orileyi.cn/ -UseBasicParsing -TimeoutSec 30` | HTTP 200。 |
+| 新域名 API 代理 | `Invoke-WebRequest https://meeting.orileyi.cn/api/admin/usage-dashboard?days=1`（不带 bearer） | HTTP 401，符合管理 API 鉴权预期，证明 `/api/*` 代理可达。 |
+| 新域名 WSS 入口 | .NET `ClientWebSocket` 连接 `wss://meeting.orileyi.cn/ws` | 握手成功，状态 `Open`。 |
+
+### 后续注意
+
+- 正式远端配置只修改 `/opt/meeting_mvp/app/.env.production` 中的公开 URL 与 Caddy 域名变量，不输出生产 env 内容。
+- DNS 由域名服务商侧管理；本仓库只记录当前生产入口和部署配置。
+- Step 30 仍需真实 Windows Chrome/Edge + Google Meet/Teams Web/Zoom Web/腾讯会议网页版人工矩阵结果，不能因为域名迁移或 HTTPS/WSS 可达就视为通过。

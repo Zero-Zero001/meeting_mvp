@@ -1316,3 +1316,35 @@ Meeting MVP 第一版采用前后端分离和单机 Docker Compose 部署：
 - `pwsh` 在当前 Windows 本机不可用；使用 Windows PowerShell 执行脚本可运行。
 - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate-step30-compatibility.ps1` 按预期失败，列出空结果、blocked 状态、缺少必测行和腾讯会议结论等问题。
 - 因真实平台人工结果尚未录入，Step 30 未完成；不能进入 Step 31。
+
+## 2026-06-01 生产域名迁移
+
+### 架构状态
+
+- 当前生产入口域名从 `meeting.youroristore.com` 迁移为 `meeting.orileyi.cn`；旧域名因备案许可问题不再作为有效入口。
+- 本次迁移不改变前后端业务逻辑、WebSocket 协议、数据库 schema、Provider 链路、COS 对象策略或匿名额度规则。
+- 运行时仍通过环境变量注入公开 URL：`PUBLIC_BASE_URL=https://meeting.orileyi.cn`、`API_BASE_URL=https://meeting.orileyi.cn/api`、`WS_BASE_URL=wss://meeting.orileyi.cn/ws`。
+- Caddy 仍是唯一公网入口，`CADDY_SITE_ADDRESS` 的当前值应为 `meeting.orileyi.cn`，并继续反向代理 `/api/*` 与 `/ws/*` 到 FastAPI。
+- Step 30 兼容性矩阵的当前公开测试目标更新为 `https://meeting.orileyi.cn`；由于真实 Windows Chrome/Edge 会议平台矩阵尚未录入，Step 30 仍保持 `blocked`，不能进入 Step 31。
+
+### 文件作用
+
+| 文件 | 作用 |
+|---|---|
+| `deploy/.env.example` | 当前 Docker Compose 示例生产 URL 与 Caddy 站点地址已改为 `meeting.orileyi.cn`。 |
+| `tests/compatibility/step-30-compatibility-results.json` | Step 30 结构化结果增加当前公开测试目标 `https://meeting.orileyi.cn`，阻塞原因改为尚未录入真实会议平台矩阵。 |
+| `tests/compatibility/step-30-compatibility-matrix.md` | Step 30 人工矩阵说明改为以 `https://meeting.orileyi.cn` 作为当前真实 Qwen HTTPS/WSS 测试目标。 |
+| `AGENTS.md` | 项目记忆同步当前生产域名、旧域名历史状态和 Step 30 仍未完成边界。 |
+
+### 安全边界
+
+- 不在 Git、前端代码或文档中写入生产密钥、真实 `.env.production` 内容、Qwen API key、COS 密钥、数据库密码或 Redis 密码。
+- 前端仍只能读取 `VITE_*` 公开配置；Provider、数据库、Redis 与 COS 密钥继续只存在于后端/服务器私有环境。
+- 历史文档中的旧域名可作为历史事实保留，但当前有效部署配置、公开测试目标和项目记忆必须指向 `meeting.orileyi.cn`。
+
+### 验证结论
+
+- Lighthouse `/opt/meeting_mvp/app/.env.production` 已只更新四个公开域名变量，没有输出生产 env 或密钥内容。
+- `docker compose --env-file .env.production -f deploy/docker-compose.yml config --quiet` 在 Lighthouse 通过。
+- `backend` 与 `caddy` 已使用新配置强制重建；复查时 `backend` 为 healthy，`caddy` 正常运行并只公开 80/443。
+- 公网验证通过：`https://meeting.orileyi.cn/` 返回 200，`https://meeting.orileyi.cn/api/admin/usage-dashboard?days=1` 未带 bearer 口令返回 401，`wss://meeting.orileyi.cn/ws` 握手状态为 Open。

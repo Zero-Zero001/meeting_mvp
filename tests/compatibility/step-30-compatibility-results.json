@@ -2,12 +2,13 @@
   "schema_version": 1,
   "step": 30,
   "status": "blocked",
+  "public_test_target": "https://meeting.orileyi.cn",
   "required_backend_environment": "real_qwen_https_wss",
   "blockers": [
     {
-      "checked_at": "2026-05-20T00:00:00+08:00",
-      "code": "https_wss_target_unavailable",
-      "detail": "https://meeting.youroristore.com timed out during the local availability check, so no real Qwen HTTPS/WSS compatibility run has been verified."
+      "checked_at": "2026-06-01T00:00:00+08:00",
+      "code": "manual_platform_matrix_not_recorded",
+      "detail": "The public compatibility target has migrated to https://meeting.orileyi.cn. No real Windows Chrome/Edge meeting-platform matrix result has been recorded yet."
     }
   ],
   "tencent_meeting_conclusion": null,
