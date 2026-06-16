@@ -1,9 +1,9 @@
 # meeting_mvp
 
-Minimal repository for the meeting MVP project.
+面向国内职场用户在英文会议中“听不懂、记不全、会后难整理”的痛点，提供浏览器端实时英文转写、中文翻译、历史记录和文本导出.
 
-## Development
-
-This repository is managed from `D:\meeting_mvp`.
-
-Project structure and application stack will be added as the MVP scope is defined.
+## 使用方法(MVP目前仅支持网页版英文会议，不支持软件客户端英文会议)
+1. 打开并进入网页版Zoom(google,team和腾讯)英文会议室
+2. 打开MVP工具页, 找到"会议平台"下拉区域选择对应平台
+3. 点击"开始捕获"按钮
+4. 捕获成功
